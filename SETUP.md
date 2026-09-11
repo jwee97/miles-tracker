@@ -1,7 +1,22 @@
 # Full setup walkthrough
 
-End to end, roughly 30–40 minutes. Everything below is free tier: no domain,
-no credit card, no API key.
+Everything below is free tier: no domain, no credit card, no API key.
+
+**Two paths.** Pick the one that matches your machine — the difference is only
+*where the commands run*, and the end result is identical.
+
+| | Path A — no terminal | Path B — local terminal |
+|---|---|---|
+| For | StackBlitz, Chromebook, iPad, any browser-only setup | macOS, Linux, WSL |
+| Setup done in | Cloudflare dashboard + browser | Wrangler CLI |
+| Deploys triggered by | `git push` | `npm run deploy` |
+| Time | ~30 min | ~25 min |
+
+**Wrangler cannot run in a StackBlitz WebContainer** — it needs native binaries
+(`workerd`, esbuild) and a local socket for the OAuth callback, none of which
+exist in browser-based Node. There is no flag that fixes this. Path A avoids
+Wrangler on your machine entirely: Cloudflare runs it in their own build
+container on every push.
 
 Verified against **Wrangler 4.131.0** / **Node 22**.
 
@@ -9,270 +24,214 @@ Verified against **Wrangler 4.131.0** / **Node 22**.
 
 ## What you're building
 
-| Piece | Where it runs | What it costs |
+One Worker serves everything from a single origin:
+
+```
+miles-tracker.<you>.workers.dev
+├── /                 the dashboard (React PWA, static assets)
+├── /api/*            JSON API, token-authenticated
+├── /tg               Telegram webhook
+└── cron ×2           nightly feed scan + morning digest
+```
+
+| Resource | Free allowance | You'll use |
 |---|---|---|
-| Worker (bot + API + cron) | `miles-tracker.<you>.workers.dev` | Free — 100k req/day |
-| D1 database | Cloudflare, attached to the Worker | Free — 5 GB, 5M row reads/day |
-| PWA dashboard | `<project>.pages.dev` | Free — unlimited bandwidth |
-| Telegram bot | Telegram's servers | Free |
+| Worker requests | 100,000/day | ~200 |
+| Worker CPU | 10 ms/invocation | ~2 ms |
+| D1 storage | 5 GB | a few MB |
+| D1 row reads | 5,000,000/day | a few thousand |
+| D1 row writes | 100,000/day | a few dozen |
+| Static assets | Unlimited | 6 files, 150 KB |
 
-You will use maybe 200 requests a day against a 100,000/day allowance.
-
----
-
-## Step 0 — Prerequisites
-
-- **Node 18+** — `node -v`
-- **A Cloudflare account** — [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up).
-  Free plan, no card required. You do **not** need to add a domain.
-- **A Telegram account.**
-
-```bash
-git clone https://github.com/jwee97/miles-tracker.git
-cd miles-tracker
-npm install
-npm test          # should print "all passed" twice, no config needed
-```
-
-If `npm test` passes, the code is sound and everything from here is wiring.
+Nothing here has a path to a bill. D1's free tier does not sleep or pause on
+inactivity, which is why the nightly cron is dependable.
 
 ---
 
-## Step 1 — Log in to Cloudflare
+# Path A — no terminal
 
-```bash
-npx wrangler login
+## A1. Create the database
+
+1. [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) — free plan, no card, no domain needed.
+2. **Storage & Databases → D1 SQL Database → Create**. Name it `miles`.
+3. Open the new database, go to the **Console** tab.
+4. Paste the entire contents of `schema.sql` and run it.
+5. Paste the entire contents of `seed.sql` and run it.
+
+Confirm with:
+
+```sql
+SELECT name FROM sqlite_master WHERE type='table';
 ```
 
-Opens a browser for OAuth. On a headless box it prints a URL to open elsewhere.
+You should get `cards`, `transactions`, `requirements`, `offers`,
+`offer_rules`, `feeds`, `feed_items`, `alerts_sent`, `settings`.
 
-Alternative (CI, or if the browser flow won't work): create an API token at
-**dash.cloudflare.com → My Profile → API Tokens → Create Token**, using the
-*Edit Cloudflare Workers* template, then:
+Copy the **Database ID** shown on the database's overview page.
 
-```bash
-export CLOUDFLARE_API_TOKEN=<token>
-```
+## A2. Put the database ID in the repo
 
-Confirm you're in:
-
-```bash
-npx wrangler whoami
-```
-
----
-
-## Step 2 — Create the database
-
-```bash
-npx wrangler d1 create miles
-```
-
-It prints a config block. Copy **only** the `database_id` value into
-`wrangler.toml`, replacing `PUT_YOUR_D1_DATABASE_ID_HERE`:
+In StackBlitz (or the GitHub web editor), edit `wrangler.toml`:
 
 ```toml
 [[d1_databases]]
 binding = "DB"
 database_name = "miles"
-database_id = "a1b2c3d4-...."
+database_id = "paste-the-id-here"
 ```
 
-Now create the tables and load the default RSS feeds:
+Commit and push to `main`.
 
-```bash
-npm run db:init     # wrangler d1 execute miles --remote --file=./schema.sql
-npm run db:seed
+## A3. Connect the repo to Cloudflare
+
+1. **Workers & Pages → Create application → Import a repository**.
+2. Authorize GitHub if prompted, then pick `miles-tracker`.
+3. Set the build configuration:
+
+| Field | Value |
+|---|---|
+| Worker name | `miles-tracker` |
+| Build command | `npm run build` |
+| Deploy command | `npx wrangler deploy` |
+| Branch | `main` |
+
+> **The Worker name must be exactly `miles-tracker`** — it has to match the
+> `name` field in `wrangler.toml` or the build fails with a name-mismatch error.
+
+4. **Save and Deploy.**
+
+The first build takes a couple of minutes: it installs dependencies, builds the
+dashboard into `web/dist`, then uploads the Worker and its static assets
+together. Note the `workers.dev` URL it gives you.
+
+The Worker is live but inert — no secrets yet.
+
+**From here on, every `git push` to `main` rebuilds and redeploys automatically.**
+That is your whole deployment workflow; you never run Wrangler.
+
+## A4. Create the Telegram bot
+
+Open [@BotFather](https://t.me/botfather), send `/newbot`, give it any display
+name, and a username ending in `bot`. Copy the token.
+
+## A5. Set the secrets in the dashboard
+
+**Workers & Pages → miles-tracker → Settings → Variables and Secrets.**
+Add each of these with type **Secret** (not Text):
+
+| Name | Value |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | the BotFather token |
+| `TELEGRAM_SECRET` | any long random string |
+| `APP_SECRET` | a different long random string |
+
+Need random strings without a terminal? Open your browser's devtools console:
+
+```js
+crypto.randomUUID() + crypto.randomUUID()
 ```
 
-> **The `--remote` flag matters.** Without it, Wrangler writes to a local
-> SQLite file used by `wrangler dev` and your deployed Worker sees an empty
-> database. The npm scripts already pass it; if you run `d1 execute` by hand,
-> don't drop it. `npm run db:init:local` is the local-only variant, for `wrangler dev`.
+Saving a secret creates a new version of the Worker, so it applies immediately.
 
-Verify:
+> Secrets are encrypted and separate from **Variables**, which are plain text.
+> Never put a token in `[vars]` in `wrangler.toml` — that file is in git.
 
-```bash
-npx wrangler d1 execute miles --remote --command "SELECT name FROM sqlite_master WHERE type='table'"
-```
+## A6. Point Telegram at the Worker
 
-You should see `cards`, `transactions`, `requirements`, `offers`,
-`offer_rules`, `feeds`, `feed_items`, `alerts_sent`, `settings`.
-
----
-
-## Step 3 — Create the Telegram bot
-
-1. Open [@BotFather](https://t.me/botfather) in Telegram.
-2. `/newbot`
-3. Display name: anything (`Miles`).
-4. Username: must be globally unique and end in `bot` (`jw_miles_bot`).
-5. Copy the token it gives you — `123456789:AAF...`. Treat it like a password:
-   anyone with it controls the bot.
-
-Optional, purely cosmetic: `/setcommands` on BotFather, then paste:
+`setWebhook` accepts GET, so a browser address bar is enough. Substitute all
+three values and visit:
 
 ```
-status - Full digest
-cards - List cards
-offers - Tracked offers and eligibility
-reqs - List minimum-spend requirements
-scan - Scan RSS feeds now
-app - Open the dashboard
-help - All commands
-```
-
----
-
-## Step 4 — Deploy the Worker
-
-```bash
-npm run deploy
-```
-
-First deploy asks to register a `workers.dev` subdomain — accept it. Note the
-URL it prints:
-
-```
-https://miles-tracker.<your-subdomain>.workers.dev
-```
-
-Sanity check:
-
-```bash
-curl https://miles-tracker.<your-subdomain>.workers.dev/health   # -> ok
-```
-
-It's live but inert: no secrets yet, so the bot can't talk to anything.
-
----
-
-## Step 5 — Set the secrets
-
-Generate two random strings:
-
-```bash
-openssl rand -hex 32     # use for TELEGRAM_SECRET
-openssl rand -hex 32     # use for APP_SECRET
-```
-
-Then set three of the four (the fourth needs a value you don't have yet):
-
-```bash
-npx wrangler secret put TELEGRAM_BOT_TOKEN    # paste the BotFather token
-npx wrangler secret put TELEGRAM_SECRET       # paste the first random string
-npx wrangler secret put APP_SECRET            # paste the second random string
-```
-
-Each `secret put` redeploys the Worker automatically — no manual redeploy needed.
-
-> **Never put these in `wrangler.toml`.** Anything under `[vars]` is committed
-> to git in plain text. `wrangler secret put` stores them encrypted, and they
-> arrive on the same `env` object at runtime.
-
-Keep `TELEGRAM_SECRET` on your clipboard — the next step needs it.
-
----
-
-## Step 6 — Point Telegram at the Worker
-
-Telegram pushes updates to your Worker. Register the webhook, substituting both
-values:
-
-```bash
-curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "url": "https://miles-tracker.<your-subdomain>.workers.dev/tg",
-    "secret_token": "<TELEGRAM_SECRET>"
-  }'
+https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://miles-tracker.<you>.workers.dev/tg&secret_token=<TELEGRAM_SECRET>
 ```
 
 Expect `{"ok":true,"result":true,"description":"Webhook was set"}`.
 
-The `secret_token` is echoed by Telegram on every request as the
-`X-Telegram-Bot-Api-Secret-Token` header, and the Worker rejects anything where
-it doesn't match. It must be **byte-identical** to the `TELEGRAM_SECRET` you
-set in Step 5 — a trailing newline from a sloppy copy is the usual culprit
-behind a silent bot.
+Telegram echoes `secret_token` on every request as the
+`X-Telegram-Bot-Api-Secret-Token` header, and the Worker rejects anything that
+doesn't match. It must be **byte-identical** to the `TELEGRAM_SECRET` from A5 —
+a stray space from a sloppy copy is the usual cause of a silent bot.
 
-Check it took:
+Check it took by visiting:
 
-```bash
-curl "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"
+```
+https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo
 ```
 
-`pending_update_count` should be 0 and `last_error_message` absent.
+`pending_update_count` should be 0 with no `last_error_message`.
+
+## A7. Claim the bot
+
+Message your bot `/start`. Since `OWNER_CHAT_ID` isn't set, it replies with your
+numeric chat id. Add that as one more **Secret** named `OWNER_CHAT_ID`.
+
+Send `/start` again — you should get the help text, and every other Telegram
+account is now locked out. That is the entire access-control model, and it's
+sufficient because there is exactly one user.
+
+## A8. Open the dashboard
+
+Send `/app`. The bot replies with a link to its own `workers.dev` URL carrying a
+30-day token. Open it on your phone and **Add to Home Screen**.
+
+Skip to [Shared setup](#shared-setup) below.
 
 ---
 
-## Step 7 — Claim the bot
-
-Message your bot `/start`. Because `OWNER_CHAT_ID` isn't set yet, it replies
-with your numeric chat id. Set it:
+# Path B — local terminal
 
 ```bash
-npx wrangler secret put OWNER_CHAT_ID     # paste the number
+git clone https://github.com/jwee97/miles-tracker.git
+cd miles-tracker && npm install && npm test
+
+npx wrangler login
+npx wrangler d1 create miles          # paste database_id into wrangler.toml
+npm run db:init                       # applies schema.sql
+npm run db:seed                       # loads the RSS feeds
+
+npm run deploy                        # builds the PWA, then deploys both
 ```
 
-Send `/start` again — you should now get the help text. **Every other Telegram
-account is now locked out.** That's the entire access-control model, and it's
-sufficient because there's exactly one user.
+> **`--remote` matters.** The npm scripts pass it. Without it Wrangler writes to
+> a local SQLite file only `wrangler dev` reads, and your deployed Worker sees
+> an empty database — which surfaces later as "No cards yet" right after you
+> clearly added a card. `npm run db:init:local` is the local-only variant.
+
+Then create the bot (A4 above) and set secrets from the CLI:
+
+```bash
+openssl rand -hex 32                  # → TELEGRAM_SECRET
+openssl rand -hex 32                  # → APP_SECRET
+
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+npx wrangler secret put TELEGRAM_SECRET
+npx wrangler secret put APP_SECRET
+```
+
+Register the webhook:
+
+```bash
+curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://miles-tracker.<you>.workers.dev/tg","secret_token":"<TELEGRAM_SECRET>"}'
+```
+
+Then `/start` the bot, and `npx wrangler secret put OWNER_CHAT_ID` with the id
+it returns.
+
+You can still connect the repo (A3) on top of this — the two coexist, and it's
+worth doing so pushes from anywhere deploy themselves.
 
 ---
 
-## Step 8 — Deploy the dashboard
+# Shared setup
 
-Point the PWA at your Worker. In `web/src/api.ts`:
+## Set your timezone
 
-```ts
-export const API_BASE = import.meta.env.VITE_API_BASE ?? 'https://miles-tracker.<your-subdomain>.workers.dev';
-```
-
-Build and deploy:
-
-```bash
-cd web
-npm install
-npm run build
-npx wrangler pages deploy dist --project-name miles
-```
-
-First run creates the Pages project and asks for a production branch name —
-`main` is fine. It prints `https://miles.pages.dev` (or
-`https://<hash>.miles.pages.dev` for the preview; the bare one is production).
-
-Now tell the Worker where the dashboard lives. In `wrangler.toml`:
-
-```toml
-APP_URL = "https://miles.pages.dev"
-```
-
-```bash
-cd .. && npm run deploy
-```
-
-Send `/app` to the bot, open the link on your phone, and **Add to Home Screen**.
-The link carries a 30-day token; `/app` mints a fresh one whenever it expires.
-
----
-
-## Step 9 — Set your timezone
-
-Default is SGT. If you're elsewhere, two things must change together in
-`wrangler.toml`:
-
-```toml
-[triggers]
-crons = ["0 0 * * *", "30 1 * * *"]   # UTC — feed scan, then digest
-
-[vars]
-TZ_OFFSET_MINUTES = "480"             # minutes east of UTC
-```
-
-`TZ_OFFSET_MINUTES` controls date boundaries — which statement cycle a
-transaction lands in, what "today" means. The crons control *when* the two jobs
-fire, and **cron expressions are always UTC**; Cloudflare does not convert them.
+Default is SGT. Two settings must move together, and they mean different things.
+`TZ_OFFSET_MINUTES` decides date boundaries — which statement cycle a
+transaction lands in, what "today" means. The crons decide *when* jobs fire, and
+**cron expressions are always UTC**; Cloudflare does not convert them.
 
 | Zone | `TZ_OFFSET_MINUTES` | Scan 08:00 local | Digest 09:30 local |
 |---|---|---|---|
@@ -281,132 +240,104 @@ fire, and **cron expressions are always UTC**; Cloudflare does not convert them.
 | US Eastern (UTC−4, EDT) | `-240` | `0 12 * * *` | `30 13 * * *` |
 | US Pacific (UTC−7, PDT) | `-420` | `0 15 * * *` | `30 16 * * *` |
 
-Zones with daylight saving drift by an hour twice a year. The digest arriving
-at 08:30 instead of 09:30 is harmless; fix it when it annoys you.
+Both live in `wrangler.toml`. Edit, commit, push (Path A) or `npm run deploy`
+(Path B). Daylight-saving zones drift an hour twice a year; a digest arriving at
+08:30 instead of 09:30 is harmless.
 
-Redeploy after changing either: `npm run deploy`.
-
----
-
-## Step 10 — Load your cards
+## Load your cards
 
 ```
 /newcard DBS|Altitude Visa|alt|8000|18|2025-03-04
 ```
 
-Fields: `issuer | product | nickname | credit limit | statement day | opened date`.
+`issuer | product | nickname | credit limit | statement day | opened date`
 
-The **opened date matters** — it's what eligibility cooldowns are computed from.
-Add cards you've closed too, with `/closecard alt|2026-09-01`, because "no card
-with this issuer in the past 12 months" is judged against exactly that history.
-A missing closed card is how you get a confident, wrong "eligible".
-
-Then the minimum-spend rules:
+The **opened date matters** — eligibility cooldowns are computed from it. Add
+cards you've closed too, with `/closecard alt|2026-09-01`, because "no card with
+this issuer in the past 12 months" is judged against exactly that history. A
+missing closed card is how you get a confident, wrong "eligible", and a hard
+pull you didn't need.
 
 ```
 /req alt|signup_min|1000|fixed_window|2026-11-14||30k miles
 /req wwmc|monthly_min|800|calendar_month||1000|4 mpd on first $1k
 ```
 
-Fields: `nickname | kind | amount | window | deadline | bonus cap | note`.
+`nickname | kind | amount | window | deadline | bonus cap | note`
 Window is `calendar_month`, `statement_cycle`, or `fixed_window`.
 
-The 6th field, **bonus cap**, is the one people skip and shouldn't: past that
-amount the elevated rate stops and further spend belongs on another card. It's
-where miles actually get lost, so it gets its own alert.
+The sixth field — **bonus cap** — is the one people skip and shouldn't. Past
+that amount the elevated rate stops and further spend belongs on another card.
+It's where miles actually get lost, so it gets its own alert.
 
----
-
-## Step 11 — Verify end to end
+## Verify end to end
 
 ```
-/status          → your cards with utilization bars
-/scan            → forces a feed scan instead of waiting for 08:00
-25.40 alt lunch  → logs spend, replies with the minimum-spend gap
-/status          → confirm the amount moved
+/status            full digest with utilization bars
+/scan              force a feed scan instead of waiting for 08:00
+25.40 alt lunch    logs spend, replies with the minimum-spend gap
+/status            confirm the amount moved
 ```
 
-Confirm the crons registered:
-
-```bash
-npx wrangler deployments list
-```
-
-Or **dash.cloudflare.com → Workers & Pages → miles-tracker → Settings →
-Triggers**, where both cron entries should appear.
+Then confirm both cron triggers registered under
+**Workers & Pages → miles-tracker → Settings → Triggers**.
 
 ---
 
 ## Troubleshooting
 
-**Bot doesn't respond at all.** Watch live logs in one terminal and message the
-bot in another:
+**The build fails with a name mismatch.** The Worker name in the dashboard must
+equal `name` in `wrangler.toml` — both must be `miles-tracker`.
 
-```bash
-npm run tail
-```
+**The build fails on `npm run build`.** That script runs `npm --prefix web ci`,
+which needs `web/package-lock.json` committed. It is, unless you deleted it.
 
-No output at all means Telegram isn't reaching you — re-check `getWebhookInfo`
-for `last_error_message`. A 403 in the logs means `TELEGRAM_SECRET` and the
-`secret_token` you registered don't match; redo Steps 5 and 6, carefully.
+**The bot doesn't respond at all.** Check **Workers & Pages → miles-tracker →
+Logs** (or `npm run tail` on Path B) while messaging it. Nothing at all means
+Telegram isn't reaching you — check `getWebhookInfo` for `last_error_message`. A
+403 means `TELEGRAM_SECRET` and the registered `secret_token` don't match.
 
-**Bot responds to `/start` but ignores everything else.** `OWNER_CHAT_ID`
-doesn't match your chat id. Re-run Step 7.
+**It answers `/start` but ignores everything else.** `OWNER_CHAT_ID` doesn't
+match your chat id. Redo A7.
 
-**`/status` says "No cards yet" after adding one.** You initialized the local
-database instead of the remote one. Re-run `npm run db:init` and check the
-`--remote` flag.
+**"No cards yet" right after adding a card.** Path B only — you initialized the
+local database instead of the remote one. Re-run `npm run db:init`.
 
-**Dashboard shows "Link expired".** Tokens last 30 days. Send `/app` again.
+**The dashboard loads but every request 401s.** The token expired. Send `/app`
+for a fresh link.
 
-**Dashboard shows a network or CORS error.** `API_BASE` in `web/src/api.ts`
-doesn't match your Worker URL. Fix, rebuild, redeploy Pages.
+**Visiting `/health` in a browser returns the dashboard HTML.** Expected. With
+`not_found_handling = "single-page-application"`, browser *navigation* requests
+are served `index.html` without invoking the Worker, to save billable
+invocations. `run_worker_first` forces `/tg`, `/api/*` and `/health` through the
+script for real (non-navigation) callers like Telegram, `curl` and the PWA's own
+`fetch`. Use `curl` if you want to see the plain `ok`.
 
 **`/scan` returns nothing.** Either there's genuinely nothing new — items are
-only shown once, tracked in `feed_items` — or the seeded feed URLs are stale.
-Check with `/feeds`, and verify one by hand:
+shown once and remembered in `feed_items` — or a seeded feed URL is stale. Check
+`/feeds` and replace dead ones with `/addfeed <url>|<label>`.
 
-```bash
-curl -sI https://milelion.com/feed/ | head -1
-```
-
-Replace dead ones with `/addfeed https://example.com/feed/|Label`.
-
-**Nothing arrives at 09:30.** Cron triggers only run on deployed Workers, never
-under `wrangler dev`. Confirm they're listed under Settings → Triggers, and
-remember the expressions are UTC (Step 9).
-
----
-
-## Free tier limits
-
-| Resource | Limit | Your usage |
-|---|---|---|
-| Worker requests | 100,000/day | ~200 |
-| Worker CPU | 10 ms/invocation | ~2 ms |
-| Cron triggers | Included | 2/day |
-| D1 storage | 5 GB | a few MB after years |
-| D1 row reads | 5,000,000/day | a few thousand |
-| D1 row writes | 100,000/day | a few dozen |
-| Pages bandwidth | Unlimited | — |
-| Pages builds | 500/month | one per UI change |
-
-Nothing here has a path to a bill. D1's free tier does not sleep or pause on
-inactivity, which is why the nightly cron is reliable.
+**Nothing arrives in the morning.** Cron triggers only run on deployed Workers,
+never under `wrangler dev`. Confirm they're listed under Settings → Triggers,
+and remember the expressions are UTC.
 
 ---
 
 ## Ongoing
 
-```bash
-npm run deploy                    # after changing Worker code or wrangler.toml
-cd web && npm run build && npx wrangler pages deploy dist --project-name miles
-npm test                          # before deploying anything
-npm run tail                      # live logs
-```
+**Path A.** Edit, commit, push. Cloudflare builds and deploys. GitHub Actions
+runs the typecheck, both test suites, and the dashboard build on every push, so
+you get test feedback without a local runtime — check the Actions tab before
+trusting a deploy.
 
-Back up the database any time:
+**Path B.**
 
 ```bash
+npm test           # before deploying anything
+npm run deploy     # builds the PWA, then deploys
+npm run tail       # live logs
 npx wrangler d1 export miles --remote --output backup.sql
 ```
+
+On Path A, back up from the dashboard's D1 **Console** tab, or add
+`wrangler d1 export` to a scheduled GitHub Action.

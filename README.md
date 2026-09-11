@@ -4,8 +4,9 @@ Credit card spend, limits, minimum-spend progress, and sign-up promo tracking.
 Runs entirely on Cloudflare's free tier. No domain, no email, no API key.
 
 - **Telegram bot** — logging spend, alerts, and login, all in one channel
-- **Cloudflare Worker + D1** — the API, the database, and two nightly cron jobs
-- **PWA on Cloudflare Pages** — the dashboard, installable to your home screen
+- **One Cloudflare Worker** — API, database, two nightly crons, and the dashboard
+  itself as static assets, all on a single origin
+- **Cloudflare D1** — SQLite that doesn't sleep on inactivity
 - **Claude Pro, by hand** — turns T&C prose into eligibility rules; no API key needed
 
 Running cost: zero.
@@ -45,70 +46,15 @@ pull and a 12-month cooldown.
 
 ## Setup
 
-**[SETUP.md](SETUP.md) is the full walkthrough** — Cloudflare account through
-first logged transaction, with troubleshooting. The short version:
+**[SETUP.md](SETUP.md) is the full walkthrough**, with two paths:
 
-### 1. Create the bot
+- **Path A — no terminal.** Cloudflare dashboard plus a git connection; every
+  push builds and deploys. Use this on StackBlitz, a Chromebook, an iPad, or
+  anywhere Wrangler won't run. *(Wrangler cannot run in a StackBlitz
+  WebContainer — it needs native binaries and a local OAuth socket.)*
+- **Path B — local terminal.** The Wrangler CLI, if you have a normal shell.
 
-Message [@BotFather](https://t.me/botfather) → `/newbot` → keep the token.
-
-### 2. Create the database
-
-```bash
-npm install
-npx wrangler login
-npx wrangler d1 create miles
-```
-
-Copy the printed `database_id` into `wrangler.toml`, then:
-
-```bash
-npm run db:init      # create tables
-npm run db:seed      # load the default RSS feeds
-```
-
-### 3. Set secrets
-
-```bash
-npx wrangler secret put TELEGRAM_BOT_TOKEN   # from BotFather
-npx wrangler secret put TELEGRAM_SECRET      # any long random string
-npx wrangler secret put APP_SECRET           # another long random string
-npx wrangler secret put OWNER_CHAT_ID        # see step 5
-```
-
-Generate the random ones with `openssl rand -hex 32`.
-
-### 4. Deploy and register the webhook
-
-```bash
-npm run deploy       # prints https://miles-tracker.<you>.workers.dev
-```
-
-```bash
-curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
-  -H 'Content-Type: application/json' \
-  -d '{"url":"https://miles-tracker.<you>.workers.dev/tg",
-       "secret_token":"<TELEGRAM_SECRET>"}'
-```
-
-### 5. Claim the bot
-
-Send `/start`. Because `OWNER_CHAT_ID` isn't set yet, it replies with your chat
-id. Set it as the secret, redeploy, and every other chat is locked out.
-
-### 6. Deploy the dashboard
-
-Set `API_BASE` in `web/src/api.ts` to your Worker URL, and the Pages URL in
-`src/telegram.ts` (the `/app` command). Then:
-
-```bash
-cd web && npm install && npm run build
-npx wrangler pages deploy dist --project-name miles
-```
-
-Send `/app` to the bot, open the link on your phone, and Add to Home Screen.
-
----
+Both end up in the same place, and you can use both.
 
 ## Daily use
 
@@ -185,7 +131,8 @@ src/rss.ts            feed fetch, parse, keyword gate
 src/eligibility.ts    predicate evaluator — the deterministic half
 src/extraction.ts     the prompt handed to you for Claude — the LLM half
 src/auth.ts           HMAC magic-link tokens
-web/                  React + Vite PWA
+web/                  React + Vite PWA, served by the Worker as assets
+.github/workflows/    CI: typecheck, both test suites, dashboard build
 ```
 
 ## Adding feeds

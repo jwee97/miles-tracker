@@ -1,5 +1,6 @@
-// Point this at your deployed Worker, e.g. https://miles-tracker.<you>.workers.dev
-export const API_BASE = import.meta.env.VITE_API_BASE ?? 'https://miles-tracker.YOUR-SUBDOMAIN.workers.dev';
+// The dashboard is served by the Worker that owns the API, so requests are
+// same-origin and there is nothing to configure here.
+export const API_BASE = '';
 
 const KEY = 'miles_token';
 

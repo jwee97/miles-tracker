@@ -80,8 +80,8 @@ export async function pushFeedMatches(env: Env, chatId: string) {
   return fresh.length;
 }
 
-export async function handleUpdate(env: Env, update: any): Promise<void> {
-  if (update.callback_query) return handleCallback(env, update.callback_query);
+export async function handleUpdate(env: Env, update: any, origin: string): Promise<void> {
+  if (update.callback_query) return handleCallback(env, update.callback_query, origin);
 
   const msg = update.message ?? update.edited_message;
   if (!msg?.text) return;
@@ -110,7 +110,7 @@ export async function handleUpdate(env: Env, update: any): Promise<void> {
 
       case '/app': {
         const token = await mintToken(env.APP_SECRET);
-        await send(env, chatId, `Dashboard link (valid 30 days):\n${env.APP_URL}/#t=${token}`, {
+        await send(env, chatId, `Dashboard link (valid 30 days):\n${origin}/#t=${token}`, {
           disable_web_page_preview: true,
         });
         return;
@@ -375,7 +375,7 @@ async function logSpend(env: Env, chatId: string, input: string) {
   for (const alert of await checkAlerts(env, card)) await send(env, chatId, alert);
 }
 
-async function handleCallback(env: Env, cq: any) {
+async function handleCallback(env: Env, cq: any, _origin: string) {
   const chatId = String(cq.message.chat.id);
   if (env.OWNER_CHAT_ID && chatId !== env.OWNER_CHAT_ID) return;
 

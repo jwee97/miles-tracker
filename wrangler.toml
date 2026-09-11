@@ -13,9 +13,16 @@ binding = "DB"
 database_name = "miles"
 database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
 
+# The PWA is served by this same Worker, so there is one origin, one deploy,
+# and no CORS. Navigation requests get index.html without invoking the Worker;
+# run_worker_first forces the API and webhook paths through the script
+# regardless of what headers the caller sends.
+[assets]
+directory = "./web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/tg", "/api/*", "/health"]
+
 [vars]
-# Your Pages URL; the /app command links here.
-APP_URL = "https://miles.pages.dev"
 # Minutes east of UTC for your local time. 480 = SGT/HKT. -300 = US Eastern (EST).
 TZ_OFFSET_MINUTES = "480"
 # Utilization thresholds (percent) that trigger an alert, highest last.

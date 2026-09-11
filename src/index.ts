@@ -12,20 +12,14 @@ import {
 } from './spend';
 import type { Env, Offer } from './types';
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-};
-
+// The dashboard is served from this same Worker, so there is no cross-origin
+// request to permit and no CORS headers to set.
 const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...CORS } });
+  new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-
-    if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
 
     // --- Telegram webhook -------------------------------------------------
     // Telegram echoes the secret we registered with setWebhook; anything else
@@ -36,7 +30,7 @@ export default {
       const update = await req.json();
       // Always 200 quickly — Telegram retries on non-2xx and will duplicate work.
       try {
-        await handleUpdate(env, update);
+        await handleUpdate(env, update, url.origin);
       } catch (err) {
         console.error('update failed', err);
       }
@@ -132,7 +126,10 @@ export default {
     }
 
     if (url.pathname === '/health') return new Response('ok');
-    return new Response('miles-tracker', { status: 200 });
+
+    // Anything else is a static asset or the SPA fallback, handled by the
+    // assets binding before this script ever runs.
+    return new Response('not found', { status: 404 });
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
