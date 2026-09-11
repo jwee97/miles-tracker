@@ -240,5 +240,56 @@ db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi Th
   check('rejects an unauthenticated post', res.status === 401, String(res.status));
 }
 
+// --- a database behind the code explains itself -----------------------------
+// The API had no error handling: a missing table threw out of the handler and
+// the browser saw a bare 500, which is undiagnosable from the UI.
+{
+  const old = new DatabaseSync(':memory:');
+  const w2 = (sql: string, args: unknown[] = []): any => ({
+    bind: (...a: unknown[]) => w2(sql, a),
+    first: async () => old.prepare(sql).get(...(args as any)) ?? null,
+    all: async () => ({ results: old.prepare(sql).all(...(args as any)) }),
+    run: async () => {
+      const r = old.prepare(sql).run(...(args as any));
+      return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
+    },
+  });
+  const oldEnv = { ...env, DB: { prepare: (s: string) => w2(s) } } as unknown as Env;
+
+  // The shape the database had before migration 006.
+  old.exec(`CREATE TABLE cards (id INTEGER PRIMARY KEY, issuer TEXT, product TEXT, nickname TEXT)`);
+  old.exec(`CREATE TABLE transactions (id INTEGER PRIMARY KEY, card_id INTEGER, amount_cents INTEGER,
+            occurred_at TEXT, posted_at TEXT, merchant TEXT, category TEXT, source TEXT)`);
+  old.exec(`INSERT INTO cards (issuer,product,nickname) VALUES ('Citi','Rewards','crw')`);
+  old.exec(`INSERT INTO transactions (card_id,amount_cents,occurred_at,merchant) VALUES (1,2500,'2026-09-05','NTUC')`);
+
+  const res = await worker.fetch(
+    new Request('https://x.test/api/tx/update', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 1, field: 'category', value: 'groceries' }),
+    }),
+    oldEnv
+  );
+  const body = (await res.json()) as any;
+  check('a stale schema returns a response, not a crash', res.status === 500, String(res.status));
+  check('the response names the missing table', /merchant_categories/.test(body.error ?? ''), JSON.stringify(body));
+  check('and says what to do about it', /\/migrate/.test(body.error ?? ''), JSON.stringify(body));
+  check('and flags it as a migration problem', body.needs_migration === true, JSON.stringify(body));
+}
+
+// A failure that is not a schema problem still returns its own message.
+{
+  const brokenEnv = {
+    ...env,
+    DB: { prepare: () => { throw new Error('D1_ERROR: connection lost'); } },
+  } as unknown as Env;
+  const res = await worker.fetch(new Request(`https://x.test/api/points?t=${token}`), brokenEnv);
+  const body = (await res.json()) as any;
+  check('an unexpected error still returns JSON', res.status === 500, String(res.status));
+  check('carrying its message', /connection lost/.test(body.error ?? ''), JSON.stringify(body));
+  check('and is not mislabelled as a migration issue', body.needs_migration !== true, JSON.stringify(body));
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);
