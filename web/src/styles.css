@@ -93,3 +93,58 @@ main { max-width: 640px; margin: 0 auto; padding: 12px 16px 48px; }
 }
 
 .link { display: inline-block; margin-top: 12px; color: var(--ok); font-size: 13px; }
+
+/* ---------- spend entry ---------- */
+.entry h2 { font-size: 16px; margin: 0 0 12px; }
+.entry-grid { display: grid; gap: 10px; grid-template-columns: repeat(2, 1fr); }
+.f { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.f > span { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); }
+.f input, .f select {
+  font: inherit;
+  font-size: 16px; /* 16px keeps iOS Safari from zooming the page on focus */
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  width: 100%;
+  min-width: 0;
+}
+.f input:focus, .f select:focus { outline: none; border-color: var(--ok); }
+.f-note { grid-column: 1 / -1; }
+
+.entry-foot { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.entry-foot button {
+  font: inherit;
+  font-weight: 600;
+  background: var(--ok);
+  color: #0b0d11;
+  border: none;
+  border-radius: 8px;
+  padding: 11px 22px;
+  cursor: pointer;
+}
+.entry-foot button:disabled { opacity: .5; cursor: default; }
+.err-text { color: var(--bad); font-size: 13px; }
+
+/* ---------- recent list ---------- */
+.txns { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.txns li {
+  display: grid;
+  grid-template-columns: 44px 64px 1fr auto 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.txns li:first-child { border-top: none; }
+.t-date { color: var(--dim); }
+.t-card { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-amt { font-weight: 600; }
+.t-del {
+  font: inherit; font-size: 18px; line-height: 1;
+  background: none; border: none; color: var(--dim);
+  cursor: pointer; padding: 2px 6px; border-radius: 5px;
+}
+.t-del:hover { color: var(--bad); background: rgba(248, 113, 113, .12); }

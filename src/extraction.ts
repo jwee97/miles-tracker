@@ -68,8 +68,14 @@ T&C text follows:
 export const HELP = `*Miles tracker*
 
 *Logging spend*
-\`25.40 wwmc lunch\` — amount, card nickname, optional note
-\`/add 25.40 wwmc lunch\` — same thing, explicit
+\`25.40 uobone lunch\` — amount, card, optional note (dated today)
+Add a date anywhere to backdate:
+  \`25.40 uobone yesterday lunch\`
+  \`25.40 uobone 5/9 lunch\` — day/month
+  \`25.40 uobone 2026-09-05 lunch\`
+  \`25.40 uobone -3 lunch\` — three days ago
+/recent — last 15 entries with their ids
+/del <id> — remove one · /undo — remove the last
 
 *Status*
 /status — full digest: utilization + minimum spend

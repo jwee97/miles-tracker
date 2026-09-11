@@ -150,5 +150,33 @@ const cp = await requirementProgress(env, citi, creq);
 check('zero-minimum requirement is met immediately', cp.met === true, `remaining ${cp.remaining_cents}`);
 check('cap still flags past the ceiling', cp.cap_reached && cp.over_cap_cents === 10000, `over ${cp.over_cap_cents}`);
 
+// --- backdating lands in the right window ---
+sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at)
+     VALUES ('HSBC','Revolution','hsbc_rev','rev',300000,20,'2026-03-01')`);
+const rev = (await activeCards(env)).find((c) => c.nickname === 'rev')!;
+sql(`INSERT INTO requirements (card_id,kind,amount_cents,window) VALUES (${rev.id},'monthly_min',50000,'calendar_month')`);
+const [rreq] = await requirementsFor(env, rev.id);
+
+// Dated last month: outside the calendar-month window, so it must not count.
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at) VALUES (?,?,?)`, rev.id, 60000, '2026-08-20');
+const back = await requirementProgress(env, rev, rreq);
+check('backdated outside the window does not count', back.spent_cents === 0, `got ${back.spent_cents}`);
+
+// Dated earlier this month: inside the window, so it must count.
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at) VALUES (?,?,?)`, rev.id, 60000, '2026-09-02');
+const fwd = await requirementProgress(env, rev, rreq);
+check('backdated inside the window counts', fwd.spent_cents === 60000 && fwd.met, `got ${fwd.spent_cents}`);
+
+// Utilization uses the statement cycle instead: for statement day 20 on 11 Sep
+// the cycle runs 21 Aug - 20 Sep, so the 20 Aug entry sits one day outside it.
+const ru = await utilization(env, rev);
+check('cycle starts the day after the statement closes', ru.cycle.start === '2026-08-21', ru.cycle.start);
+check('entry one day before the cycle is excluded', ru.balance_cents === 60000, `got ${ru.balance_cents}`);
+
+// Move it inside the cycle and it counts.
+sql(`UPDATE transactions SET occurred_at = '2026-08-21' WHERE card_id = ? AND occurred_at = '2026-08-20'`, rev.id);
+const ru2 = await utilization(env, rev);
+check('entry on the cycle start is included', ru2.balance_cents === 120000, `got ${ru2.balance_cents}`);
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

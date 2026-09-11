@@ -83,6 +83,35 @@ export interface OfferRow {
   };
 }
 
+export interface Txn {
+  id: number;
+  amount_cents: number;
+  occurred_at: string;
+  merchant: string | null;
+  source: string;
+  nickname: string;
+  product: string;
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const token = localStorage.getItem(KEY);
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+  return data as T;
+}
+
+export const fetchTransactions = (limit = 25) => get<{ transactions: Txn[] }>(`/api/transactions?limit=${limit}`);
+
+export const addTransaction = (body: { nickname: string; amount: string; date: string; note: string }) =>
+  post<{ ok: true; id: number; card: string; date: string }>('/api/tx', body);
+
+export const deleteTransaction = (id: number) => post<{ ok: true }>('/api/tx/delete', { id });
+
 export const fetchSummary = () => get<Summary>('/api/summary');
 export const fetchOffers = () => get<{ offers: OfferRow[] }>('/api/offers');
 

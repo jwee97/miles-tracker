@@ -4,6 +4,7 @@ import { evaluateOffer } from './eligibility';
 import { handleUpdate, pushFeedMatches, send } from './telegram';
 import {
   activeCards,
+  parseDateToken,
   parseMoney,
   requirementProgress,
   requirementsFor,
@@ -104,9 +105,15 @@ export default {
         return json({ offers: out });
       }
 
-      // Target for the iOS Shortcut: POST {nickname, amount, note}
+      // The dashboard's entry form and the iOS Shortcut both post here.
+      // `date` is optional and defaults to today, so existing callers are unaffected.
       if (url.pathname === '/api/tx' && req.method === 'POST') {
-        const body = (await req.json()) as { nickname?: string; amount?: string | number; note?: string };
+        const body = (await req.json()) as {
+          nickname?: string;
+          amount?: string | number;
+          note?: string;
+          date?: string;
+        };
         const card = await env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`)
           .bind(String(body.nickname ?? '').trim())
           .first<any>();
@@ -114,15 +121,38 @@ export default {
         const cents = parseMoney(String(body.amount ?? ''));
         if (cents === null) return json({ error: 'bad amount' }, 400);
 
-        await env.DB.prepare(
+        const date = body.date ? parseDateToken(String(body.date), env) : today(env);
+        if (!date) return json({ error: 'bad date' }, 400);
+        if (date > today(env)) return json({ error: 'date is in the future' }, 400);
+
+        const ins = await env.DB.prepare(
           `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, source) VALUES (?, ?, ?, ?, 'manual')`
         )
-          .bind(card.id, cents, today(env), body.note ?? null)
+          .bind(card.id, cents, date, body.note ?? null)
           .run();
 
         const alerts = await checkAlerts(env, card);
         for (const a of alerts) await send(env, env.OWNER_CHAT_ID, a);
-        return json({ ok: true, card: card.product, alerts: alerts.length });
+        return json({ ok: true, id: ins.meta.last_row_id, card: card.product, date, alerts: alerts.length });
+      }
+
+      if (url.pathname === '/api/transactions' && req.method === 'GET') {
+        const limit = Math.min(100, parseInt(url.searchParams.get('limit') ?? '25', 10) || 25);
+        const { results } = await env.DB.prepare(
+          `SELECT t.id, t.amount_cents, t.occurred_at, t.merchant, t.source, c.nickname, c.product
+           FROM transactions t JOIN cards c ON c.id = t.card_id
+           ORDER BY t.occurred_at DESC, t.id DESC LIMIT ?`
+        )
+          .bind(limit)
+          .all<any>();
+        return json({ transactions: results ?? [] });
+      }
+
+      if (url.pathname === '/api/tx/delete' && req.method === 'POST') {
+        const { id } = (await req.json()) as { id?: number };
+        if (!id) return json({ error: 'missing id' }, 400);
+        const r = await env.DB.prepare(`DELETE FROM transactions WHERE id = ?`).bind(id).run();
+        return json({ ok: true, deleted: r.meta.changes ?? 0 });
       }
 
       return json({ error: 'not found' }, 404);

@@ -1,4 +1,4 @@
-import { statementCycle, calendarMonth, calendarQuarter, addMonths, daysBetween, parseMoney, today } from '../src/spend';
+import { statementCycle, calendarMonth, calendarQuarter, addMonths, daysBetween, parseDateToken, parseMoney, today } from '../src/spend';
 import { evaluateRule } from '../src/eligibility';
 import { parseFeed, isRelevant } from '../src/rss';
 import type { Card, Env } from '../src/types';
@@ -45,6 +45,26 @@ eq('addMonths clamps day',     addMonths('2026-03-31', -1),  '2026-02-28');
 eq('daysBetween',              daysBetween('2026-09-01', '2026-09-11'), 10);
 eq('parseMoney',               parseMoney('$1,234.50'), 123450);
 eq('parseMoney rejects junk',  parseMoney('abc'), null);
+
+// --- date tokens -----------------------------------------------------------
+at('2026-09-11T04:00:00Z');            // 12:00 SGT, Friday 11 Sep
+const pd = (s: string) => parseDateToken(s, env);
+eq('iso date',          pd('2026-09-05'), '2026-09-05');
+eq('today keyword',     pd('today'),      '2026-09-11');
+eq('yesterday keyword', pd('yesterday'),  '2026-09-10');
+eq('relative -3',       pd('-3'),         '2026-09-08');
+eq('day/month',         pd('5/9'),        '2026-09-05');
+eq('padded day/month',  pd('05/09'),      '2026-09-05');
+// December typed in September is this year; the previous-year fallback only
+// kicks in for dates more than a week ahead.
+eq('future month rolls back a year', pd('25/12'), '2025-12-25');
+eq('next week stays this year',      pd('17/9'),  '2026-09-17');
+eq('rejects 31 February',   pd('31/2'),  null);
+eq('rejects month 13',      pd('5/13'),  null);
+eq('rejects impossible iso', pd('2026-02-30'), null);
+eq('a note word is not a date', pd('lunch'), null);
+eq('an amount is not a date',   pd('25.40'), null);
+Date.now = realNow;
 
 // --- eligibility ------------------------------------------------------------
 at('2026-09-11T04:00:00Z');

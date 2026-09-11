@@ -83,6 +83,44 @@ export function calendarMonth(env: Env): { start: string; end: string } {
   return { start: isoDate(new Date(Date.UTC(y, m, 1))), end: isoDate(new Date(Date.UTC(y, m, daysInMonth(y, m)))) };
 }
 
+/**
+ * Reads a date written the way someone actually types one into a chat:
+ * `2026-09-05`, `5/9` (day/month), `yesterday`, or `-3` for three days ago.
+ * Returns null for anything that isn't a date, so callers can treat the token
+ * as part of the note instead.
+ */
+export function parseDateToken(token: string, env: Env): string | null {
+  const t = token.trim().toLowerCase();
+  const now = localNow(env);
+
+  if (t === 'today') return isoDate(now);
+  if (t === 'yesterday') return isoDate(new Date(now.getTime() - 86400_000));
+
+  const rel = t.match(/^-(\d{1,3})$/);
+  if (rel) return isoDate(new Date(now.getTime() - parseInt(rel[1], 10) * 86400_000));
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) {
+    const d = new Date(t + 'T00:00:00Z');
+    return Number.isNaN(d.getTime()) || isoDate(d) !== t ? null : t;
+  }
+
+  const dm = t.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (dm) {
+    const day = parseInt(dm[1], 10);
+    const mon = parseInt(dm[2], 10);
+    if (day < 1 || day > 31 || mon < 1 || mon > 12) return null;
+    const build = (y: number) => new Date(Date.UTC(y, mon - 1, day));
+    let d = build(now.getUTCFullYear());
+    if (d.getUTCDate() !== day) return null; // 31/2 and friends
+    // A day/month more than a week ahead means last year — logging December
+    // spend in January is far likelier than logging spend that hasn't happened.
+    if (isoDate(d) > isoDate(new Date(now.getTime() + 7 * 86400_000))) d = build(now.getUTCFullYear() - 1);
+    return isoDate(d);
+  }
+
+  return null;
+}
+
 export async function spentBetween(env: Env, cardId: number, start: string, end: string): Promise<number> {
   const row = await env.DB.prepare(
     `SELECT COALESCE(SUM(amount_cents), 0) AS total FROM transactions

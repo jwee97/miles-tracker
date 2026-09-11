@@ -280,11 +280,19 @@ as met when *both* halves clear, and the digest tells you which one is short.
 ## Verify end to end
 
 ```
-/status            full digest with utilization bars
-/scan              force a feed scan instead of waiting for 08:00
-25.40 alt lunch    logs spend, replies with the minimum-spend gap
-/status            confirm the amount moved
+/status                     full digest with utilization bars
+/scan                       force a feed scan instead of waiting for 08:00
+25.40 alt lunch             logs spend today
+25.40 alt yesterday lunch   backdate it
+25.40 alt 5/9 lunch         day/month, or 2026-09-05, or -3 for 3 days ago
+/recent                     last 15 entries with their ids
+/del 12                     remove one · /undo removes the last
+/status                     confirm the amount moved
 ```
+
+A date can go anywhere in the message — the bot picks it out and treats the
+rest as the note. Undated entries are today's. The dashboard has the same
+entry form with a date picker, plus a recent list you can delete from.
 
 Then confirm both cron triggers registered under
 **Workers & Pages → miles-tracker → Settings → Triggers**.

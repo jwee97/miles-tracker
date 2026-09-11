@@ -3,7 +3,7 @@ import { buildDigest, checkAlerts } from './digest';
 import { extractionPrompt, HELP } from './extraction';
 import { evaluateOffer } from './eligibility';
 import { scanFeeds } from './rss';
-import { money, parseMoney, requirementProgress, requirementsFor, today } from './spend';
+import { money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today } from './spend';
 import type { Card, Env, Offer } from './types';
 
 const api = (env: Env, method: string) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
@@ -327,6 +327,35 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         return;
       }
 
+      case '/recent': {
+        const { results } = await env.DB.prepare(
+          `SELECT t.id, t.amount_cents, t.occurred_at, t.merchant, c.nickname
+           FROM transactions t JOIN cards c ON c.id = t.card_id
+           ORDER BY t.occurred_at DESC, t.id DESC LIMIT 15`
+        ).all<any>();
+        if (!results?.length) return send(env, chatId, 'No transactions yet.');
+        return send(
+          env,
+          chatId,
+          '*Recent*\n' +
+            results
+              .map((r) => `#${r.id} ${r.occurred_at} *${r.nickname}* $${money(r.amount_cents)}${r.merchant ? ` — ${r.merchant}` : ''}`)
+              .join('\n') +
+            '\n\n`/del <id>` to remove one.'
+        );
+      }
+
+      case '/del':
+      case '/undo': {
+        const id = cmd === '/undo' ? null : parseInt(args, 10);
+        const row = id
+          ? await env.DB.prepare(`SELECT * FROM transactions WHERE id = ?`).bind(id).first<any>()
+          : await env.DB.prepare(`SELECT * FROM transactions ORDER BY id DESC LIMIT 1`).first<any>();
+        if (!row) return send(env, chatId, id ? `No transaction #${id}.` : 'Nothing to undo.');
+        await env.DB.prepare(`DELETE FROM transactions WHERE id = ?`).bind(row.id).run();
+        return send(env, chatId, `Deleted #${row.id} — $${money(row.amount_cents)} on ${row.occurred_at}.`);
+      }
+
       case '/add':
         return logSpend(env, chatId, args);
 
@@ -340,33 +369,65 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
   }
 }
 
-/** Accepts "25.40 wwmc lunch" or "wwmc 25.40 lunch". */
+/**
+ * Accepts the amount, card and date in any order, with the date optional:
+ *   25.40 uobone lunch              -> today
+ *   25.40 uobone yesterday lunch
+ *   25.40 uobone 2026-09-05 lunch
+ *   25.40 uobone 5/9 lunch          -> day/month
+ *   25.40 uobone -3 lunch           -> three days ago
+ * Whatever is left over becomes the note.
+ */
 async function logSpend(env: Env, chatId: string, input: string) {
-  const parts = input.trim().split(/\s+/);
-  if (parts.length < 2) return send(env, chatId, 'Format: `25.40 wwmc lunch`');
+  const tokens = input.trim().split(/\s+/);
+  if (tokens.length < 2) return send(env, chatId, 'Format: `25.40 uobone lunch` — add a date like `yesterday` or `5/9` to backdate.');
 
-  let amount = parseMoney(parts[0]);
-  let nick = parts[1];
-  let note = parts.slice(2).join(' ');
-  if (amount === null) {
-    amount = parseMoney(parts[1]);
-    nick = parts[0];
-    note = parts.slice(2).join(' ');
+  let amount: number | null = null;
+  let occurred: string | null = null;
+  const rest: string[] = [];
+
+  for (const tok of tokens) {
+    if (amount === null) {
+      const m = parseMoney(tok);
+      if (m !== null) {
+        amount = m;
+        continue;
+      }
+    }
+    if (occurred === null) {
+      const d = parseDateToken(tok, env);
+      if (d !== null) {
+        occurred = d;
+        continue;
+      }
+    }
+    rest.push(tok);
   }
+
   if (amount === null) return send(env, chatId, `Could not read an amount from "${input}".`);
+  if (!rest.length) return send(env, chatId, 'Which card? e.g. `25.40 uobone lunch`');
+
+  const nick = rest[0];
+  const note = rest.slice(1).join(' ');
+  const date = occurred ?? today(env);
+
+  if (date > today(env)) {
+    return send(env, chatId, `${date} is in the future — check the date and try again.`);
+  }
 
   const card = await cardByNick(env, nick);
   if (!card) return send(env, chatId, `No card with nickname \`${nick}\`. /cards to list them.`);
 
-  await env.DB.prepare(
+  const ins = await env.DB.prepare(
     `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, source) VALUES (?, ?, ?, ?, 'manual')`
   )
-    .bind(card.id, amount, today(env), note || null)
+    .bind(card.id, amount, date, note || null)
     .run();
 
   // Immediate feedback: what this swipe did to the limit and to any minimum.
   const reqs = await requirementsFor(env, card.id);
-  const bits: string[] = [`Logged $${money(amount)} on *${card.product}*.`];
+  const when = date === today(env) ? '' : ` on ${date}`;
+  const bits: string[] = [`Logged $${money(amount)} to *${card.product}*${when}. (#${ins.meta.last_row_id})`];
   for (const req of reqs) {
     const p = await requirementProgress(env, card, req);
     if (p.met) {
@@ -378,6 +439,9 @@ async function logSpend(env: Env, chatId: string, input: string) {
       bits.push(`${left.join(' and ')} to go on the ${req.kind === 'signup_min' ? 'sign-up' : 'minimum'} (${p.days_left}d).`);
     }
   }
+  // A backdated entry can land outside the window a requirement measures, so
+  // say so rather than leave the unchanged totals looking like a failed write.
+  if (date !== today(env)) bits.push('_Backdated — totals only move if it falls inside the current window._');
   await send(env, chatId, bits.join('\n'));
 
   for (const alert of await checkAlerts(env, card)) await send(env, chatId, alert);
