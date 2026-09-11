@@ -4,7 +4,6 @@ import { evaluateOffer } from './eligibility';
 import { handleUpdate, pushFeedMatches, send } from './telegram';
 import {
   activeCards,
-  localNow,
   parseDateToken,
   parseMoney,
   requirementProgress,
@@ -17,6 +16,9 @@ import type { Env, Offer } from './types';
 
 // The dashboard is served from this same Worker, so there is no cross-origin
 // request to permit and no CORS headers to set.
+/** Must match the first entry in wrangler.toml's `crons`. */
+const MORNING_SCAN_CRON = '0 22 * * *';
+
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -253,17 +255,17 @@ export default {
     ctx.waitUntil(
       (async () => {
         // Two crons share one handler; event.cron says which fired.
-        if (event.cron === '0 0 * * *') {
+        if (event.cron === MORNING_SCAN_CRON) {
+          // 06:00 local: new promos, then anything that changed about the
+          // transfer routes. The review is quiet — it stays silent unless
+          // something is urgent or genuinely new, so a daily job does not
+          // become noise you stop reading.
           await pushFeedMatches(env, env.OWNER_CHAT_ID);
+          const review = await ratesReview(env, { quiet: true });
+          if (review) await send(env, env.OWNER_CHAT_ID, review);
         } else {
           await send(env, env.OWNER_CHAT_ID, await buildDigest(env));
           for (const alert of await checkAlerts(env)) await send(env, env.OWNER_CHAT_ID, alert);
-
-          // The weekly rates review rides on the daily cron rather than taking
-          // a third trigger, which the free plan limits.
-          if (localNow(env).getUTCDay() === 0) {
-            await send(env, env.OWNER_CHAT_ID, await ratesReview(env));
-          }
         }
       })()
     );

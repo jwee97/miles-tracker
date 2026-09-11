@@ -1,4 +1,4 @@
-import { calendarMonth, calendarQuarter, money, statementCycle, today, EFFECTIVE_DATE } from './spend';
+import { calendarMonth, calendarQuarter, claimAlert, localNow, money, statementCycle, today, EFFECTIVE_DATE } from './spend';
 import type { Card, Env } from './types';
 
 export interface Program {
@@ -108,7 +108,10 @@ export async function planRoutes(env: Env, points: number, from: string, to: str
 export interface RateIssue {
   kind: 'bonus_ending' | 'never_verified' | 'stale' | 'points_expiring';
   text: string;
+  /** 3 = act now, 2 = worth knowing, 1 = housekeeping. */
   urgency: number;
+  /** Stable per-issue key, so a daily job can avoid repeating itself. */
+  key: string;
 }
 
 /**
@@ -139,15 +142,22 @@ export async function rateIssues(env: Env): Promise<RateIssue[]> {
       issues.push({
         kind: 'bonus_ending',
         urgency: 3,
+        key: `bonus:${c.id}:${c.bonus_until}`,
         text: `🔥 ${label}: ${c.bonus_pct}% bonus ends ${c.bonus_until}`,
       });
     }
     if (!c.verified_at) {
-      issues.push({ kind: 'never_verified', urgency: 2, text: `❓ #${c.id} ${label} — never verified` });
+      issues.push({
+        kind: 'never_verified',
+        urgency: 1,
+        key: `unverified:${c.id}`,
+        text: `❓ #${c.id} ${label} — never verified`,
+      });
     } else if (c.verified_at < plus(-staleDays)) {
       issues.push({
         kind: 'stale',
         urgency: 1,
+        key: `stale:${c.id}:${c.verified_at}`,
         text: `🕓 #${c.id} ${label} — last checked ${c.verified_at}`,
       });
     }
@@ -160,13 +170,14 @@ export async function rateIssues(env: Env): Promise<RateIssue[]> {
      ORDER BY t.expires_at`
   )
     .bind(plus(90), now)
-    .all<{ points: number; expires_at: string; name: string; unit: string }>();
+    .all<{ points: number; expires_at: string; name: string; unit: string; program_key: string }>();
 
   for (const t of exp ?? []) {
     const days = Math.round((Date.parse(t.expires_at) - Date.parse(now)) / 86400_000);
     issues.push({
       kind: 'points_expiring',
       urgency: days <= 30 ? 3 : 2,
+      key: `expiry:${t.program_key}:${t.expires_at}`,
       text: `⏳ ${t.points.toLocaleString()} ${t.name} ${t.unit} expire ${t.expires_at} (${days}d)`,
     });
   }
@@ -174,16 +185,43 @@ export async function rateIssues(env: Env): Promise<RateIssue[]> {
   return issues.sort((a, b) => b.urgency - a.urgency);
 }
 
-/** The weekly report: what changed, what is about to, and what to re-check. */
-export async function ratesReview(env: Env): Promise<string> {
-  const issues = await rateIssues(env);
+/**
+ * The rates report. Run daily, it must not repeat itself: housekeeping items —
+ * routes never verified, routes gone stale — are the same every morning, and a
+ * notification that says the same thing daily gets ignored, including on the
+ * day it finally matters. In quiet mode those are held to once a week each
+ * while anything urgent or genuinely new still goes out immediately, and the
+ * whole report is suppressed when there is nothing to say.
+ */
+export async function ratesReview(
+  env: Env,
+  opts: { quiet?: boolean } = {}
+): Promise<string | null> {
+  const quiet = opts.quiet ?? false;
+  const all = await rateIssues(env);
+
+  let issues = all;
+  if (quiet) {
+    issues = [];
+    for (const issue of all) {
+      // Urgent items always go out; the rest at most once a week each.
+      if (issue.urgency >= 2 || (await claimAlert(env, `rate:${issue.key}:${weekStamp(env)}`))) {
+        issues.push(issue);
+      }
+    }
+  }
+
   const { results: news } = await env.DB.prepare(
     `SELECT title, link FROM feed_items
-     WHERE topic = 'rates' AND seen_at >= datetime('now', '-8 days')
+     WHERE topic = 'rates' AND seen_at >= datetime('now', ?)
      ORDER BY seen_at DESC LIMIT 8`
-  ).all<{ title: string; link: string }>();
+  )
+    .bind(quiet ? '-36 hours' : '-8 days')
+    .all<{ title: string; link: string }>();
 
-  const lines: string[] = ['*Weekly rates review*', ''];
+  if (quiet && !issues.length && !news?.length) return null;
+
+  const lines: string[] = [quiet ? '*Rates check*' : '*Rates review*', ''];
 
   const group = (kind: string, heading: string) => {
     const rows = issues.filter((i) => i.kind === kind);
@@ -211,6 +249,14 @@ export async function ratesReview(env: Env): Promise<string> {
   }
 
   return lines.join('\n');
+}
+
+/** ISO-ish week stamp, used to hold repeat reminders to once a week. */
+function weekStamp(env: Env): string {
+  const d = localNow(env);
+  const day = (d.getUTCDay() + 6) % 7; // Monday = 0
+  const monday = new Date(d.getTime() - day * 86400_000);
+  return monday.toISOString().slice(0, 10);
 }
 
 export interface BalanceRow {

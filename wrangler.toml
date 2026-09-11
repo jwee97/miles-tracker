@@ -2,17 +2,19 @@ name = "miles-tracker"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 
-# Two nightly jobs. Times are UTC. Defaults below are tuned for SGT (UTC+8):
-#   "0 0 * * *"  -> 08:00 SGT  scan RSS feeds for new promos
-#   "30 1 * * *" -> 09:30 SGT  send the daily digest
 # Bundle the SQL files as text so the Worker can bring its own database up to
 # date via /migrate, instead of needing a CLI that a browser IDE cannot run.
 [[rules]]
 type = "Text"
 globs = ["**/*.sql"]
 
+# Two daily jobs. Cron expressions are ALWAYS UTC — Cloudflare does not convert
+# them. Defaults below are tuned for SGT (UTC+8):
+#   "0 22 * * *" -> 06:00 SGT  new promos + transfer-rate changes
+#   "30 1 * * *" -> 09:30 SGT  spend digest and threshold alerts
+# Changing the first one means changing MORNING_SCAN_CRON in src/index.ts to match.
 [triggers]
-crons = ["0 0 * * *", "30 1 * * *"]
+crons = ["0 22 * * *", "30 1 * * *"]
 
 [[d1_databases]]
 binding = "DB"

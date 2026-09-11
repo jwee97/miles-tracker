@@ -459,5 +459,28 @@ sql(`UPDATE earn_rules SET mpd = 5, reward_type = 'cashback' WHERE id = ?`, lega
 const fixed = await rankCards(env, 'dining', 10000, { cards: [one2] });
 check('correcting it changes how it is valued', fixed[0].cashback_cents === 500, `got ${fixed[0].cashback_cents}`);
 
+// --- the daily rates check stays quiet ------------------------------------
+// Run daily, housekeeping items must not repeat every morning.
+const full = await ratesReview(env, { quiet: false });
+check('the full report lists housekeeping', full !== null && /Never verified|Worth re-checking/.test(full), (full ?? '').slice(0, 120));
+
+const firstQuiet = await ratesReview(env, { quiet: true });
+check('the first quiet run reports them once', firstQuiet !== null, 'expected a report');
+
+const secondQuiet = await ratesReview(env, { quiet: true });
+const repeated = secondQuiet ? /Never verified|Worth re-checking/.test(secondQuiet) : false;
+check('a same-week rerun does not repeat housekeeping', !repeated, (secondQuiet ?? '').slice(0, 200));
+
+// Urgent items are exempt: they go out every run until dealt with.
+sql(`UPDATE conversions SET bonus_pct = 10, bonus_until = '2026-09-18' WHERE id = 1`);
+const urgent = await ratesReview(env, { quiet: true });
+check('an ending bonus is reported even on a repeat run', urgent !== null && /Ending soon/.test(urgent), (urgent ?? '').slice(0, 200));
+const urgentAgain = await ratesReview(env, { quiet: true });
+check('and again the next day', urgentAgain !== null && /Ending soon/.test(urgentAgain), (urgentAgain ?? '').slice(0, 200));
+
+// The full report is never suppressed, however often it is asked for.
+const onDemand = await ratesReview(env, { quiet: false });
+check('/rates always returns the whole picture', onDemand !== null && /Never verified/.test(onDemand), (onDemand ?? '').slice(0, 200));
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

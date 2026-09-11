@@ -233,16 +233,19 @@ Default is SGT. Two settings must move together, and they mean different things.
 transaction lands in, what "today" means. The crons decide *when* jobs fire, and
 **cron expressions are always UTC**; Cloudflare does not convert them.
 
-| Zone | `TZ_OFFSET_MINUTES` | Scan 08:00 local | Digest 09:30 local |
+| Zone | `TZ_OFFSET_MINUTES` | Scan 06:00 local | Digest 09:30 local |
 |---|---|---|---|
-| SGT / HKT (UTC+8) | `480` | `0 0 * * *` | `30 1 * * *` |
-| UK (UTC+1, BST) | `60` | `0 7 * * *` | `30 8 * * *` |
-| US Eastern (UTC−4, EDT) | `-240` | `0 12 * * *` | `30 13 * * *` |
-| US Pacific (UTC−7, PDT) | `-420` | `0 15 * * *` | `30 16 * * *` |
+| SGT / HKT (UTC+8) | `480` | `0 22 * * *` | `30 1 * * *` |
+| UK (UTC+1, BST) | `60` | `0 5 * * *` | `30 8 * * *` |
+| US Eastern (UTC−4, EDT) | `-240` | `0 10 * * *` | `30 13 * * *` |
+| US Pacific (UTC−7, PDT) | `-420` | `0 13 * * *` | `30 16 * * *` |
 
 Both live in `wrangler.toml`. Edit, commit, push (Path A) or `npm run deploy`
 (Path B). Daylight-saving zones drift an hour twice a year; a digest arriving at
 08:30 instead of 09:30 is harmless.
+
+If you change the morning cron, change `MORNING_SCAN_CRON` in `src/index.ts` to
+match — the handler branches on the exact string to decide which report to send.
 
 ## Load your cards
 
@@ -413,20 +416,27 @@ reports it as unverified until you check it yourself:
 /rates                       run the weekly review now
 ```
 
-Every Sunday morning the digest is followed by a review covering:
+At **06:00 local, every day**, the same job scans the feeds for new sign-up
+offers and then checks the transfer routes. It covers:
 
 - promo bonuses ending within 14 days
 - points expiring within 90 days
-- routes never verified, and routes older than `RATE_RECHECK_DAYS` (90)
-- anything in the RSS feeds that week about transfer bonuses, ratio changes
-  or fee increases
+- routes never verified, or older than `RATE_RECHECK_DAYS` (90)
+- anything in the feeds in the last 36 hours about transfer bonuses, ratio
+  changes or fee increases
+
+**The daily check is quiet.** Routes that are merely unverified or stale say
+the same thing every morning, so each is reported at most once a week; urgent
+items — a bonus about to end, points about to expire, fresh rate news — go out
+every run until dealt with. When there is nothing to say it sends nothing at
+all. `/rates` always gives you the full picture on demand, suppression aside.
 
 The feed scan classifies each item as `promo` or `rates` as it arrives, so
-sign-up offers still come through daily with Track/Ignore while rate news is
-held for the weekly summary.
+sign-up offers arrive with Track/Ignore buttons while rate news folds into the
+check.
 
-The review runs inside the daily cron on Sundays rather than taking a third
-cron trigger, which the free plan limits.
+Both reports ride on two cron triggers rather than three, which the free plan
+limits.
 
 ## Verify end to end
 

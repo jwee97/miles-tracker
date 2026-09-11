@@ -526,7 +526,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       }
 
       case '/rates':
-        return send(env, chatId, await ratesReview(env));
+        // On demand, always the full report rather than the quiet daily one.
+        return send(env, chatId, (await ratesReview(env, { quiet: false })) ?? 'Nothing to flag.');
 
       case '/routes': {
         const { results } = await env.DB.prepare(
