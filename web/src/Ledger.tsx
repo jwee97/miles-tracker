@@ -109,6 +109,10 @@ export default function Ledger() {
   const [review, setReview] = useState<{ ready: ReviewRow[]; waiting: ReviewRow[] } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [limit, setLimit] = useState(50);
+  const [range, setRange] = useState('30d');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [meta, setMeta] = useState<{ total_count: number; total_cents: number; from: string | null; to: string | null } | null>(null);
 
   // New-row draft
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -119,7 +123,15 @@ export default function Ledger() {
   const [nCat, setNCat] = useState('');
 
   function load() {
-    fetchTransactions(limit).then((d) => setRows(d.transactions)).catch((e) => setErr(e.message));
+    // A custom range only applies once both ends are set; until then keep the
+    // named range so the table never silently empties mid-edit.
+    const custom = range === 'custom' && from && to;
+    fetchTransactions(limit, custom ? { from, to } : { range })
+      .then((d) => {
+        setRows(d.transactions);
+        setMeta({ total_count: d.total_count, total_cents: d.total_cents, from: d.range.from, to: d.range.to });
+      })
+      .catch((e) => setErr(e.message));
     fetchReview().then(setReview).catch(() => void 0);
   }
 
@@ -133,7 +145,7 @@ export default function Ledger() {
     fetchCategories().then((d) => setCats(d.categories)).catch(() => void 0);
   }, []);
 
-  useEffect(load, [limit]);
+  useEffect(load, [limit, range, from, to]);
 
   async function save(id: number, field: Field, value: string) {
     try {
@@ -235,6 +247,55 @@ export default function Ledger() {
             <p className="sub">Click any cell to edit it</p>
           </div>
         </header>
+
+        <div className="seg wrap" role="group" aria-label="Time frame">
+          {[
+            ['today', 'Today'],
+            ['yesterday', 'Yesterday'],
+            ['7d', 'Last 7 days'],
+            ['30d', 'Last 30 days'],
+            ['month', 'This month'],
+            ['lastmonth', 'Last month'],
+            ['ytd', 'Year to date'],
+            ['all', 'All'],
+            ['custom', 'Custom'],
+          ].map(([k, label]) => (
+            <button key={k} type="button" className={range === k ? 'on' : ''} onClick={() => setRange(k)}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {range === 'custom' && (
+          <div className="entry-grid" style={{ marginTop: 10 }}>
+            <label className="f">
+              <span>From</span>
+              <input id="r-from" type="date" value={from} max={to || todayIso} onChange={(e) => setFrom(e.target.value)} />
+            </label>
+            <label className="f">
+              <span>To</span>
+              <input id="r-to" type="date" value={to} min={from} max={todayIso} onChange={(e) => setTo(e.target.value)} />
+            </label>
+          </div>
+        )}
+
+        {meta && (
+          <p className="sub range-summary">
+            {meta.from ? (
+              <>
+                {meta.from} → {meta.to}
+              </>
+            ) : (
+              'Everything'
+            )}
+            {' · '}
+            <b>{meta.total_count.toLocaleString()}</b> transaction{meta.total_count === 1 ? '' : 's'}
+            {' · '}
+            <b>${money(meta.total_cents)}</b>
+            {meta.total_count > rows.length && <> · showing the most recent {rows.length}</>}
+          </p>
+        )}
+
         <div className="scroller">
           <table className="pts sheet">
             <thead>
@@ -297,7 +358,11 @@ export default function Ledger() {
             </tbody>
           </table>
         </div>
-        {!rows.length && <p className="sub">Nothing logged yet.</p>}
+        {!rows.length && (
+          <p className="sub">
+            {range === 'custom' && (!from || !to) ? 'Pick both ends of the range.' : 'Nothing in this period.'}
+          </p>
+        )}
         {rows.length >= limit && (
           <div className="entry-foot">
             <button type="button" onClick={() => setLimit((l) => l + 50)}>

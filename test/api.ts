@@ -276,6 +276,64 @@ db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi Th
     list2.find((r) => r.id === bid).category !== list2.find((r) => r.id === id).category, '');
 }
 
+// --- ledger time frames -----------------------------------------------------
+// Ranges are resolved server-side so they follow the app's timezone rather
+// than whatever the browsing device is set to.
+{
+  const mk = (amount: string, date: string, merchant: string) =>
+    post({ nickname: 'crw', amount, date, note: merchant, category: 'dining' });
+  await mk('10.00', '2026-09-11', 'Today');        // today
+  await mk('20.00', '2026-09-10', 'Yesterday');
+  await mk('30.00', '2026-09-07', 'Five days ago');
+  await mk('40.00', '2026-08-15', 'Last month');
+  await mk('50.00', '2026-02-02', 'Earlier this year');
+  await mk('60.00', '2025-11-11', 'Last year');
+
+  const page = async (qs: string) => {
+    const res = await worker.fetch(new Request(`https://x.test/api/transactions?${qs}&t=${token}`), env);
+    return (await res.json()) as any;
+  };
+  const has = (p: any, m: string) => p.transactions.some((t: any) => t.merchant === m);
+
+  const t1 = await page('range=today&limit=100');
+  check('today includes today', has(t1, 'Today'), '');
+  check('today excludes yesterday', !has(t1, 'Yesterday'), '');
+  check('and reports the resolved range', t1.range.from === '2026-09-11' && t1.range.to === '2026-09-11', JSON.stringify(t1.range));
+
+  const t2 = await page('range=yesterday&limit=100');
+  check('yesterday is exactly one day', has(t2, 'Yesterday') && !has(t2, 'Today'), JSON.stringify(t2.range));
+
+  const t3 = await page('range=7d&limit=100');
+  check('last 7 days reaches back five days', has(t3, 'Five days ago'), '');
+  check('but not to last month', !has(t3, 'Last month'), '');
+  check('and spans seven days inclusive', t3.range.from === '2026-09-05', JSON.stringify(t3.range));
+
+  const t4 = await page('range=month&limit=100');
+  check('this month starts on the first', t4.range.from === '2026-09-01', JSON.stringify(t4.range));
+  check('and excludes August', !has(t4, 'Last month'), '');
+
+  const t5 = await page('range=lastmonth&limit=100');
+  check('last month is August only', has(t5, 'Last month') && !has(t5, 'Today'), JSON.stringify(t5.range));
+  check('ending on the 31st', t5.range.to === '2026-08-31', JSON.stringify(t5.range));
+
+  const t6 = await page('range=ytd&limit=100');
+  check('year to date reaches January', has(t6, 'Earlier this year'), '');
+  check('but not last year', !has(t6, 'Last year'), '');
+
+  const t7 = await page('range=all&limit=100');
+  check('all includes last year', has(t7, 'Last year'), '');
+  check('and reports no bounds', t7.range.from === null && t7.range.to === null, JSON.stringify(t7.range));
+
+  const t8 = await page('from=2026-08-01&to=2026-08-31&limit=100');
+  check('a custom range works', has(t8, 'Last month') && !has(t8, 'Today'), JSON.stringify(t8.range));
+
+  // The summary has to describe the whole range, not just the rows returned.
+  const t9 = await page('range=all&limit=2');
+  check('the limit caps the rows returned', t9.transactions.length === 2, String(t9.transactions.length));
+  check('while the count covers the whole range', t9.total_count > 2, String(t9.total_count));
+  check('and so does the total', t9.total_cents > 0, String(t9.total_cents));
+}
+
 // --- settings, overlaid on the deployed config ------------------------------
 {
   const res = await worker.fetch(new Request(`https://x.test/api/settings?t=${token}`), env);

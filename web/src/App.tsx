@@ -272,10 +272,14 @@ function AddSpend({
 
 function Recent({
   txns,
+  count,
+  setCount,
   onDelete,
   onPosted,
 }: {
   txns: Txn[];
+  count: number;
+  setCount: (n: number) => void;
   onDelete: (id: number) => void;
   onPosted: (id: number, date: string) => void;
 }) {
@@ -286,6 +290,13 @@ function Recent({
         <div>
           <h2>Recent</h2>
           <p className="sub">Newest first</p>
+        </div>
+        <div className="seg" role="group" aria-label="How many to show">
+          {[5, 10, 25].map((n) => (
+            <button key={n} type="button" className={count === n ? 'on' : ''} onClick={() => setCount(n)}>
+              {n}
+            </button>
+          ))}
         </div>
       </header>
       <ul className="txns">
@@ -669,14 +680,23 @@ export default function App() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
   const [txns, setTxns] = useState<Txn[]>([]);
+  const [recentCount, setRecentCount] = useState(10);
   const [error, setError] = useState<string | null>(null);
 
   function refresh() {
     fetchSummary().then(setSummary).catch((e) => setError(e.message));
-    fetchTransactions(25)
+    fetchTransactions(recentCount)
       .then((d) => setTxns(d.transactions))
       .catch(() => void 0);
   }
+
+  // Refetch when the row count changes, without re-running the whole load.
+  useEffect(() => {
+    if (!bootstrapToken()) return;
+    fetchTransactions(recentCount)
+      .then((d) => setTxns(d.transactions))
+      .catch(() => void 0);
+  }, [recentCount]);
 
   useEffect(() => {
     if (!bootstrapToken()) {
@@ -751,7 +771,7 @@ export default function App() {
             {summary.cards.map((c) => (
               <Card key={c.id} c={c} />
             ))}
-            <Recent txns={txns} onDelete={removeTxn} onPosted={confirmPosted} />
+            <Recent txns={txns} count={recentCount} setCount={setRecentCount} onDelete={removeTxn} onPosted={confirmPosted} />
             {!summary.cards.length && <p className="pad sub">No cards yet. Add one with /newcard in the bot.</p>}
           </>
         ) : (

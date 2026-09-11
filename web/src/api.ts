@@ -114,7 +114,23 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return data as T;
 }
 
-export const fetchTransactions = (limit = 25) => get<{ transactions: Txn[] }>(`/api/transactions?limit=${limit}`);
+export interface TxnPage {
+  transactions: Txn[];
+  range: { from: string | null; to: string | null; label: string };
+  total_count: number;
+  total_cents: number;
+}
+
+export const fetchTransactions = (
+  limit = 25,
+  opts: { range?: string; from?: string; to?: string } = {}
+) => {
+  const p = new URLSearchParams({ limit: String(limit) });
+  if (opts.range) p.set('range', opts.range);
+  if (opts.from) p.set('from', opts.from);
+  if (opts.to) p.set('to', opts.to);
+  return get<TxnPage>(`/api/transactions?${p}`);
+};
 
 export const addTransaction = (body: {
   nickname: string;

@@ -431,24 +431,94 @@ export default {
         }
 
         if (url.pathname === '/api/transactions' && req.method === 'GET') {
-          const limit = Math.min(100, parseInt(url.searchParams.get('limit') ?? '25', 10) || 25);
+          const limit = Math.min(500, parseInt(url.searchParams.get('limit') ?? '25', 10) || 25);
+
+          // Named ranges are resolved here rather than in the browser, so they
+          // follow the app's configured timezone rather than the device's.
+          const range = url.searchParams.get('range') ?? '';
+          const day = (offset: number) =>
+            new Date(Date.parse(today(env) + 'T00:00:00Z') + offset * 86400_000).toISOString().slice(0, 10);
+          let from = url.searchParams.get('from') ?? null;
+          let to = url.searchParams.get('to') ?? null;
+
+          switch (range) {
+            case 'today':
+              from = to = today(env);
+              break;
+            case 'yesterday':
+              from = to = day(-1);
+              break;
+            case '7d':
+              from = day(-6);
+              to = today(env);
+              break;
+            case '30d':
+              from = day(-29);
+              to = today(env);
+              break;
+            case 'month':
+              from = today(env).slice(0, 8) + '01';
+              to = today(env);
+              break;
+            case 'lastmonth': {
+              const [y, m] = today(env).split('-').map(Number);
+              const start = new Date(Date.UTC(y, m - 2, 1));
+              const end = new Date(Date.UTC(y, m - 1, 0));
+              from = start.toISOString().slice(0, 10);
+              to = end.toISOString().slice(0, 10);
+              break;
+            }
+            case 'ytd':
+              from = `${today(env).slice(0, 4)}-01-01`;
+              to = today(env);
+              break;
+            case 'all':
+              from = to = null;
+              break;
+          }
+
+          const where: string[] = [];
+          const binds: unknown[] = [];
+          if (from) {
+            where.push(`${EFFECTIVE_DATE} >= ?`);
+            binds.push(from);
+          }
+          if (to) {
+            where.push(`${EFFECTIVE_DATE} <= ?`);
+            binds.push(to);
+          }
+          const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+          // The ledger edits these in place, so every editable column has to
+          // come back — category especially: without it every row reads as
+          // uncategorised and the whole table highlights as needing review.
           const { results } = await env.DB.prepare(
-            // The ledger edits these in place, so every editable column has to
-            // come back — category especially: without it every row reads as
-            // uncategorised and the whole table highlights as needing review.
             `SELECT t.id, t.card_id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant,
                     t.category, t.category_source, t.needs_review, t.source,
                     c.nickname, c.product
              FROM transactions t JOIN cards c ON c.id = t.card_id
+             ${clause}
              ORDER BY COALESCE(t.posted_at, t.occurred_at) DESC, t.id DESC LIMIT ?`
           )
-            .bind(limit)
+            .bind(...binds, limit)
             .all<any>();
-          return json({ transactions: results ?? [] });
+
+          // A total, so the view can say whether you are seeing everything.
+          const totals = await env.DB.prepare(
+            `SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN amount_cents > 0 THEN amount_cents ELSE 0 END), 0) AS cents
+             FROM transactions t ${clause}`
+          )
+            .bind(...binds)
+            .first<{ n: number; cents: number }>();
+
+          return json({
+            transactions: results ?? [],
+            range: { from, to, label: range || 'custom' },
+            total_count: totals?.n ?? 0,
+            total_cents: totals?.cents ?? 0,
+          });
         }
 
-        // Confirm when the bank actually posted a transaction, which is the date
-        // every window is really judged on.
         if (url.pathname === '/api/tx/posted' && req.method === 'POST') {
           const { id, date } = (await req.json()) as { id?: number; date?: string };
           if (!id) return json({ error: 'missing id' }, 400);
