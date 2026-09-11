@@ -240,6 +240,42 @@ db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi Th
   check('rejects an unauthenticated post', res.status === 401, String(res.status));
 }
 
+// --- the ledger's contract with /api/transactions --------------------------
+// Earlier tests read rows straight from the database, so an endpoint that
+// dropped columns the UI depends on went unnoticed: every row rendered as
+// uncategorised because `category` was never selected.
+{
+  const made = await post({ nickname: 'crw', amount: '52.00', date: '2026-09-04', note: 'Odette', category: 'dining' });
+  const id = ((await made.json()) as any).id;
+
+  const res = await worker.fetch(new Request(`https://x.test/api/transactions?limit=50&t=${token}`), env);
+  const list = ((await res.json()) as any).transactions as any[];
+  const row = list.find((r) => r.id === id);
+
+  check('the row comes back at all', !!row, JSON.stringify(list.slice(0, 2)));
+  check('with its category', row.category === 'dining', JSON.stringify(row));
+  check('with how confident that category is', row.category_source === 'manual', JSON.stringify(row));
+  check('with the review flag', row.needs_review === 0, JSON.stringify(row));
+  check('and with card_id, which the card dropdown needs', typeof row.card_id === 'number', JSON.stringify(row));
+
+  // Every field the ledger renders or edits must be present on every row.
+  const required = ['id', 'card_id', 'amount_cents', 'occurred_at', 'posted_at', 'merchant', 'category', 'category_source', 'nickname'];
+  const missing = required.filter((k) => !(k in row));
+  check('no editable column is missing', missing.length === 0, `missing: ${missing.join(', ')}`);
+
+  // A genuinely uncategorised row must be distinguishable from a categorised one.
+  const blank = await post({ nickname: 'crw', amount: '7.00', date: '2026-09-04', note: 'Unknown Place' });
+  const bid = ((await blank.json()) as any).id;
+  const res2 = await worker.fetch(new Request(`https://x.test/api/transactions?limit=50&t=${token}`), env);
+  const list2 = ((await res2.json()) as any).transactions as any[];
+  check('an uncategorised row reports a null category',
+    list2.find((r) => r.id === bid).category === null, JSON.stringify(list2.find((r) => r.id === bid)));
+  check('while the categorised one keeps its value',
+    list2.find((r) => r.id === id).category === 'dining', '');
+  check('so the two are actually distinguishable',
+    list2.find((r) => r.id === bid).category !== list2.find((r) => r.id === id).category, '');
+}
+
 // --- a database behind the code explains itself -----------------------------
 // The API had no error handling: a missing table threw out of the handler and
 // the browser saw a bare 500, which is undiagnosable from the UI.

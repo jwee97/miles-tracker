@@ -414,7 +414,12 @@ export default {
         if (url.pathname === '/api/transactions' && req.method === 'GET') {
           const limit = Math.min(100, parseInt(url.searchParams.get('limit') ?? '25', 10) || 25);
           const { results } = await env.DB.prepare(
-            `SELECT t.id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant, t.source, c.nickname, c.product
+            // The ledger edits these in place, so every editable column has to
+            // come back — category especially: without it every row reads as
+            // uncategorised and the whole table highlights as needing review.
+            `SELECT t.id, t.card_id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant,
+                    t.category, t.category_source, t.needs_review, t.source,
+                    c.nickname, c.product
              FROM transactions t JOIN cards c ON c.id = t.card_id
              ORDER BY COALESCE(t.posted_at, t.occurred_at) DESC, t.id DESC LIMIT ?`
           )
