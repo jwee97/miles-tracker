@@ -5,6 +5,7 @@ import { handleUpdate, pushFeedMatches, send } from './telegram';
 import {
   activeCards,
   addMonths,
+  EFFECTIVE_DATE,
   parseDateToken,
   parseMoney,
   requirementProgress,
@@ -13,6 +14,7 @@ import {
   utilization,
 } from './spend';
 import { balances, categoryForMerchant, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
+import { buildAnalytics } from './analytics';
 import type { Env, Offer } from './types';
 
 // The dashboard is served from this same Worker, so there is no cross-origin
@@ -103,6 +105,19 @@ export default {
             percent: totalLimit ? (totalBal / totalLimit) * 100 : 0,
           },
         });
+      }
+
+      if (url.pathname === '/api/analytics') {
+        return json(await buildAnalytics(env, url.searchParams.get('month') ?? undefined));
+      }
+
+      // Months that actually have data, so the picker offers only real options.
+      if (url.pathname === '/api/months') {
+        const { results } = await env.DB.prepare(
+          `SELECT DISTINCT substr(${EFFECTIVE_DATE}, 1, 7) AS month FROM transactions
+           WHERE amount_cents > 0 ORDER BY month DESC LIMIT 24`
+        ).all<{ month: string }>();
+        return json({ months: (results ?? []).map((r) => r.month) });
       }
 
       if (url.pathname === '/api/points') {

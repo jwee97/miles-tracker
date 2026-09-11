@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import Analytics from './Analytics';
 import {
   addProgram,
   addTranche,
@@ -660,7 +661,7 @@ function PointsTab() {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<'cards' | 'points' | 'offers'>('cards');
+  const [tab, setTab] = useState<'cards' | 'trends' | 'points' | 'offers'>('cards');
   const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
@@ -706,6 +707,9 @@ export default function App() {
         <button className={tab === 'cards' ? 'on' : ''} onClick={() => setTab('cards')}>
           Cards
         </button>
+        <button className={tab === 'trends' ? 'on' : ''} onClick={() => setTab('trends')}>
+          Trends
+        </button>
         <button className={tab === 'points' ? 'on' : ''} onClick={() => setTab('points')}>
           Points
         </button>
@@ -741,6 +745,8 @@ export default function App() {
         ) : (
           <p className="pad sub">Loading…</p>
         ))}
+
+      {tab === 'trends' && <Analytics />}
 
       {tab === 'points' && <PointsTab />}
 

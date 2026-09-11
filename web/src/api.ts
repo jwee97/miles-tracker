@@ -198,6 +198,49 @@ export const fetchWhich = (category: string, amount: string) =>
 
 export const fetchCategories = () => get<{ categories: string[] }>('/api/categories');
 
+export interface Analytics {
+  month: string;
+  prev_month: string;
+  days_in_month: number;
+  day_of_month: number | null;
+  totals: {
+    spend_cents: number;
+    prev_spend_cents: number;
+    txn_count: number;
+    avg_txn_cents: number;
+    active_days: number;
+    largest_cents: number;
+  };
+  daily: { date: string; cents: number }[];
+  cumulative: { day: number; cents: number; prev_cents: number | null }[];
+  by_category: { key: string; label: string; cents: number; count: number }[];
+  by_card: { key: string; label: string; cents: number; count: number }[];
+  by_weekday: { dow: number; label: string; cents: number; count: number }[];
+  top_merchants: { merchant: string; category: string | null; cents: number; count: number }[];
+  rewards: {
+    miles: number;
+    cashback_cents: number;
+    value_cents: number;
+    per_dollar_cents: number;
+    by_card: { label: string; miles: number; cashback_cents: number; value_cents: number }[];
+  };
+  missed: {
+    category: string;
+    cents: number;
+    used_label: string;
+    used_rate: number;
+    used_type: string;
+    best_label: string;
+    best_rate: number;
+    best_type: string;
+    lost_value_cents: number;
+  }[];
+  insights: string[];
+}
+
+export const fetchAnalytics = (month: string) => get<Analytics>(`/api/analytics?month=${month}`);
+export const fetchMonths = () => get<{ months: string[] }>('/api/months');
+
 export const fetchSummary = () => get<Summary>('/api/summary');
 export const fetchOffers = () => get<{ offers: OfferRow[] }>('/api/offers');
 

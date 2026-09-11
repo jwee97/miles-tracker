@@ -369,6 +369,28 @@ After that, `25.40 citirw NTUC` categorises itself, and `/which NTUC` works.
 
 Untagged spend counts as `*`, so caps only track properly for spend you tag.
 
+## Trends
+
+The dashboard's **Trends** tab reads a month back to you: the headline total
+against the same point last month, a running-total line, day-by-day bars, where
+the money went by category and by card, which days of the week you spend on,
+your top merchants, and an estimate of what you earned.
+
+The one worth opening it for is **Left on the table** — spend that a card you
+already hold would have rewarded better, priced in dollars:
+
+```
+dining                                        $2.30
+$191.50 on Citi Rewards (0.4 mpd) → DBS Altitude would give 1.2 mpd
+```
+
+That only works for spend that is categorised, so tag merchants as you go.
+Uncategorised spend is called out in the insights when it gets large enough to
+distort the figures.
+
+Reward totals are estimates: caps are applied to monthly aggregates rather than
+transaction by transaction, which is close but not exact around a cap boundary.
+
 ## Points and transfers
 
 The dashboard's **Points** tab holds everything you have: a table of balances

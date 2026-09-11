@@ -211,3 +211,79 @@ table.pts tbody tr:last-child td { border-bottom: none; }
 }
 .batches summary:hover { color: var(--text); }
 .batches .txns li { grid-template-columns: 1fr 1fr auto auto 28px; }
+
+/* ---------- analytics ---------- */
+.tabs { flex-wrap: wrap; }
+.tabs button { flex: 1 1 auto; min-width: 72px; padding: 10px 6px; font-size: 14px; }
+
+.month-row { margin-bottom: 12px; }
+.month-row .f { max-width: 180px; }
+
+.hero { display: flex; flex-direction: column; gap: 2px; }
+.hero-value {
+  font-size: clamp(34px, 11vw, 46px); font-weight: 700; line-height: 1.05;
+  letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+}
+.hero-delta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13px; margin-top: 4px; }
+.hero-delta .up { color: var(--warn); }
+.hero-delta .down { color: var(--ok); }
+
+.stat-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 12px; }
+@media (min-width: 620px) { .stat-row { grid-template-columns: repeat(4, 1fr); } }
+.stat {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 3px; min-width: 0;
+}
+.stat-label { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); }
+.stat-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat-value.ok { color: var(--ok); }
+.stat-sub { font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+
+.insights h2 { font-size: 15px; margin: 0 0 8px; }
+.insights ul { margin: 0; padding-left: 16px; font-size: 13.5px; }
+.insights li { margin: 5px 0; }
+.insights li::marker { color: var(--ok); }
+
+/* charts */
+.chart-wrap { position: relative; margin-top: 6px; }
+.chart { width: 100%; height: auto; display: block; overflow: visible; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .axis-line { stroke: var(--line); stroke-width: 1; }
+.chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .crosshair { stroke: var(--dim); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .dot { stroke: var(--surface); stroke-width: 2; }
+.chart .tick { fill: var(--dim); font-size: 10px; font-family: inherit; }
+.chart .end-label { fill: var(--dim); font-size: 11px; font-family: inherit; font-variant-numeric: tabular-nums; }
+.chart .strong-label { fill: var(--text); font-weight: 600; }
+
+.legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--dim); margin-bottom: 2px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i, .ranked-label i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
+
+.tip {
+  position: absolute; transform: translateX(-50%);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+  padding: 7px 10px; font-size: 12px; pointer-events: none; white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0,0,0,.4); z-index: 5; color: var(--dim);
+}
+.tip-head { color: var(--text); font-weight: 600; }
+
+.ranked { list-style: none; padding: 0; margin: 8px 0 0; }
+.ranked li { padding: 9px 0; border-top: 1px solid var(--line); }
+.ranked li:first-child { border-top: none; }
+.ranked-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; align-items: baseline; }
+.ranked-label { display: inline-flex; align-items: center; gap: 7px; overflow: hidden; text-overflow: ellipsis; }
+.ranked-val { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ranked-val em { color: var(--dim); font-style: normal; font-weight: 400; font-size: 11.5px; margin-left: 6px; }
+.ranked-bar { width: 100%; height: 6px; display: block; margin: 5px 0 3px; }
+.ranked-sub { font-size: 11.5px; color: var(--dim); }
+
+.missed .pct.bad { font-size: 18px; }
+.pct.ok { color: var(--ok); }
+
+.link-btn {
+  font: inherit; font-size: 13px; background: none; border: none;
+  color: var(--ok); cursor: pointer; padding: 0; text-decoration: underline;
+}
+.pct-block { text-align: right; line-height: 1.15; }
+.pct-sub { display: block; font-size: 10.5px; color: var(--dim); letter-spacing: .04em; }
