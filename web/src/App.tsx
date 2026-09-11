@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
 import ExpiryTab from './Expiry';
+import Settings from './Settings';
 import {
   addProgram,
   addTranche,
@@ -663,7 +664,7 @@ function PointsTab() {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<'cards' | 'ledger' | 'trends' | 'points' | 'expiry' | 'offers'>('cards');
+  const [tab, setTab] = useState<'cards' | 'ledger' | 'trends' | 'points' | 'expiry' | 'offers' | 'settings'>('cards');
   const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
@@ -724,6 +725,9 @@ export default function App() {
         <button className={tab === 'offers' ? 'on' : ''} onClick={() => setTab('offers')}>
           Offers{offers?.length ? ` (${offers.length})` : ''}
         </button>
+        <button className={tab === 'settings' ? 'on' : ''} onClick={() => setTab('settings')}>
+          Settings
+        </button>
       </nav>
 
       {tab === 'cards' &&
@@ -759,6 +763,8 @@ export default function App() {
       {tab === 'trends' && <Analytics />}
 
       {tab === 'expiry' && <ExpiryTab />}
+
+      {tab === 'settings' && <Settings />}
 
       {tab === 'points' && <PointsTab />}
 

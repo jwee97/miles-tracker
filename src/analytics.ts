@@ -1,6 +1,7 @@
 import { EFFECTIVE_DATE, today } from './spend';
 import type { Card, Env } from './types';
 import type { EarnRule } from './points';
+import { categoryTrends, findDuplicates, findRecurring, recurringInsight, type CategoryTrend, type Duplicate, type Recurring } from './patterns';
 
 /** A calendar month, as [start, end] inclusive ISO dates. */
 function monthRange(month: string): { start: string; end: string } {
@@ -55,6 +56,9 @@ export interface Analytics {
   }[];
   insights: string[];
   review: { ready: number; waiting: number };
+  recurring: Recurring[];
+  trends: CategoryTrend[];
+  duplicates: Duplicate[];
 }
 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -255,6 +259,10 @@ export async function buildAnalytics(env: Env, monthArg?: string): Promise<Analy
   }
   missed.sort((a, b) => b.lost_value_cents - a.lost_value_cents);
 
+  const recurring = await findRecurring(env);
+  const trends = await categoryTrends(env, month);
+  const duplicates = await findDuplicates(env, month);
+
   // --- plain-language read of the month ------------------------------------
   const insights: string[] = [];
   const delta = cur.cents - prev.cents;
@@ -280,6 +288,28 @@ export async function buildAnalytics(env: Env, monthArg?: string): Promise<Analy
     const pace = Math.round((cur.cents / dayOfMonth) * daysInMonth);
     insights.push(`At this pace the month lands near $${money(pace)}.`);
   }
+  // A category against its own baseline says more than a month-on-month diff,
+  // which one unusual previous month can distort on its own.
+  const spikes = trends.filter((t) => t.verdict === 'spike').slice(0, 2);
+  for (const s of spikes) {
+    insights.push(
+      `${s.category} is $${money(s.delta_cents)} above its usual $${money(s.baseline_cents)}` +
+        `${s.delta_pct !== null ? ` (${s.delta_pct > 0 ? '+' : ''}${s.delta_pct}%)` : ''}.`
+    );
+  }
+  const dip = trends.find((t) => t.verdict === 'dip');
+  if (dip) insights.push(`${dip.category} is $${money(-dip.delta_cents)} below its usual level.`);
+
+  const rec = recurringInsight(recurring);
+  if (rec) insights.push(rec);
+  const lapsed = recurring.filter((r) => r.lapsed);
+  if (lapsed.length) {
+    insights.push(`${lapsed[0].merchant} usually recurs every ${lapsed[0].cadence_days} days but has not since ${lapsed[0].last_seen}.`);
+  }
+  if (duplicates.length) {
+    insights.push(`${duplicates.length} possible duplicate charge(s) — same merchant and amount within two days.`);
+  }
+
   const lost = missed.reduce((s, m) => s + m.lost_value_cents, 0);
   if (lost > 0) {
     insights.push(`About $${money(lost)} of value went to the wrong card this month.`);
@@ -341,5 +371,8 @@ export async function buildAnalytics(env: Env, monthArg?: string): Promise<Analy
     },
     missed,
     insights,
+    recurring,
+    trends,
+    duplicates,
   };
 }

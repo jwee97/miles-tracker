@@ -190,6 +190,102 @@ export default function Analytics() {
         </section>
       )}
 
+      {a.trends.some((t) => t.verdict === 'spike' || t.verdict === 'dip') && (
+        <section className="card">
+          <header>
+            <div>
+              <h2>Against the usual</h2>
+              <p className="sub">Each category against its own recent baseline, not just last month</p>
+            </div>
+          </header>
+          <ul className="ranked">
+            {a.trends
+              .filter((t) => t.verdict === 'spike' || t.verdict === 'dip')
+              .slice(0, 6)
+              .map((t) => (
+                <li key={t.category}>
+                  <div className="ranked-head">
+                    <span className="ranked-label">{t.category}</span>
+                    <span className={`mono ranked-val ${t.verdict === 'spike' ? 'warn-num' : 'ok-text'}`}>
+                      {t.delta_cents > 0 ? '+' : '−'}${money(Math.abs(t.delta_cents))}
+                    </span>
+                  </div>
+                  <span className="ranked-sub">
+                    ${money(t.this_month_cents)} this month vs ${money(t.baseline_cents)} usual
+                    {t.delta_pct !== null && <> · {t.delta_pct > 0 ? '+' : ''}{t.delta_pct}%</>}
+                    {' · '}over {t.months_of_history} month{t.months_of_history === 1 ? '' : 's'}
+                  </span>
+                </li>
+              ))}
+          </ul>
+        </section>
+      )}
+
+      {a.recurring.length > 0 && (
+        <section className="card">
+          <header>
+            <div>
+              <h2>Recurring charges</h2>
+              <p className="sub">Detected from the pattern, not a list you maintain</p>
+            </div>
+            <div className="pct">
+              ${money(a.recurring.filter((r) => !r.lapsed).reduce((s, r) => s + r.annualised_cents, 0))}
+              <span className="pct-sub">a year</span>
+            </div>
+          </header>
+          <div className="scroller">
+            <table className="pts">
+              <thead>
+                <tr>
+                  <th>Merchant</th>
+                  <th className="num">Every</th>
+                  <th className="num">Amount</th>
+                  <th className="num">Next</th>
+                </tr>
+              </thead>
+              <tbody>
+                {a.recurring.map((r) => (
+                  <tr key={r.merchant} className={r.lapsed ? 'dim-row' : ''}>
+                    <td>
+                      {r.merchant}
+                      {r.lapsed && <span className="chip">stopped</span>}
+                    </td>
+                    <td className="num dim-num">{r.cadence_days}d</td>
+                    <td className="num strong">${money(r.typical_cents)}</td>
+                    <td className="num dim-num">{r.lapsed ? `last ${r.last_seen}` : r.next_expected}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="sub" style={{ marginTop: 10 }}>
+            A charge marked <b>stopped</b> has not appeared in well over its usual gap — either cancelled, or worth checking.
+          </p>
+        </section>
+      )}
+
+      {a.duplicates.length > 0 && (
+        <section className="card missed">
+          <header>
+            <div>
+              <h2>Possible duplicates</h2>
+              <p className="sub">Same merchant and amount within two days</p>
+            </div>
+          </header>
+          <ul className="ranked">
+            {a.duplicates.map((d, i) => (
+              <li key={i}>
+                <div className="ranked-head">
+                  <span className="ranked-label">{d.merchant}</span>
+                  <span className="mono ranked-val">${money(d.cents)} ×{d.dates.length}</span>
+                </div>
+                <span className="ranked-sub">{d.dates.join(', ')} — check for a double charge, or a double entry</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* The distinctive one: spend that would have earned more elsewhere. */}
       {a.missed.length > 0 && (
         <section className="card missed">

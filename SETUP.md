@@ -413,12 +413,40 @@ nothing; `/transfer 50000 citi_ty krisflyer` executes one:
 - points below a whole block stay put, and the reply says how many
 - the transfer is recorded, so a balance always reflects what actually moved
 
+## Settings
+
+The **Settings** tab edits the tunable values without a redeploy — they are
+stored in the database and overlay the deployed config: timezone offset, what a
+mile is worth, utilization thresholds, the minimum-spend warning window, the
+posting lag, and the rate re-check interval. Each shows its deployed default and
+can be reset to it.
+
+**Secrets are not listed and cannot be written.** The bot token, your chat id
+and the signing keys live in Cloudflare's encrypted store and never pass through
+the app. Cron times are also absent: they are UTC and set in `wrangler.toml`.
+
+The same tab reports **database size and row counts against D1's 5 GB
+allowance**, plus what the free tier gives you. Per-request counts and CPU time
+would need a Cloudflare API token, so the page says so and points at
+**Workers & Pages → miles-tracker → Metrics** rather than pretending to know.
+
 ## Trends
 
 The dashboard's **Trends** tab reads a month back to you: the headline total
 against the same point last month, a running-total line, day-by-day bars, where
 the money went by category and by card, which days of the week you spend on,
 your top merchants, and an estimate of what you earned.
+
+Beyond the month itself it looks for patterns across your history:
+
+- **Against the usual** — each category against its own recent baseline rather
+  than last month alone, so one unusual previous month does not read as a
+  trend. A spike has to clear both a meaningful absolute change and the
+  category's own variability.
+- **Recurring charges** — subscriptions detected from steady intervals at
+  steady amounts, annualised, with ones that have stopped appearing flagged.
+  Nothing to maintain; it reads the pattern.
+- **Possible duplicates** — same merchant and amount within two days.
 
 The one worth opening it for is **Left on the table** — spend that a card you
 already hold would have rewarded better, priced in dollars:

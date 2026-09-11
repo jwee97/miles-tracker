@@ -276,6 +276,60 @@ db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi Th
     list2.find((r) => r.id === bid).category !== list2.find((r) => r.id === id).category, '');
 }
 
+// --- settings, overlaid on the deployed config ------------------------------
+{
+  const res = await worker.fetch(new Request(`https://x.test/api/settings?t=${token}`), env);
+  const b = (await res.json()) as any;
+  check('settings are listed', b.settings.length >= 6, String(b.settings.length));
+  const mv = b.settings.find((s: any) => s.key === 'MILE_VALUE_CENTS');
+  check('each shows the deployed default', mv.default_value === '1.5', JSON.stringify(mv));
+  check('and nothing stored yet', mv.stored_value === null, JSON.stringify(mv));
+
+  // No secret may be listed, whatever its name.
+  const keys = b.settings.map((s: any) => s.key);
+  for (const secret of ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_SECRET', 'APP_SECRET', 'OWNER_CHAT_ID']) {
+    check(`${secret} is not exposed`, !keys.includes(secret), keys.join(','));
+  }
+
+  const saved = await postTo('/api/settings', { key: 'MILE_VALUE_CENTS', value: '1.2' });
+  check('a setting saves', saved.status === 200, JSON.stringify(await saved.clone().json()));
+
+  // And it must actually take effect, not merely be recorded.
+  const after = await worker.fetch(new Request(`https://x.test/api/settings?t=${token}`), env);
+  const ab = (await after.json()) as any;
+  check('the stored value is reported', ab.settings.find((s: any) => s.key === 'MILE_VALUE_CENTS').stored_value === '1.2', '');
+  check('while the default is still visible',
+    ab.settings.find((s: any) => s.key === 'MILE_VALUE_CENTS').default_value === '1.5', '');
+
+  check('rejects a non-number where one is required',
+    (await postTo('/api/settings', { key: 'POSTING_LAG_DAYS', value: 'soon' })).status === 400, '');
+  check('rejects malformed thresholds',
+    (await postTo('/api/settings', { key: 'UTIL_THRESHOLDS', value: '50;80' })).status === 400, '');
+  check('rejects an absurd timezone offset',
+    (await postTo('/api/settings', { key: 'TZ_OFFSET_MINUTES', value: '99999' })).status === 400, '');
+  check('refuses to write a secret',
+    (await postTo('/api/settings', { key: 'APP_SECRET', value: 'hunter2' })).status === 400, '');
+
+  const reset = await postTo('/api/settings', { key: 'MILE_VALUE_CENTS', value: null });
+  check('resetting clears the override', reset.status === 200, '');
+  const back = (await (await worker.fetch(new Request(`https://x.test/api/settings?t=${token}`), env)).json()) as any;
+  check('and the default applies again',
+    back.settings.find((s: any) => s.key === 'MILE_VALUE_CENTS').stored_value === null, '');
+}
+
+// --- usage ------------------------------------------------------------------
+{
+  const res = await worker.fetch(new Request(`https://x.test/api/usage?t=${token}`), env);
+  const u = (await res.json()) as any;
+  check('usage reports row counts', u.db.total_rows > 0, JSON.stringify(u.db.total_rows));
+  check('names the tables', u.db.rows.some((r: any) => r.table === 'transactions'), '');
+  check('carries the D1 limit', u.db.limit_bytes === 5 * 1024 * 1024 * 1024, String(u.db.limit_bytes));
+  check('says where the size figure came from',
+    ['pragma', 'estimated', 'unavailable'].includes(u.db.size_source), u.db.size_source);
+  check('lists the free-tier allowances', u.free_tier.length >= 5, String(u.free_tier.length));
+  check('and is honest that worker metrics are not available here', u.worker.available === false, '');
+}
+
 // --- a database behind the code explains itself -----------------------------
 // The API had no error handling: a missing table threw out of the handler and
 // the browser saw a bare 500, which is undiagnosable from the UI.

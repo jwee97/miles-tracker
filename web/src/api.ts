@@ -240,6 +240,29 @@ export interface Analytics {
     lost_value_cents: number;
   }[];
   insights: string[];
+  review: { ready: number; waiting: number };
+  recurring: {
+    merchant: string;
+    category: string | null;
+    occurrences: number;
+    typical_cents: number;
+    cadence_days: number;
+    last_seen: string;
+    next_expected: string;
+    annualised_cents: number;
+    lapsed: boolean;
+  }[];
+  trends: {
+    category: string;
+    this_month_cents: number;
+    baseline_cents: number;
+    delta_cents: number;
+    delta_pct: number | null;
+    z: number | null;
+    verdict: 'spike' | 'dip' | 'steady' | 'new';
+    months_of_history: number;
+  }[];
+  duplicates: { merchant: string; cents: number; dates: string[]; ids: number[] }[];
 }
 
 export interface Expiry {
@@ -264,6 +287,35 @@ export interface ReviewRow {
   product: string;
   nickname: string;
 }
+
+export interface SettingRow {
+  key: string;
+  label: string;
+  unit: string;
+  help: string;
+  kind: 'number' | 'text';
+  default_value: string;
+  stored_value: string | null;
+  value: string;
+}
+
+export interface Usage {
+  db: {
+    size_bytes: number | null;
+    size_source: string;
+    limit_bytes: number;
+    percent: number | null;
+    rows: { table: string; count: number }[];
+    total_rows: number;
+  };
+  free_tier: { label: string; limit: string; note: string }[];
+  worker: { available: boolean; note: string };
+}
+
+export const fetchSettings = () => get<{ settings: SettingRow[] }>('/api/settings');
+export const saveSetting = (key: string, value: string | null) =>
+  post<{ ok: true; settings: SettingRow[] }>('/api/settings', { key, value });
+export const fetchUsage = () => get<Usage>('/api/usage');
 
 export const fetchExpiry = () => get<{ tranches: Expiry[] }>('/api/expiry');
 export const fetchReview = () => get<{ ready: ReviewRow[]; waiting: ReviewRow[] }>('/api/review');

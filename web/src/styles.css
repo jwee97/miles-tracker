@@ -323,3 +323,25 @@ tr.row-review td:first-child { box-shadow: inset 2px 0 0 var(--mid); }
 .chip.ok { color: var(--ok); }
 .chip.never, .chip.far { color: var(--dim); }
 .chip.gone { background: rgba(248,113,113,.25); color: var(--bad); }
+
+/* ---------- settings ---------- */
+.setting { padding: 14px 0; border-top: 1px solid var(--line); }
+.setting:first-of-type { border-top: none; }
+.setting-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.setting-head label { font-size: 14px; font-weight: 600; }
+.setting-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.setting-row input {
+  font: inherit; font-size: 16px; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+  width: 130px; min-width: 0;
+}
+.setting-row input:focus { outline: none; border-color: var(--ok); }
+.setting-unit { font-size: 12px; color: var(--dim); flex: 1 1 120px; }
+.setting-row button:not(.link-btn) {
+  font: inherit; font-size: 13px; font-weight: 600;
+  background: var(--ok); color: #0b0d11; border: none; border-radius: 8px;
+  padding: 9px 16px; cursor: pointer;
+}
+.setting-row button:disabled { opacity: .35; cursor: default; }
+.setting .sub { margin-top: 6px; max-width: 60ch; }
+tr.dim-row td { opacity: .55; }

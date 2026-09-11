@@ -10,14 +10,15 @@
     "db:init:local": "wrangler d1 execute miles --local --file=./schema.sql",
     "db:seed": "wrangler d1 execute miles --remote --file=./seed.sql",
     "tail": "wrangler tail",
-    "test": "npm run test:units && npm run test:e2e && npm run test:migrate && npm run test:api && npm run test:analytics",
+    "test": "npm run test:units && npm run test:e2e && npm run test:migrate && npm run test:api && npm run test:analytics && npm run test:patterns",
     "test:units": "esbuild test/units.ts --bundle --loader:.sql=text --platform=node --format=esm --outfile=test/.units.mjs && node test/.units.mjs",
     "test:e2e": "esbuild test/e2e.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.e2e.mjs && node test/.e2e.mjs",
     "build": "npm --prefix web ci && npm --prefix web run build",
     "typecheck": "tsc --noEmit",
     "test:migrate": "esbuild test/migrate.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.migrate.mjs && node test/.migrate.mjs",
     "test:api": "esbuild test/api.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.api.mjs && node test/.api.mjs",
-    "test:analytics": "esbuild test/analytics.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.analytics.mjs && node test/.analytics.mjs"
+    "test:analytics": "esbuild test/analytics.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.analytics.mjs && node test/.analytics.mjs",
+    "test:patterns": "esbuild test/patterns.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.patterns.mjs && node test/.patterns.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",

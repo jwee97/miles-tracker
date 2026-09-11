@@ -15,6 +15,7 @@ import {
 } from './spend';
 import { balances, categoryForMerchant, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
 import { buildAnalytics } from './analytics';
+import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from './settings';
 import { executeTransfer, tranchesByExpiry } from './points';
 import type { Env, Offer } from './types';
 
@@ -27,8 +28,11 @@ const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, rawEnv: Env): Promise<Response> {
     const url = new URL(req.url);
+    // Stored settings overlay the deployed config, so everything downstream
+    // reads resolved values without knowing they are overridable.
+    const env = await withSettings(rawEnv);
 
     // --- Telegram webhook -------------------------------------------------
     // Telegram echoes the secret we registered with setWebhook; anything else
@@ -111,6 +115,21 @@ export default {
               percent: totalLimit ? (totalBal / totalLimit) * 100 : 0,
             },
           });
+        }
+
+        if (url.pathname === '/api/settings' && req.method === 'GET') {
+          return json({ settings: await readSettings(rawEnv), editable: EDITABLE.map((e) => e.key) });
+        }
+
+        if (url.pathname === '/api/settings' && req.method === 'POST') {
+          const b = (await req.json()) as { key?: string; value?: string | null };
+          const r = await writeSetting(env, String(b.key ?? ''), b.value ?? null);
+          if (!r.ok) return json({ error: r.error }, 400);
+          return json({ ok: true, settings: await readSettings(rawEnv) });
+        }
+
+        if (url.pathname === '/api/usage') {
+          return json(await readUsage(env));
         }
 
         if (url.pathname === '/api/analytics') {
@@ -477,9 +496,10 @@ export default {
     return new Response('not found', { status: 404 });
   },
 
-  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledController, rawEnv: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
       (async () => {
+        const env = await withSettings(rawEnv);
         // Two crons share one handler; event.cron says which fired.
         if (event.cron === MORNING_SCAN_CRON) {
           // 06:00 local: new promos, then anything that changed about the
