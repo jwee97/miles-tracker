@@ -54,6 +54,7 @@ export interface Analytics {
     lost_value_cents: number;
   }[];
   insights: string[];
+  review: { ready: number; waiting: number };
 }
 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -221,8 +222,16 @@ export async function buildAnalytics(env: Env, monthArg?: string): Promise<Analy
     row.value_cents += got.value;
     perCard.set(card.product, row);
 
+
     // Would an open card have done better on this category? This is the whole
     // point of tracking: spend on the wrong card is silent, recoverable loss.
+    //
+    // Uncategorised spend is excluded. Comparing it on base rates alone would
+    // invent a loss that a real category might erase — the used card could well
+    // be the right one once the MCC is known. An uncertain figure here is worse
+    // than no figure, because it is the number you would act on.
+    if (p.category === '*') continue;
+
     let best: { card: Card; rule: EarnRule; value: number } | null = null;
     for (const c of (cards ?? []).filter((x) => !x.closed_at)) {
       const r = ruleFor(c.id, p.category === '*' ? null : p.category);
@@ -280,9 +289,28 @@ export async function buildAnalytics(env: Env, monthArg?: string): Promise<Analy
     insights.push(`${Math.round((uncat.cents / cur.cents) * 100)}% of spend is uncategorised, so rewards here are understated.`);
   }
 
+  // Split by the research-backed rule: an MCC is only knowable once a purchase
+  // has posted, so nagging about a pending one is noise.
+  const reviewCounts =
+    (await env.DB.prepare(
+      `SELECT
+         SUM(CASE WHEN posted_at IS NOT NULL THEN 1 ELSE 0 END) AS ready,
+         SUM(CASE WHEN posted_at IS NULL THEN 1 ELSE 0 END) AS waiting
+       FROM transactions
+       WHERE amount_cents > 0 AND category IS NULL
+         AND ${EFFECTIVE_DATE} >= ? AND ${EFFECTIVE_DATE} <= ?`
+    )
+      .bind(win.start, win.end)
+      .first<{ ready: number; waiting: number }>()) ?? { ready: 0, waiting: 0 };
+
+  if (reviewCounts.ready > 0) {
+    insights.push(`${reviewCounts.ready} posted transaction(s) still need a category — the MCC is knowable now.`);
+  }
+
   return {
     month,
     prev_month: prevMonth,
+    review: { ready: reviewCounts.ready ?? 0, waiting: reviewCounts.waiting ?? 0 },
     days_in_month: daysInMonth,
     day_of_month: dayOfMonth,
     totals: {

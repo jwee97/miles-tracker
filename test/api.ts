@@ -178,6 +178,59 @@ db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi Th
   check('refuses a programme with no name', (await postTo('/api/program', { key: 'x' })).status === 400, '');
 }
 
+// --- editing a transaction in place ----------------------------------------
+{
+  const made = await post({ nickname: 'crw', amount: '30.00', date: '2026-09-06', note: 'Kopi Shop' });
+  const id = ((await made.json()) as any).id;
+
+  check('a new row with no category is flagged for review',
+    rowFor(id).needs_review === 1 && rowFor(id).category === null, JSON.stringify(rowFor(id)));
+
+  const r = await postTo('/api/tx/update', { id, field: 'category', value: 'dining' });
+  check('a cell edit saves', r.status === 200, JSON.stringify(await r.clone().json()));
+  check('and clears the review flag',
+    rowFor(id).category === 'dining' && rowFor(id).needs_review === 0, JSON.stringify(rowFor(id)));
+  check('an edited category counts as confirmed', rowFor(id).category_source === 'manual', '');
+
+  // Categorising once teaches the merchant, as in the bot.
+  const next = await post({ nickname: 'crw', amount: '4.00', date: '2026-09-07', note: 'Kopi Shop' });
+  const nb = (await next.json()) as any;
+  check('the merchant is learned from an edit', nb.category === 'dining', JSON.stringify(nb));
+  check('and marked as inferred rather than confirmed', rowFor(nb.id).category_source === 'learned', '');
+
+  check('amount is editable', (await postTo('/api/tx/update', { id, field: 'amount', value: '31.50' })).status === 200, '');
+  check('and stored in cents', rowFor(id).amount_cents === 3150, `got ${rowFor(id).amount_cents}`);
+  check('clearing a category returns it to review',
+    (await postTo('/api/tx/update', { id, field: 'category', value: null })).status === 200 &&
+      rowFor(id).needs_review === 1, JSON.stringify(rowFor(id)));
+
+  check('a posting date before the purchase is refused',
+    (await postTo('/api/tx/update', { id, field: 'posted_at', value: '2026-01-01' })).status === 400, '');
+  check('a future date is refused',
+    (await postTo('/api/tx/update', { id, field: 'occurred_at', value: '2027-01-01' })).status === 400, '');
+  check('an unknown field is refused',
+    (await postTo('/api/tx/update', { id, field: 'created_at', value: 'x' })).status === 400, '');
+  check('an unknown card is refused',
+    (await postTo('/api/tx/update', { id, field: 'card_id', value: '999' })).status === 400, '');
+}
+
+// --- the review queue splits on whether the MCC is knowable -----------------
+{
+  const pending = await post({ nickname: 'crw', amount: '18.00', date: '2026-09-10', note: 'Mystery' });
+  const pid = ((await pending.json()) as any).id;
+  const posted = await post({ nickname: 'crw', amount: '19.00', date: '2026-09-01', posted: '2026-09-03', note: 'Other Mystery' });
+  const oid = ((await posted.json()) as any).id;
+
+  const res = await worker.fetch(new Request(`https://x.test/api/review?t=${token}`), env);
+  const b = (await res.json()) as any;
+  check('a posted uncategorised purchase is ready to classify',
+    b.ready.some((r: any) => r.id === oid), JSON.stringify(b.ready.map((r: any) => r.id)));
+  check('a pending one is held back instead',
+    b.waiting.some((r: any) => r.id === pid), JSON.stringify(b.waiting.map((r: any) => r.id)));
+  check('and the two buckets do not overlap',
+    !b.ready.some((r: any) => b.waiting.find((w: any) => w.id === r.id)), '');
+}
+
 // --- auth -------------------------------------------------------------------
 {
   const res = await worker.fetch(

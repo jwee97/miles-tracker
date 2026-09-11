@@ -93,6 +93,10 @@ export interface Txn {
   occurred_at: string;
   posted_at: string | null;
   merchant: string | null;
+  category?: string | null;
+  category_source?: string | null;
+  needs_review?: number;
+  card_id?: number;
   source: string;
   nickname: string;
   product: string;
@@ -237,6 +241,42 @@ export interface Analytics {
   }[];
   insights: string[];
 }
+
+export interface Expiry {
+  id: number;
+  program_key: string;
+  name: string;
+  unit: string;
+  kind: string;
+  points: number;
+  earned_at: string | null;
+  expires_at: string | null;
+  note: string | null;
+  days_left: number | null;
+}
+
+export interface ReviewRow {
+  id: number;
+  amount_cents: number;
+  occurred_at: string;
+  posted_at: string | null;
+  merchant: string | null;
+  product: string;
+  nickname: string;
+}
+
+export const fetchExpiry = () => get<{ tranches: Expiry[] }>('/api/expiry');
+export const fetchReview = () => get<{ ready: ReviewRow[]; waiting: ReviewRow[] }>('/api/review');
+export const fetchTransfers = () => get<{ transfers: any[] }>('/api/transfers');
+
+export const updateTransaction = (id: number, field: string, value: string | null) =>
+  post<{ ok: true; transaction: Txn }>('/api/tx/update', { id, field, value });
+
+export const runTransfer = (conversion_id: number, points: string) =>
+  post<{ ok: boolean; error?: string; plan?: Plan; consumed?: { points: number; expires_at: string | null }[] }>(
+    '/api/transfer',
+    { conversion_id, points }
+  );
 
 export const fetchAnalytics = (month: string) => get<Analytics>(`/api/analytics?month=${month}`);
 export const fetchMonths = () => get<{ months: string[] }>('/api/months');

@@ -109,6 +109,9 @@ Add a date anywhere to backdate:
   \`25.40 uobone 2026-09-05 lunch\`
   \`25.40 uobone -3 lunch\` — three days ago
 /recent — last 15 entries (⏳ = posting date unknown)
+/review — spend with no category yet
+/cat <id> <category> — set one
+Tag \`#?\` when you don't know the category yet — better than guessing
 /posted <id> <date> — set when the bank actually posted it
 /del <id> — remove one · /undo — remove the last
 
@@ -123,7 +126,9 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 *Points & miles*
 /bal — balances, with the nearest expiry
 /addbal program|points|expires|note
-/convert 50000 citi\_ty krisflyer — blocks, fees, best route
+/convert 50000 citi\_ty krisflyer — compare routes, changes nothing
+/transfer 50000 citi\_ty krisflyer — actually move them, oldest batch first
+/expiry — every batch, soonest expiry first
 /earn — list earn rules
 /addearn <card> <category> <rate> — e.g. \`/addearn citirw shopping 4\`
    add \`cap 1000\`, \`window calendar_month\`, \`group tenx\` as needed

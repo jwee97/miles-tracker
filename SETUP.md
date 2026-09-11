@@ -369,6 +369,50 @@ After that, `25.40 citirw NTUC` categorises itself, and `/which NTUC` works.
 
 Untagged spend counts as `*`, so caps only track properly for spend you tag.
 
+## The ledger
+
+The **Ledger** tab is the spreadsheet view: every transaction, every cell
+editable in place — date, posting date, card, merchant, category, amount —
+with a form at the top for adding a row. Click a cell, type, press Enter.
+
+## When you don't know the category
+
+An MCC is assigned by the payment chain, not by you, and it is **only reliable
+once a purchase posts** — a pending transaction may not carry its final
+details. So the app never guesses:
+
+- Leave the category blank, or tag `#?` in the bot, to say "I don't know yet".
+- Uncategorised spend lands in a **review queue**, split in two: *ready*
+  (posted, so your bank can tell you the merchant category) and *waiting to
+  post* (not knowable yet — leave it alone).
+- `/review` lists both, `/cat <id> <category>` sets one.
+- Setting a category teaches the merchant, so the next purchase there
+  classifies itself. Inferred categories show with a dotted underline in the
+  ledger; confirmed ones don't.
+
+**Uncategorised spend is excluded from the wrong-card analysis.** Comparing it
+on base rates alone would invent a loss that a real category might erase — the
+card used could well be the right one once the MCC is known. It still counts
+toward totals, and the insights say how much of the month is unclassified.
+
+To find an MCC: pay, wait for the transaction to post, then ask your bank for
+the MCC on that specific posted transaction.
+
+## Points expiry and transfers
+
+The **Expiry** tab lists every batch you hold, soonest first, with a chip
+showing how long is left — and a running record of transfers you have made.
+
+**Transferring now moves the points.** `/convert` compares routes and changes
+nothing; `/transfer 50000 citi_ty krisflyer` executes one:
+
+- it consumes the **soonest-expiring batch first**, which is the whole reason
+  to track batches rather than one total
+- a partly used batch keeps its remainder
+- the miles land as a new batch, carrying the target programme's expiry rule
+- points below a whole block stay put, and the reply says how many
+- the transfer is recorded, so a balance always reflects what actually moved
+
 ## Trends
 
 The dashboard's **Trends** tab reads a month back to you: the headline total

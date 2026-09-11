@@ -15,6 +15,7 @@ import {
 } from './spend';
 import { balances, categoryForMerchant, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
 import { buildAnalytics } from './analytics';
+import { executeTransfer, tranchesByExpiry } from './points';
 import type { Env, Offer } from './types';
 
 // The dashboard is served from this same Worker, so there is no cross-origin
@@ -189,6 +190,96 @@ export default {
         return json({ ok: true, key });
       }
 
+      // Executing a transfer, as opposed to planning one.
+      if (url.pathname === '/api/transfer' && req.method === 'POST') {
+        const b = (await req.json()) as { conversion_id?: number; points?: string | number; note?: string };
+        const id = Number(b.conversion_id);
+        const pts = parseInt(String(b.points ?? '').replace(/[, ]/g, ''), 10);
+        if (!id || !Number.isFinite(pts)) return json({ error: 'conversion_id and points are required' }, 400);
+        const r = await executeTransfer(env, id, pts, b.note);
+        return json(r, r.ok ? 200 : 400);
+      }
+
+      if (url.pathname === '/api/transfers') {
+        const { results } = await env.DB.prepare(
+          `SELECT * FROM transfers ORDER BY executed_at DESC, id DESC LIMIT 30`
+        ).all<any>();
+        return json({ transfers: results ?? [] });
+      }
+
+      if (url.pathname === '/api/expiry') {
+        return json({ tranches: await tranchesByExpiry(env) });
+      }
+
+      // Everything that still needs a category, split by whether the MCC is
+      // knowable yet — a purchase that has not posted cannot be looked up.
+      if (url.pathname === '/api/review') {
+        const { results } = await env.DB.prepare(
+          `SELECT t.id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant, c.product, c.nickname
+           FROM transactions t JOIN cards c ON c.id = t.card_id
+           WHERE t.amount_cents > 0 AND t.category IS NULL
+           ORDER BY t.posted_at IS NULL, ${EFFECTIVE_DATE.replace(/posted_at/g, 't.posted_at').replace(/occurred_at/g, 't.occurred_at')} DESC
+           LIMIT 100`
+        ).all<any>();
+        const rows = results ?? [];
+        return json({
+          ready: rows.filter((r: any) => r.posted_at !== null),
+          waiting: rows.filter((r: any) => r.posted_at === null),
+        });
+      }
+
+      // Editing a transaction in place, for the spreadsheet view.
+      if (url.pathname === '/api/tx/update' && req.method === 'POST') {
+        const b = (await req.json()) as { id?: number; field?: string; value?: string | null };
+        const id = Number(b.id);
+        const field = String(b.field ?? '');
+        if (!id || !field) return json({ error: 'id and field are required' }, 400);
+        const raw = b.value === null ? null : String(b.value).trim();
+
+        if (field === 'amount') {
+          const cents = parseMoney(raw ?? '');
+          if (cents === null) return json({ error: 'bad amount' }, 400);
+          await env.DB.prepare(`UPDATE transactions SET amount_cents = ? WHERE id = ?`).bind(cents, id).run();
+        } else if (field === 'occurred_at' || field === 'posted_at') {
+          const d = raw ? parseDateToken(raw, env) : null;
+          if (raw && !d) return json({ error: 'bad date' }, 400);
+          if (d && d > today(env)) return json({ error: 'date is in the future' }, 400);
+          if (field === 'posted_at' && d) {
+            const row = await env.DB.prepare(`SELECT occurred_at FROM transactions WHERE id = ?`)
+              .bind(id)
+              .first<{ occurred_at: string }>();
+            if (row && d < row.occurred_at) return json({ error: 'posted before it happened' }, 400);
+          }
+          await env.DB.prepare(`UPDATE transactions SET ${field} = ? WHERE id = ?`).bind(d, id).run();
+        } else if (field === 'merchant') {
+          await env.DB.prepare(`UPDATE transactions SET merchant = ? WHERE id = ?`).bind(raw || null, id).run();
+        } else if (field === 'category') {
+          const cat = raw && raw !== '?' ? raw.toLowerCase() : null;
+          const row = await env.DB.prepare(`SELECT merchant FROM transactions WHERE id = ?`)
+            .bind(id)
+            .first<{ merchant: string | null }>();
+          if (cat) await rememberMerchant(env, row?.merchant ?? null, cat);
+          await env.DB.prepare(
+            `UPDATE transactions SET category = ?, category_source = ?, needs_review = ? WHERE id = ?`
+          )
+            .bind(cat, cat ? 'manual' : null, cat ? 0 : 1, id)
+            .run();
+        } else if (field === 'card_id') {
+          const card = await env.DB.prepare(`SELECT id FROM cards WHERE id = ?`).bind(Number(raw)).first();
+          if (!card) return json({ error: 'unknown card' }, 400);
+          await env.DB.prepare(`UPDATE transactions SET card_id = ? WHERE id = ?`).bind(Number(raw), id).run();
+        } else {
+          return json({ error: `field ${field} is not editable` }, 400);
+        }
+
+        const updated = await env.DB.prepare(
+          `SELECT t.*, c.product, c.nickname FROM transactions t JOIN cards c ON c.id = t.card_id WHERE t.id = ?`
+        )
+          .bind(id)
+          .first<any>();
+        return json({ ok: true, transaction: updated });
+      }
+
       if (url.pathname === '/api/convert') {
         const pts = parseInt((url.searchParams.get('points') ?? '').replace(/,/g, ''), 10);
         const from = url.searchParams.get('from') ?? '';
@@ -282,14 +373,22 @@ export default {
         // Same merchant learning the bot uses, so the dashboard benefits too.
         const note = body.note?.trim() || null;
         let category = body.category?.trim().toLowerCase() || null;
-        if (category) await rememberMerchant(env, note, category);
-        else category = await categoryForMerchant(env, note);
+        // '?' means "I don't know yet" — an explicit unknown, not a guess.
+        if (category === '?' || category === 'unknown') category = null;
+        let source: string | null = null;
+        if (category) {
+          source = 'manual';
+          await rememberMerchant(env, note, category);
+        } else {
+          category = await categoryForMerchant(env, note);
+          if (category) source = 'learned';
+        }
 
         const ins = await env.DB.prepare(
-          `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category, source)
-           VALUES (?, ?, ?, ?, ?, ?, 'manual')`
+          `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category, category_source, needs_review, source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual')`
         )
-          .bind(card.id, cents, date, posted, note, category)
+          .bind(card.id, cents, date, posted, note, category, source, category ? 0 : 1)
           .run();
 
         const alerts = await checkAlerts(env, card);
@@ -301,6 +400,8 @@ export default {
           date,
           posted_at: posted,
           category,
+          category_source: source,
+          needs_review: category ? 0 : 1,
           alerts: alerts.length,
         });
       }

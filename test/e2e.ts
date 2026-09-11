@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { buildDigest, checkAlerts } from '../src/digest';
 import { evaluateOffer } from '../src/eligibility';
 import { utilization, requirementProgress, requirementsFor, activeCards } from '../src/spend';
-import { balances, planTransfer, planRoutes, rankCards, rateIssues, ratesReview, categoryForMerchant, rememberMerchant } from '../src/points';
+import { balances, planTransfer, planRoutes, rankCards, rateIssues, ratesReview, categoryForMerchant, rememberMerchant, executeTransfer, tranchesByExpiry } from '../src/points';
 import { statements } from '../src/sql';
 import { formatRate } from '../src/points';
 import type { Env } from '../src/types';
@@ -481,6 +481,65 @@ check('and again the next day', urgentAgain !== null && /Ending soon/.test(urgen
 // The full report is never suppressed, however often it is asked for.
 const onDemand = await ratesReview(env, { quiet: false });
 check('/rates always returns the whole picture', onDemand !== null && /Never verified/.test(onDemand), (onDemand ?? '').slice(0, 200));
+
+// --- executing a transfer actually moves the points -------------------------
+// Planning alone left balances untouched, so a transfer you really made stayed
+// invisible and the app kept advising you to move points you no longer had.
+sql(`DELETE FROM balance_tranches`);
+sql(`DELETE FROM transfers`);
+// An earlier block left a promo bonus on route 1; clear it so the ratio is plain.
+sql(`UPDATE conversions SET bonus_pct = 0, bonus_until = NULL WHERE id = 1`);
+// Three batches, deliberately out of expiry order in the table.
+sql(`INSERT INTO balance_tranches (id,program_key,points,expires_at) VALUES (101,'citi_ty',30000,'2027-06-30')`);
+sql(`INSERT INTO balance_tranches (id,program_key,points,expires_at) VALUES (102,'citi_ty',15000,'2026-10-31')`);
+sql(`INSERT INTO balance_tranches (id,program_key,points,expires_at) VALUES (103,'citi_ty',20000,NULL)`);
+
+const byExp = await tranchesByExpiry(env);
+check('batches list soonest expiry first', byExp[0].id === 102 && byExp[1].id === 101, byExp.map((t: any) => t.id).join(','));
+check('a batch with no expiry sorts last', byExp[byExp.length - 1].id === 103, byExp.map((t: any) => t.id).join(','));
+check('and each carries days remaining', byExp[0].days_left === 50, `got ${byExp[0].days_left}`);
+check('a no-expiry batch reports null days', byExp[byExp.length - 1].days_left === null, '');
+
+// Route 1 is direct: 25,000-point blocks at 2.5:1.
+const before = (db.prepare(`SELECT COALESCE(SUM(points),0) n FROM balance_tranches WHERE program_key='citi_ty'`).get() as any).n;
+check('starting balance', before === 65000, `got ${before}`);
+
+const moved = await executeTransfer(env, 1, 50000);
+check('the transfer succeeds', moved.ok, JSON.stringify(moved.error));
+check('it converts at the route ratio', moved.plan!.miles === 20000, `got ${moved.plan!.miles}`);
+
+const after = (db.prepare(`SELECT COALESCE(SUM(points),0) n FROM balance_tranches WHERE program_key='citi_ty'`).get() as any).n;
+check('the source balance is actually reduced', after === 15000, `got ${after}`);
+
+// Soonest-expiry-first — the whole reason to track batches rather than a total.
+// 50,000 takes all of 102 (15k, Oct), all of 101 (30k, Jun 2027), then 5k of
+// the no-expiry batch 103.
+check('it spends the batch expiring soonest first', moved.consumed![0].tranche_id === 102, JSON.stringify(moved.consumed));
+check('then the next soonest', moved.consumed![1].tranche_id === 101, JSON.stringify(moved.consumed));
+check('and only then the one that never expires', moved.consumed![2].tranche_id === 103, JSON.stringify(moved.consumed));
+check('exhausted batches are removed',
+  db.prepare(`SELECT id FROM balance_tranches WHERE id IN (101,102)`).all().length === 0, '');
+check('the partly used batch keeps its remainder',
+  (db.prepare(`SELECT points FROM balance_tranches WHERE id=103`).get() as any).points === 15000,
+  JSON.stringify(db.prepare(`SELECT points FROM balance_tranches WHERE id=103`).get()));
+
+const kf = (db.prepare(`SELECT COALESCE(SUM(points),0) n FROM balance_tranches WHERE program_key='krisflyer'`).get() as any).n;
+check('the miles arrive in the target programme', kf === 20000, `got ${kf}`);
+const newT = db.prepare(`SELECT expires_at FROM balance_tranches WHERE program_key='krisflyer'`).get() as any;
+check("the new batch takes the target's expiry rule", newT.expires_at === '2029-09-11', String(newT.expires_at));
+
+const ledger = db.prepare(`SELECT * FROM transfers`).all() as any[];
+check('the transfer is recorded', ledger.length === 1 && ledger[0].points_out === 50000 && ledger[0].units_in === 20000, JSON.stringify(ledger));
+
+// Guard rails.
+const tooMuch = await executeTransfer(env, 1, 500000);
+check('refuses more than you hold', !tooMuch.ok && /available/.test(tooMuch.error ?? ''), JSON.stringify(tooMuch.error));
+const unchanged = (db.prepare(`SELECT COALESCE(SUM(points),0) n FROM balance_tranches WHERE program_key='citi_ty'`).get() as any).n;
+check('and changes nothing when it refuses', unchanged === 15000, `got ${unchanged}`);
+
+const tooFew = await executeTransfer(env, 1, 1000);
+check('refuses below the minimum block', !tooFew.ok, JSON.stringify(tooFew.error));
+check('an unknown route is refused', !(await executeTransfer(env, 9999, 50000)).ok, '');
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

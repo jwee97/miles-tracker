@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS transactions (
                                                  -- on this when set, else occurred_at
   merchant     TEXT,
   category     TEXT,                             -- matches earn_rules.category
+  category_source TEXT,                          -- manual | learned | null
+  needs_review INTEGER NOT NULL DEFAULT 0,       -- category unconfirmed
   source       TEXT    NOT NULL DEFAULT 'manual',-- manual | sms | import
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -106,6 +108,20 @@ CREATE TABLE IF NOT EXISTS alerts_sent (
 );
 
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
+
+-- Executed point transfers, so a balance reflects what actually moved.
+CREATE TABLE IF NOT EXISTS transfers (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_program  TEXT    NOT NULL,
+  to_program    TEXT    NOT NULL,
+  conversion_id INTEGER,
+  points_out    INTEGER NOT NULL,
+  units_in      INTEGER NOT NULL,
+  fee_cents     INTEGER NOT NULL DEFAULT 0,
+  route         TEXT,
+  executed_at   TEXT    NOT NULL,
+  note          TEXT
+);
 
 -- Learned from your own tagging, so spend categorises itself over time.
 CREATE TABLE IF NOT EXISTS merchant_categories (

@@ -1,4 +1,4 @@
-import { calendarMonth, calendarQuarter, claimAlert, localNow, money, statementCycle, today, EFFECTIVE_DATE } from './spend';
+import { addMonths, calendarMonth, calendarQuarter, claimAlert, localNow, money, statementCycle, today, EFFECTIVE_DATE } from './spend';
 import type { Card, Env } from './types';
 
 export interface Program {
@@ -257,6 +257,134 @@ function weekStamp(env: Env): string {
   const day = (d.getUTCDay() + 6) % 7; // Monday = 0
   const monday = new Date(d.getTime() - day * 86400_000);
   return monday.toISOString().slice(0, 10);
+}
+
+export interface TransferResult {
+  ok: boolean;
+  error?: string;
+  plan?: TransferPlan;
+  consumed?: { tranche_id: number; points: number; expires_at: string | null }[];
+  created_tranche_id?: number;
+  transfer_id?: number;
+}
+
+/**
+ * Actually moves the points. Planning alone left the source balance untouched,
+ * so a transfer you really made stayed invisible and the app kept advising you
+ * to transfer points you no longer had.
+ *
+ * Source batches are consumed soonest-expiry-first: the whole reason to track
+ * batches is that some lapse sooner, and those are the ones a transfer should
+ * use up.
+ */
+export async function executeTransfer(
+  env: Env,
+  conversionId: number,
+  points: number,
+  note?: string
+): Promise<TransferResult> {
+  const conv = await env.DB.prepare(`SELECT * FROM conversions WHERE id = ? AND active = 1`)
+    .bind(conversionId)
+    .first<Conversion>();
+  if (!conv) return { ok: false, error: 'unknown route' };
+
+  const plan = planTransfer(points, conv, today(env));
+  if (!plan.possible) return { ok: false, error: plan.reason ?? 'not possible', plan };
+
+  const { results: tranches } = await env.DB.prepare(
+    `SELECT id, points, expires_at FROM balance_tranches
+     WHERE program_key = ? AND points > 0
+     ORDER BY expires_at IS NULL, expires_at, id`
+  )
+    .bind(conv.from_program)
+    .all<{ id: number; points: number; expires_at: string | null }>();
+
+  const available = (tranches ?? []).reduce((s, t) => s + t.points, 0);
+  if (available < plan.transferable) {
+    return {
+      ok: false,
+      error: `Only ${available.toLocaleString()} available, ${plan.transferable.toLocaleString()} needed.`,
+      plan,
+    };
+  }
+
+  const consumed: { tranche_id: number; points: number; expires_at: string | null }[] = [];
+  let remaining = plan.transferable;
+  for (const t of tranches ?? []) {
+    if (remaining <= 0) break;
+    const take = Math.min(t.points, remaining);
+    remaining -= take;
+    consumed.push({ tranche_id: t.id, points: take, expires_at: t.expires_at });
+    if (take === t.points) {
+      await env.DB.prepare(`DELETE FROM balance_tranches WHERE id = ?`).bind(t.id).run();
+    } else {
+      await env.DB.prepare(`UPDATE balance_tranches SET points = points - ? WHERE id = ?`)
+        .bind(take, t.id)
+        .run();
+    }
+  }
+
+  const target = await env.DB.prepare(`SELECT expiry_months FROM programs WHERE key = ?`)
+    .bind(conv.to_program)
+    .first<{ expiry_months: number | null }>();
+  const expires = target?.expiry_months ? addMonths(today(env), target.expiry_months) : null;
+
+  const ins = await env.DB.prepare(
+    `INSERT INTO balance_tranches (program_key, points, earned_at, expires_at, note) VALUES (?, ?, ?, ?, ?)`
+  )
+    .bind(
+      conv.to_program,
+      plan.miles,
+      today(env),
+      expires,
+      note || `transferred from ${conv.from_program}${conv.route ? ` via ${conv.route}` : ''}`
+    )
+    .run();
+
+  const tr = await env.DB.prepare(
+    `INSERT INTO transfers (from_program, to_program, conversion_id, points_out, units_in, fee_cents, route, executed_at, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      conv.from_program,
+      conv.to_program,
+      conv.id,
+      plan.transferable,
+      plan.miles,
+      plan.fee_cents,
+      conv.route,
+      today(env),
+      note || null
+    )
+    .run();
+
+  return {
+    ok: true,
+    plan,
+    consumed,
+    created_tranche_id: ins.meta.last_row_id as number,
+    transfer_id: tr.meta.last_row_id as number,
+  };
+}
+
+/** Every batch you hold, soonest expiry first — the order that matters. */
+export async function tranchesByExpiry(env: Env) {
+  const now = today(env);
+  const { results } = await env.DB.prepare(
+    `SELECT t.id, t.program_key, t.points, t.earned_at, t.expires_at, t.note,
+            p.name, p.unit, p.kind
+     FROM balance_tranches t JOIN programs p ON p.key = t.program_key
+     WHERE t.points > 0
+     ORDER BY t.expires_at IS NULL, t.expires_at, p.name`
+  ).all<any>();
+
+  return (results ?? []).map((r) => ({
+    ...r,
+    days_left:
+      r.expires_at === null
+        ? null
+        : Math.round((Date.parse(r.expires_at) - Date.parse(now)) / 86400_000),
+  }));
 }
 
 export interface BalanceRow {

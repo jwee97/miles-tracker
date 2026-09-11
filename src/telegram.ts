@@ -4,7 +4,7 @@ import { cardRulesPrompt, extractionPrompt, HELP } from './extraction';
 import { evaluateOffer } from './eligibility';
 import { scanFeeds } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
-import { balances, categoryForMerchant, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
+import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
 import { runMigrations, runSeed } from './migrate';
 import type { Card, Env, Offer } from './types';
 
@@ -453,6 +453,96 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         );
       }
 
+      case '/transfer': {
+        // points from to  — actually moves them, unlike /convert which plans.
+        const [ptsRaw, from, to] = args.trim().split(/\s+/);
+        const pts = parseInt((ptsRaw ?? '').replace(/,/g, ''), 10);
+        if (!pts || !from || !to)
+          return send(env, chatId, 'Format: `/transfer 50000 citi_ty krisflyer`\nUse /convert first to compare routes.');
+        const plans = await planRoutes(env, pts, from, to);
+        const best = plans.find((p) => p.possible);
+        if (!best) return send(env, chatId, plans[0]?.reason ?? `No route from ${from} to ${to}.`);
+
+        const r = await executeTransfer(env, best.conversion.id, pts);
+        if (!r.ok) return send(env, chatId, `Could not transfer: ${r.error}`);
+        const used = (r.consumed ?? [])
+          .map((c) => `${c.points.toLocaleString()} expiring ${c.expires_at ?? 'never'}`)
+          .join(', ');
+        return send(
+          env,
+          chatId,
+          `Transferred ${r.plan!.transferable.toLocaleString()} ${from} → ` +
+            `*${r.plan!.miles.toLocaleString()} ${to}*` +
+            (r.plan!.fee_cents ? ` · fee $${money(r.plan!.fee_cents)}` : ' · free') +
+            `\n\nTaken from: ${used}` +
+            (r.plan!.stranded ? `\n${r.plan!.stranded.toLocaleString()} left behind (below a block)` : '') +
+            '\n\n/bal to see the new balances.'
+        );
+      }
+
+      case '/expiry': {
+        const rows = await tranchesByExpiry(env);
+        if (!rows.length) return send(env, chatId, 'No balances recorded. /addbal to start.');
+        return send(
+          env,
+          chatId,
+          '*By expiry, soonest first*\n' +
+            rows
+              .map(
+                (r: any) =>
+                  `${r.expires_at ?? 'no expiry'}${r.days_left !== null ? ` _(${r.days_left}d)_` : ''} — ` +
+                  `*${r.points.toLocaleString()}* ${r.name}` +
+                  (r.note ? `\n  _${r.note}_` : '')
+              )
+              .join('\n')
+        );
+      }
+
+      case '/review': {
+        const { results } = await env.DB.prepare(
+          `SELECT t.id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant, c.nickname
+           FROM transactions t JOIN cards c ON c.id = t.card_id
+           WHERE t.amount_cents > 0 AND t.category IS NULL
+           ORDER BY t.posted_at IS NULL, t.occurred_at DESC LIMIT 20`
+        ).all<any>();
+        if (!results?.length) return send(env, chatId, 'Everything is categorised.');
+        const ready = results.filter((r: any) => r.posted_at);
+        const waiting = results.filter((r: any) => !r.posted_at);
+        const line = (r: any) =>
+          `#${r.id} ${r.occurred_at} *${r.nickname}* $${money(r.amount_cents)}${r.merchant ? ` — ${r.merchant}` : ''}`;
+        const out: string[] = [];
+        if (ready.length) {
+          out.push('*Ready to categorise*', '_Posted, so the bank can tell you the MCC._', ...ready.map(line), '');
+        }
+        if (waiting.length) {
+          out.push('*Waiting to post*', '_The MCC is not knowable until it posts._', ...waiting.map(line), '');
+        }
+        out.push('`/cat <id> <category>` to set one.');
+        return send(env, chatId, out.join('\n'));
+      }
+
+      case '/cat': {
+        const [idRaw, catRaw] = args.trim().split(/\s+/);
+        const id = parseInt(idRaw, 10);
+        if (!id || !catRaw) return send(env, chatId, 'Format: `/cat 42 groceries`');
+        const cat = catRaw.toLowerCase();
+        const row = await env.DB.prepare(`SELECT merchant FROM transactions WHERE id = ?`)
+          .bind(id)
+          .first<{ merchant: string | null }>();
+        if (!row) return send(env, chatId, `No transaction #${id}.`);
+        await rememberMerchant(env, row.merchant, cat);
+        await env.DB.prepare(
+          `UPDATE transactions SET category = ?, category_source = 'manual', needs_review = 0 WHERE id = ?`
+        )
+          .bind(cat, id)
+          .run();
+        return send(
+          env,
+          chatId,
+          `#${id} is now *${cat}*.` + (row.merchant ? `\n${row.merchant} will categorise itself from now on.` : '')
+        );
+      }
+
       case '/bal': {
         const rows = await balances(env);
         if (!rows.length) return send(env, chatId, 'No programmes yet. /addbal to record a balance.');
@@ -791,19 +881,25 @@ async function logSpend(env: Env, chatId: string, input: string) {
   if (!card) return send(env, chatId, `No card with nickname \`${nick}\`. /cards to list them.`);
 
   // Tagging a merchant once is enough: later spend there categorises itself.
-  let resolved = category;
+  // '#?' is an explicit "I don't know yet" — better than a guess, because a
+  // wrong category quietly corrupts the cap tracking and the wrong-card advice.
+  let resolved = category === '?' || category === 'unknown' ? null : category;
   let learned = false;
-  if (category) {
-    await rememberMerchant(env, note, category);
-  } else if (note) {
+  let source: string | null = null;
+  if (resolved) {
+    source = 'manual';
+    await rememberMerchant(env, note, resolved);
+  } else if (note && category === null) {
     resolved = await categoryForMerchant(env, note);
     learned = resolved !== null;
+    if (resolved) source = 'learned';
   }
 
   const ins = await env.DB.prepare(
-    `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, category, source) VALUES (?, ?, ?, ?, ?, 'manual')`
+    `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, category, category_source, needs_review, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'manual')`
   )
-    .bind(card.id, amount, date, note || null, resolved)
+    .bind(card.id, amount, date, note || null, resolved, source, resolved ? 0 : 1)
     .run();
 
   // Immediate feedback: what this swipe did to the limit and to any minimum.
@@ -811,7 +907,7 @@ async function logSpend(env: Env, chatId: string, input: string) {
   const when = date === today(env) ? '' : ` on ${date}`;
   const bits: string[] = [
     `Logged $${money(amount)} to *${card.product}*${when}.` +
-      (resolved ? ` #${resolved}${learned ? ' _(remembered)_' : ''}` : '') +
+      (resolved ? ` #${resolved}${learned ? ' _(remembered)_' : ''}` : ' _(no category — /review)_') +
       ` (#${ins.meta.last_row_id})`,
   ];
   for (const req of reqs) {

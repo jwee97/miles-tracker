@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import Analytics from './Analytics';
+import Ledger from './Ledger';
+import ExpiryTab from './Expiry';
 import {
   addProgram,
   addTranche,
@@ -661,7 +663,7 @@ function PointsTab() {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<'cards' | 'trends' | 'points' | 'offers'>('cards');
+  const [tab, setTab] = useState<'cards' | 'ledger' | 'trends' | 'points' | 'expiry' | 'offers'>('cards');
   const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
@@ -707,11 +709,17 @@ export default function App() {
         <button className={tab === 'cards' ? 'on' : ''} onClick={() => setTab('cards')}>
           Cards
         </button>
+        <button className={tab === 'ledger' ? 'on' : ''} onClick={() => setTab('ledger')}>
+          Ledger
+        </button>
         <button className={tab === 'trends' ? 'on' : ''} onClick={() => setTab('trends')}>
           Trends
         </button>
         <button className={tab === 'points' ? 'on' : ''} onClick={() => setTab('points')}>
           Points
+        </button>
+        <button className={tab === 'expiry' ? 'on' : ''} onClick={() => setTab('expiry')}>
+          Expiry
         </button>
         <button className={tab === 'offers' ? 'on' : ''} onClick={() => setTab('offers')}>
           Offers{offers?.length ? ` (${offers.length})` : ''}
@@ -746,7 +754,11 @@ export default function App() {
           <p className="pad sub">Loading…</p>
         ))}
 
+      {tab === 'ledger' && <Ledger />}
+
       {tab === 'trends' && <Analytics />}
+
+      {tab === 'expiry' && <ExpiryTab />}
 
       {tab === 'points' && <PointsTab />}
 
