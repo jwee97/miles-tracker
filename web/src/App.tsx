@@ -6,6 +6,7 @@ import {
   fetchOffers,
   fetchSummary,
   fetchTransactions,
+  markPosted,
   money,
   type CardSummary,
   type OfferRow,
@@ -40,7 +41,11 @@ function RequirementRow({ p }: { p: Progress }) {
       </div>
       <Meter percent={pct} tone={p.met ? 'ok' : urgent ? 'warn' : 'mid'} />
       <div className="req-foot">
-        {p.met ? (
+        {p.met && p.met_only_with_at_risk ? (
+          <span className="risk-text">
+            Met only if ${money(p.at_risk_cents)} posts in time · ${money(p.confirmed_cents)} confirmed
+          </span>
+        ) : p.met ? (
           <span className="ok-text">Met</span>
         ) : (
           <span>
@@ -55,6 +60,9 @@ function RequirementRow({ p }: { p: Progress }) {
       </div>
       {/* The mirror of a minimum: past the cap the elevated rate is gone. */}
       {p.cap_reached && <div className="cap">Bonus cap reached — further spend earns the base rate.</div>}
+      {!p.met && p.at_risk_cents > 0 && (
+        <div className="risk">⏳ ${money(p.at_risk_cents)} of this may post after {p.window.end}.</div>
+      )}
     </div>
   );
 }
@@ -75,6 +83,9 @@ function Card({ c }: { c: CardSummary }) {
       <p className="sub mono">
         ${money(c.balance_cents)} / ${money(c.limit_cents)} · closes {c.cycle.end} ({c.days_left}d)
       </p>
+      {c.at_risk_cents > 0 && (
+        <p className="risk">⏳ ${money(c.at_risk_cents)} may post after this cycle closes</p>
+      )}
       {c.requirements.map((r) => (
         <RequirementRow key={r.id} p={r} />
       ))}
@@ -193,7 +204,15 @@ function AddSpend({ cards, onSaved }: { cards: CardSummary[]; onSaved: () => voi
   );
 }
 
-function Recent({ txns, onDelete }: { txns: Txn[]; onDelete: (id: number) => void }) {
+function Recent({
+  txns,
+  onDelete,
+  onPosted,
+}: {
+  txns: Txn[];
+  onDelete: (id: number) => void;
+  onPosted: (id: number, date: string) => void;
+}) {
   if (!txns.length) return null;
   return (
     <section className="card">
@@ -205,10 +224,26 @@ function Recent({ txns, onDelete }: { txns: Txn[]; onDelete: (id: number) => voi
       </header>
       <ul className="txns">
         {txns.map((t) => (
-          <li key={t.id}>
+          <li key={t.id} className={t.posted_at ? '' : 'unposted'}>
             <span className="mono t-date">{t.occurred_at.slice(5)}</span>
             <span className="t-card">{t.nickname}</span>
             <span className="t-note">{t.merchant ?? ''}</span>
+            {/* The posting date is what windows are judged on, so make it
+                settable in one tap rather than hiding it behind the bot. */}
+            {t.posted_at ? (
+              <span className="mono t-posted" title={`Posted ${t.posted_at}`}>
+                → {t.posted_at.slice(5)}
+              </span>
+            ) : (
+              <input
+                id={`posted-${t.id}`}
+                className="t-posted-input"
+                type="date"
+                min={t.occurred_at}
+                title="Set the date the bank posted this"
+                onChange={(e) => e.target.value && onPosted(t.id, e.target.value)}
+              />
+            )}
             <span className="mono t-amt">${money(t.amount_cents)}</span>
             <button type="button" className="t-del" onClick={() => onDelete(t.id)} aria-label={`Delete entry ${t.id}`}>
               ×
@@ -250,6 +285,11 @@ export default function App() {
     refresh();
   }
 
+  async function confirmPosted(id: number, date: string) {
+    await markPosted(id, date);
+    refresh();
+  }
+
   if (error) return <main className="pad"><p className="error">{error}</p></main>;
 
   return (
@@ -283,7 +323,7 @@ export default function App() {
             {summary.cards.map((c) => (
               <Card key={c.id} c={c} />
             ))}
-            <Recent txns={txns} onDelete={removeTxn} />
+            <Recent txns={txns} onDelete={removeTxn} onPosted={confirmPosted} />
             {!summary.cards.length && <p className="pad sub">No cards yet. Add one with /newcard in the bot.</p>}
           </>
         ) : (

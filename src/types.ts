@@ -7,6 +7,7 @@ export interface Env {
   TZ_OFFSET_MINUTES: string;
   UTIL_THRESHOLDS: string;
   MIN_SPEND_WARN_DAYS: string;
+  POSTING_LAG_DAYS: string;
 }
 
 export interface Card {

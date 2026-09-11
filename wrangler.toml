@@ -29,6 +29,10 @@ TZ_OFFSET_MINUTES = "480"
 UTIL_THRESHOLDS = "50,80,90"
 # Warn this many days before a minimum-spend deadline.
 MIN_SPEND_WARN_DAYS = "7"
+# How long a purchase can take to post. Spend this close to a window's end,
+# with no confirmed posting date, is reported as at risk of landing in the
+# next window instead of counting toward this one.
+POSTING_LAG_DAYS = "3"
 
 # Secrets — set with `wrangler secret put <NAME>`, never in this file:
 #   TELEGRAM_BOT_TOKEN   from @BotFather

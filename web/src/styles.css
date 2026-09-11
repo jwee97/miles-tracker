@@ -148,3 +148,21 @@ main { max-width: 640px; margin: 0 auto; padding: 12px 16px 48px; }
   cursor: pointer; padding: 2px 6px; border-radius: 5px;
 }
 .t-del:hover { color: var(--bad); background: rgba(248, 113, 113, .12); }
+
+/* ---------- posting-date uncertainty ---------- */
+.risk { margin-top: 6px; font-size: 12px; color: var(--mid); }
+.risk-text { color: var(--mid); }
+.txns li { grid-template-columns: 44px 58px 1fr auto auto 28px; }
+.t-posted { color: var(--ok); font-size: 12px; }
+.t-posted-input {
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: 5px;
+  padding: 3px 5px;
+  max-width: 120px;
+}
+.t-posted-input:focus { outline: none; border-color: var(--mid); border-style: solid; color: var(--text); }
+.txns li.unposted .t-date::after { content: ' ⏳'; font-size: 10px; }

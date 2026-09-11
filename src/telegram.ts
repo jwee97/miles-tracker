@@ -3,7 +3,7 @@ import { buildDigest, checkAlerts } from './digest';
 import { extractionPrompt, HELP } from './extraction';
 import { evaluateOffer } from './eligibility';
 import { scanFeeds } from './rss';
-import { money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today } from './spend';
+import { daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import type { Card, Env, Offer } from './types';
 
 const api = (env: Env, method: string) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
@@ -329,9 +329,9 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
       case '/recent': {
         const { results } = await env.DB.prepare(
-          `SELECT t.id, t.amount_cents, t.occurred_at, t.merchant, c.nickname
+          `SELECT t.id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant, c.nickname
            FROM transactions t JOIN cards c ON c.id = t.card_id
-           ORDER BY t.occurred_at DESC, t.id DESC LIMIT 15`
+           ORDER BY COALESCE(t.posted_at, t.occurred_at) DESC, t.id DESC LIMIT 15`
         ).all<any>();
         if (!results?.length) return send(env, chatId, 'No transactions yet.');
         return send(
@@ -339,9 +339,32 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           chatId,
           '*Recent*\n' +
             results
-              .map((r) => `#${r.id} ${r.occurred_at} *${r.nickname}* $${money(r.amount_cents)}${r.merchant ? ` — ${r.merchant}` : ''}`)
+              .map(
+                (r) =>
+                  `#${r.id} ${r.occurred_at}${r.posted_at ? ` → ${r.posted_at}` : ' ⏳'} *${r.nickname}* ` +
+                  `$${money(r.amount_cents)}${r.merchant ? ` — ${r.merchant}` : ''}`
+              )
               .join('\n') +
-            '\n\n`/del <id>` to remove one.'
+            '\n\n⏳ = posting date not confirmed.' +
+            '\n`/posted <id> <date>` to set it · `/del <id>` to remove.'
+        );
+      }
+
+      case '/posted': {
+        // 'today' and the other date words work here too.
+        const m = args.trim().split(/\s+/);
+        const id = parseInt(m[0], 10);
+        const when = m[1] ? parseDateToken(m[1], env) : today(env);
+        if (!id || !when) return send(env, chatId, 'Format: `/posted 12 2026-09-22` (or `today`, `yesterday`, `-2`).');
+        const row = await env.DB.prepare(`SELECT * FROM transactions WHERE id = ?`).bind(id).first<any>();
+        if (!row) return send(env, chatId, `No transaction #${id}.`);
+        if (when < row.occurred_at)
+          return send(env, chatId, `A transaction cannot post (${when}) before it happened (${row.occurred_at}).`);
+        await env.DB.prepare(`UPDATE transactions SET posted_at = ? WHERE id = ?`).bind(when, id).run();
+        return send(
+          env,
+          chatId,
+          `#${id} posted ${when}` + (when === row.occurred_at ? '.' : ` (made ${row.occurred_at}).`) + '\nWindows now use the posting date.'
         );
       }
 
@@ -442,6 +465,16 @@ async function logSpend(env: Env, chatId: string, input: string) {
   // A backdated entry can land outside the window a requirement measures, so
   // say so rather than leave the unchanged totals looking like a failed write.
   if (date !== today(env)) bits.push('_Backdated — totals only move if it falls inside the current window._');
+  // Banks count the posting date, so near a boundary this entry may not land
+  // in the window it appears to.
+  const near = await requirementsFor(env, card.id);
+  const lag = parseInt(env.POSTING_LAG_DAYS || '0', 10);
+  const boundary = near.length
+    ? (await requirementProgress(env, card, near[0])).window.end
+    : (await utilization(env, card)).cycle.end;
+  if (lag > 0 && daysBetween(date, boundary) <= lag && date <= boundary) {
+    bits.push(`⏳ Close to ${boundary} — may post after it. \`/posted ${ins.meta.last_row_id} <date>\` once you see it.`);
+  }
   await send(env, chatId, bits.join('\n'));
 
   for (const alert of await checkAlerts(env, card)) await send(env, chatId, alert);

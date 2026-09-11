@@ -121,20 +121,61 @@ export function parseDateToken(token: string, env: Env): string | null {
   return null;
 }
 
-export async function spentBetween(env: Env, cardId: number, start: string, end: string): Promise<number> {
+/**
+ * The date a window is judged on. Banks assess statement cycles, minimum spend
+ * and bonus caps on when a transaction POSTED, so posted_at wins whenever it is
+ * known; until then occurred_at is the best estimate available.
+ */
+export const EFFECTIVE_DATE = `COALESCE(posted_at, occurred_at)`;
+
+export interface Spend {
+  /** Everything whose effective date falls in the window. */
+  total_cents: number;
+  /**
+   * The part of `total_cents` that could still move out of this window: made
+   * close enough to the end that it may post after it, with no confirmed
+   * posting date yet.
+   */
+  at_risk_cents: number;
+  at_risk_count: number;
+}
+
+export async function spendIn(
+  env: Env,
+  cardId: number,
+  start: string,
+  end: string
+): Promise<Spend> {
+  const lag = parseInt(env.POSTING_LAG_DAYS || '0', 10);
+  // Spend on or after this date, not yet confirmed posted, may slip.
+  const riskFrom = isoDate(new Date(Date.parse(end + 'T00:00:00Z') - lag * 86400_000));
+
   const row = await env.DB.prepare(
-    `SELECT COALESCE(SUM(amount_cents), 0) AS total FROM transactions
-     WHERE card_id = ? AND occurred_at >= ? AND occurred_at <= ?`
+    `SELECT
+       COALESCE(SUM(amount_cents), 0) AS total,
+       COALESCE(SUM(CASE WHEN posted_at IS NULL AND occurred_at >= ? THEN amount_cents ELSE 0 END), 0) AS at_risk,
+       COALESCE(SUM(CASE WHEN posted_at IS NULL AND occurred_at >= ? THEN 1 ELSE 0 END), 0) AS at_risk_n
+     FROM transactions
+     WHERE card_id = ? AND ${EFFECTIVE_DATE} >= ? AND ${EFFECTIVE_DATE} <= ?`
   )
-    .bind(cardId, start, end)
-    .first<{ total: number }>();
-  return row?.total ?? 0;
+    .bind(riskFrom, riskFrom, cardId, start, end)
+    .first<{ total: number; at_risk: number; at_risk_n: number }>();
+
+  return {
+    total_cents: row?.total ?? 0,
+    at_risk_cents: lag > 0 ? (row?.at_risk ?? 0) : 0,
+    at_risk_count: lag > 0 ? (row?.at_risk_n ?? 0) : 0,
+  };
+}
+
+export async function spentBetween(env: Env, cardId: number, start: string, end: string): Promise<number> {
+  return (await spendIn(env, cardId, start, end)).total_cents;
 }
 
 export async function countBetween(env: Env, cardId: number, start: string, end: string): Promise<number> {
   const row = await env.DB.prepare(
     `SELECT COUNT(*) AS n FROM transactions
-     WHERE card_id = ? AND occurred_at >= ? AND occurred_at <= ? AND amount_cents > 0`
+     WHERE card_id = ? AND ${EFFECTIVE_DATE} >= ? AND ${EFFECTIVE_DATE} <= ? AND amount_cents > 0`
   )
     .bind(cardId, start, end)
     .first<{ n: number }>();
@@ -145,6 +186,7 @@ export interface Utilization {
   card: Card;
   cycle: { start: string; end: string };
   balance_cents: number;
+  at_risk_cents: number;
   limit_cents: number;
   percent: number;
   days_left: number;
@@ -152,11 +194,13 @@ export interface Utilization {
 
 export async function utilization(env: Env, card: Card): Promise<Utilization> {
   const cycle = statementCycle(card.statement_day, env);
-  const balance = await spentBetween(env, card.id, cycle.start, cycle.end);
+  const spend = await spendIn(env, card.id, cycle.start, cycle.end);
+  const balance = spend.total_cents;
   return {
     card,
     cycle,
     balance_cents: balance,
+    at_risk_cents: spend.at_risk_cents,
     limit_cents: card.credit_limit_cents,
     percent: card.credit_limit_cents > 0 ? (balance / card.credit_limit_cents) * 100 : 0,
     days_left: daysBetween(today(env), cycle.end),
@@ -168,6 +212,12 @@ export interface Progress {
   card: Card;
   window: { start: string; end: string };
   spent_cents: number;
+  /** spent_cents minus anything that may still post into the next window. */
+  confirmed_cents: number;
+  at_risk_cents: number;
+  at_risk_count: number;
+  /** True when the minimum is only met by counting spend that may yet slip. */
+  met_only_with_at_risk: boolean;
   remaining_cents: number;
   days_left: number;
   per_day_cents: number;
@@ -188,7 +238,9 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
   else if (req.window === 'statement_cycle') window = statementCycle(card.statement_day, env);
   else window = { start: req.starts_at ?? card.opened_at ?? today(env), end: req.deadline ?? today(env) };
 
-  const spent = await spentBetween(env, card.id, window.start, window.end);
+  const spend = await spendIn(env, card.id, window.start, window.end);
+  const spent = spend.total_cents;
+  const confirmed = spent - spend.at_risk_cents;
   const remaining = Math.max(0, req.amount_cents - spent);
   const daysLeft = Math.max(0, daysBetween(today(env), window.end));
   const cap = req.bonus_cap_cents ?? 0;
@@ -204,6 +256,10 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
     card,
     window,
     spent_cents: spent,
+    confirmed_cents: confirmed,
+    at_risk_cents: spend.at_risk_cents,
+    at_risk_count: spend.at_risk_count,
+    met_only_with_at_risk: remaining === 0 && confirmed < req.amount_cents,
     remaining_cents: remaining,
     days_left: daysLeft,
     per_day_cents: daysLeft > 0 ? Math.ceil(remaining / daysLeft) : remaining,

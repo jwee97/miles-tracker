@@ -63,6 +63,9 @@ export default {
               days_left: p.days_left,
               per_day_cents: p.per_day_cents,
               met: p.met,
+              confirmed_cents: p.confirmed_cents,
+              at_risk_cents: p.at_risk_cents,
+              met_only_with_at_risk: p.met_only_with_at_risk,
               txn_count: p.txn_count,
               txns_required: p.txns_required,
               txns_remaining: p.txns_remaining,
@@ -77,6 +80,7 @@ export default {
             nickname: card.nickname,
             limit_cents: u.limit_cents,
             balance_cents: u.balance_cents,
+            at_risk_cents: u.at_risk_cents,
             percent: u.percent,
             cycle: u.cycle,
             days_left: u.days_left,
@@ -139,13 +143,29 @@ export default {
       if (url.pathname === '/api/transactions' && req.method === 'GET') {
         const limit = Math.min(100, parseInt(url.searchParams.get('limit') ?? '25', 10) || 25);
         const { results } = await env.DB.prepare(
-          `SELECT t.id, t.amount_cents, t.occurred_at, t.merchant, t.source, c.nickname, c.product
+          `SELECT t.id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant, t.source, c.nickname, c.product
            FROM transactions t JOIN cards c ON c.id = t.card_id
-           ORDER BY t.occurred_at DESC, t.id DESC LIMIT ?`
+           ORDER BY COALESCE(t.posted_at, t.occurred_at) DESC, t.id DESC LIMIT ?`
         )
           .bind(limit)
           .all<any>();
         return json({ transactions: results ?? [] });
+      }
+
+      // Confirm when the bank actually posted a transaction, which is the date
+      // every window is really judged on.
+      if (url.pathname === '/api/tx/posted' && req.method === 'POST') {
+        const { id, date } = (await req.json()) as { id?: number; date?: string };
+        if (!id) return json({ error: 'missing id' }, 400);
+        const when = date ? parseDateToken(String(date), env) : today(env);
+        if (!when) return json({ error: 'bad date' }, 400);
+        const row = await env.DB.prepare(`SELECT occurred_at FROM transactions WHERE id = ?`)
+          .bind(id)
+          .first<{ occurred_at: string }>();
+        if (!row) return json({ error: 'not found' }, 404);
+        if (when < row.occurred_at) return json({ error: 'posted before it happened' }, 400);
+        await env.DB.prepare(`UPDATE transactions SET posted_at = ? WHERE id = ?`).bind(when, id).run();
+        return json({ ok: true, posted_at: when });
       }
 
       if (url.pathname === '/api/tx/delete' && req.method === 'POST') {

@@ -41,6 +41,9 @@ export interface Progress {
   days_left: number;
   per_day_cents: number;
   met: boolean;
+  confirmed_cents: number;
+  at_risk_cents: number;
+  met_only_with_at_risk: boolean;
   txn_count: number;
   txns_required: number;
   txns_remaining: number;
@@ -55,6 +58,7 @@ export interface CardSummary {
   nickname: string;
   limit_cents: number;
   balance_cents: number;
+  at_risk_cents: number;
   percent: number;
   cycle: { start: string; end: string };
   days_left: number;
@@ -87,6 +91,7 @@ export interface Txn {
   id: number;
   amount_cents: number;
   occurred_at: string;
+  posted_at: string | null;
   merchant: string | null;
   source: string;
   nickname: string;
@@ -111,6 +116,9 @@ export const addTransaction = (body: { nickname: string; amount: string; date: s
   post<{ ok: true; id: number; card: string; date: string }>('/api/tx', body);
 
 export const deleteTransaction = (id: number) => post<{ ok: true }>('/api/tx/delete', { id });
+
+export const markPosted = (id: number, date: string) =>
+  post<{ ok: true; posted_at: string }>('/api/tx/posted', { id, date });
 
 export const fetchSummary = () => get<Summary>('/api/summary');
 export const fetchOffers = () => get<{ offers: OfferRow[] }>('/api/offers');

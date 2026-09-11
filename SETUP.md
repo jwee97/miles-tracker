@@ -294,6 +294,29 @@ A date can go anywhere in the message — the bot picks it out and treats the
 rest as the note. Undated entries are today's. The dashboard has the same
 entry form with a date picker, plus a recent list you can delete from.
 
+### Transaction date vs posting date
+
+Banks judge statement cycles, minimum spend and bonus caps on the date a
+transaction **posts**, not the date you made it. A purchase a day or two before
+your statement closes can post after it and count toward the *next* cycle — and
+the mirror happens too, where spend from just before a cycle posts into it.
+
+So each entry has two dates. `occurred_at` is what you type; `posted_at` is null
+until you know it. Windows use `posted_at` when set and fall back to
+`occurred_at` otherwise.
+
+Anything unconfirmed within `POSTING_LAG_DAYS` (default 3) of a window's end is
+reported as **at risk**, and a minimum met only by counting at-risk spend is
+never shown as met:
+
+```
+⏳ Monthly min $1,000.00 met only if $150.00 posts in time
+↳ confirmed $900.00 — spend $100.00 more to be safe
+```
+
+Confirm a real posting date with `/posted <id> <date>`, or tap the dashed date
+box on that row in the dashboard. `/recent` marks unconfirmed entries with ⏳.
+
 Then confirm both cron triggers registered under
 **Workers & Pages → miles-tracker → Settings → Triggers**.
 

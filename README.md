@@ -131,6 +131,7 @@ src/rss.ts            feed fetch, parse, keyword gate
 src/eligibility.ts    predicate evaluator — the deterministic half
 src/extraction.ts     the prompt handed to you for Claude — the LLM half
 src/auth.ts           HMAC magic-link tokens
+migrations/           ALTER statements for databases created before a change
 web/                  React + Vite PWA, served by the Worker as assets
 .github/workflows/    CI: typecheck, both test suites, dashboard build
 ```

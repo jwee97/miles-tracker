@@ -74,7 +74,8 @@ Add a date anywhere to backdate:
   \`25.40 uobone 5/9 lunch\` — day/month
   \`25.40 uobone 2026-09-05 lunch\`
   \`25.40 uobone -3 lunch\` — three days ago
-/recent — last 15 entries with their ids
+/recent — last 15 entries (⏳ = posting date unknown)
+/posted <id> <date> — set when the bank actually posted it
 /del <id> — remove one · /undo — remove the last
 
 *Status*

@@ -21,13 +21,17 @@ CREATE TABLE IF NOT EXISTS transactions (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   card_id      INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
   amount_cents INTEGER NOT NULL,                 -- negative = refund/payment
-  occurred_at  TEXT    NOT NULL,                 -- YYYY-MM-DD
+  occurred_at  TEXT    NOT NULL,                 -- YYYY-MM-DD, when you paid
+  posted_at    TEXT,                             -- YYYY-MM-DD, when the bank posted it
+                                                 -- (null until known). Windows are judged
+                                                 -- on this when set, else occurred_at
   merchant     TEXT,
   category     TEXT,
   source       TEXT    NOT NULL DEFAULT 'manual',-- manual | sms | import
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS tx_card_date ON transactions(card_id, occurred_at);
+-- Every window query filters on the effective date, so index that expression.
+CREATE INDEX IF NOT EXISTS tx_card_date ON transactions(card_id, COALESCE(posted_at, occurred_at));
 
 -- Minimum-spend requirements. Two kinds, deliberately modelled together so the
 -- digest can report both, plus bonus_cap which is the mirror: when to STOP using

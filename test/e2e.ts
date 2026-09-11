@@ -7,7 +7,11 @@ import type { Env } from '../src/types';
 
 // Minimal D1 shim over node:sqlite so the real Worker code runs unmodified.
 const db = new DatabaseSync(':memory:');
-for (const stmt of readFileSync(new URL('../schema.sql', import.meta.url), 'utf8').split(/;\s*\n/)) {
+const ddl = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8')
+  .split('\n')
+  .map((line) => line.replace(/--.*$/, ''))
+  .join('\n');
+for (const stmt of ddl.split(';')) {
   if (stmt.trim()) db.exec(stmt);
 }
 const wrap = (sql: string, args: unknown[] = []) => ({
@@ -24,6 +28,7 @@ const env = {
   TZ_OFFSET_MINUTES: '480',
   UTIL_THRESHOLDS: '50,80,90',
   MIN_SPEND_WARN_DAYS: '7',
+  POSTING_LAG_DAYS: '3',
 } as unknown as Env;
 
 Date.now = () => Date.parse('2026-09-11T04:00:00Z'); // 12:00 SGT, 11 Sep
@@ -177,6 +182,57 @@ check('entry one day before the cycle is excluded', ru.balance_cents === 60000, 
 sql(`UPDATE transactions SET occurred_at = '2026-08-21' WHERE card_id = ? AND occurred_at = '2026-08-20'`, rev.id);
 const ru2 = await utilization(env, rev);
 check('entry on the cycle start is included', ru2.balance_cents === 120000, `got ${ru2.balance_cents}`);
+
+// --- posting date vs transaction date --------------------------------------
+// Banks judge windows on when a transaction POSTS. Statement day 20 on 11 Sep
+// means the cycle runs 21 Aug - 20 Sep.
+sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at)
+     VALUES ('SC','Journey','sc_journey','sj',400000,20,'2026-01-01')`);
+const sj = (await activeCards(env)).find((c) => c.nickname === 'sj')!;
+
+// Made inside the cycle, but posted after it closed: belongs to the NEXT cycle.
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,posted_at) VALUES (?,?,?,?)`,
+    sj.id, 20000, '2026-09-19', '2026-09-22');
+// Made before the cycle opened, but posted inside it: belongs to THIS cycle.
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,posted_at) VALUES (?,?,?,?)`,
+    sj.id, 30000, '2026-08-19', '2026-08-25');
+// Ordinary confirmed spend, comfortably inside.
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,posted_at) VALUES (?,?,?,?)`,
+    sj.id, 50000, '2026-09-01', '2026-09-03');
+
+const su = await utilization(env, sj);
+check('posted-after is excluded from the cycle', su.balance_cents === 80000, `got ${su.balance_cents}`);
+check('posted-into is included in the cycle', su.balance_cents === 80000, 'the 19 Aug entry should count via posted_at');
+check('nothing at risk when all are confirmed', su.at_risk_cents === 0, `got ${su.at_risk_cents}`);
+
+// Unconfirmed spend within the posting lag of the cycle end is at risk.
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at) VALUES (?,?,?)`, sj.id, 15000, '2026-09-19');
+const su2 = await utilization(env, sj);
+check('unconfirmed near the boundary is at risk', su2.at_risk_cents === 15000, `got ${su2.at_risk_cents}`);
+check('at-risk still counts toward the total', su2.balance_cents === 95000, `got ${su2.balance_cents}`);
+
+// Unconfirmed spend well inside the window is NOT at risk.
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at) VALUES (?,?,?)`, sj.id, 10000, '2026-09-05');
+const su3 = await utilization(env, sj);
+check('unconfirmed mid-window is not at risk', su3.at_risk_cents === 15000, `got ${su3.at_risk_cents}`);
+
+// --- a minimum met only by spend that might not post ---
+sql(`INSERT INTO requirements (card_id,kind,amount_cents,window) VALUES (${sj.id},'monthly_min',100000,'statement_cycle')`);
+const [sreq] = await requirementsFor(env, sj.id);
+const jp = await requirementProgress(env, sj, sreq);
+check('total clears the minimum', jp.spent_cents === 105000 && jp.met, `spent ${jp.spent_cents}`);
+check('confirmed alone does not', jp.confirmed_cents === 90000, `confirmed ${jp.confirmed_cents}`);
+check('flagged as met only with at-risk spend', jp.met_only_with_at_risk === true, 'should warn');
+
+const riskDigest = await buildDigest(env);
+check('digest warns instead of showing met', /met only if/.test(riskDigest), 'no at-risk warning in digest');
+check('digest names the confirmed shortfall', /spend \$100\.00 more to be safe/.test(riskDigest), riskDigest.slice(0, 200));
+
+// Confirming a late posting date moves the spend out of this window.
+sql(`UPDATE transactions SET posted_at = '2026-09-23' WHERE card_id = ? AND occurred_at = '2026-09-19' AND posted_at IS NULL`, sj.id);
+const jp2 = await requirementProgress(env, sj, sreq);
+check('confirming a late post removes it', jp2.spent_cents === 90000 && !jp2.met, `spent ${jp2.spent_cents}`);
+check('nothing at risk once confirmed', jp2.at_risk_cents === 0, `got ${jp2.at_risk_cents}`);
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

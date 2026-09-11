@@ -36,6 +36,9 @@ export async function buildDigest(env: Env): Promise<string> {
       `${bar(u.percent)} ${u.percent.toFixed(0)}% · $${money(u.balance_cents)} / $${money(u.limit_cents)}`
     );
     lines.push(`_statement closes ${u.cycle.end}, ${u.days_left}d_`);
+    if (u.at_risk_cents > 0) {
+      lines.push(`  ⏳ $${money(u.at_risk_cents)} may post after the cycle closes`);
+    }
 
     for (const req of await requirementsFor(env, card.id)) {
       const p = await requirementProgress(env, card, req);
@@ -45,7 +48,14 @@ export async function buildDigest(env: Env): Promise<string> {
       // so report whichever half is still outstanding.
       const txns = p.txns_required > 0 ? ` · ${p.txn_count}/${p.txns_required} txns` : '';
 
-      if (p.met) {
+      if (p.met && p.met_only_with_at_risk) {
+        // The dangerous case: counting spend that may not post in time reads as
+        // "met", and you stop spending on a minimum you have not actually hit.
+        lines.push(
+          `  ⏳ ${label} $${money(req.amount_cents)} met only if $${money(p.at_risk_cents)} posts in time` +
+            `\n  ↳ confirmed $${money(p.confirmed_cents)} — spend $${money(req.amount_cents - p.confirmed_cents)} more to be safe`
+        );
+      } else if (p.met) {
         lines.push(`  ✅ ${label} $${money(req.amount_cents)} met ($${money(p.spent_cents)}${txns})`);
       } else {
         const urgent = p.days_left <= warnDays ? '⚠️ ' : '';
@@ -55,6 +65,9 @@ export async function buildDigest(env: Env): Promise<string> {
             : `$${money(p.spent_cents)} ✓`;
         lines.push(`  ${urgent}${label}: ${amountPart}${txns}, ${p.days_left}d` +
           (p.remaining_cents > 0 && p.days_left > 0 ? ` (~$${money(p.per_day_cents)}/day)` : ''));
+        if (p.at_risk_cents > 0) {
+          lines.push(`  ↳ includes $${money(p.at_risk_cents)} that may post next window`);
+        }
         if (p.remaining_cents === 0 && p.txns_remaining > 0) {
           lines.push(`  ↳ amount met — still needs ${p.txns_remaining} more transaction(s)`);
         }
@@ -126,6 +139,13 @@ export async function checkAlerts(env: Env, onlyCard?: Card): Promise<string[]> 
               (p.remaining_cents > 0 && p.days_left > 0 ? `\nNeed ~$${money(p.per_day_cents)}/day` : '')
           );
         }
+      }
+      if (p.met_only_with_at_risk && (await claimAlert(env, `atrisk:${req.id}:${p.window.end}`))) {
+        out.push(
+          `⏳ *${card.product}* minimum looks met, but $${money(p.at_risk_cents)} of it may post after ${p.window.end}.\n` +
+            `Confirmed: $${money(p.confirmed_cents)} of $${money(req.amount_cents)}. ` +
+            `Spend $${money(req.amount_cents - p.confirmed_cents)} more to be certain.`
+        );
       }
       if (p.cap_reached && (await claimAlert(env, `cap:${req.id}:${p.window.end}`))) {
         out.push(
