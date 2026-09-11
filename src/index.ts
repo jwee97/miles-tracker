@@ -4,6 +4,7 @@ import { evaluateOffer } from './eligibility';
 import { handleUpdate, pushFeedMatches, send } from './telegram';
 import {
   activeCards,
+  localNow,
   parseDateToken,
   parseMoney,
   requirementProgress,
@@ -11,7 +12,7 @@ import {
   today,
   utilization,
 } from './spend';
-import { balances, planRoutes, rankCards } from './points';
+import { balances, planRoutes, rankCards, ratesReview } from './points';
 import type { Env, Offer } from './types';
 
 // The dashboard is served from this same Worker, so there is no cross-origin
@@ -254,6 +255,12 @@ export default {
         } else {
           await send(env, env.OWNER_CHAT_ID, await buildDigest(env));
           for (const alert of await checkAlerts(env)) await send(env, env.OWNER_CHAT_ID, alert);
+
+          // The weekly rates review rides on the daily cron rather than taking
+          // a third trigger, which the free plan limits.
+          if (localNow(env).getUTCDay() === 0) {
+            await send(env, env.OWNER_CHAT_ID, await ratesReview(env));
+          }
         }
       })()
     );

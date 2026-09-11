@@ -87,6 +87,11 @@ Tag spend with a category so caps track: \`25.40 citirw #groceries NTUC\`
 /addbal program|points|expires|note
 /convert 50000 citi\_ty krisflyer — blocks, fees, best route
 /earn — earn rules · /addearn · /delearn
+/routes — every transfer route and when it was last checked
+/rates — the weekly rates review, on demand
+/verified <id> — mark a route checked against the bank
+/setrate id|from|to|fee|min|increment — correct a route
+/setbonus id|pct|until — record a promo bonus
 /addconv — add a transfer route
 
 *Status*

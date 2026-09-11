@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS feed_items (
   published_at TEXT,
   seen_at      TEXT NOT NULL DEFAULT (datetime('now')),
   action       TEXT,                             -- NULL | tracked | ignored
+  topic        TEXT,                             -- NULL | promo | rates
   offer_id     INTEGER REFERENCES offers(id) ON DELETE SET NULL
 );
 
@@ -143,6 +144,9 @@ CREATE TABLE IF NOT EXISTS conversions (
   route           TEXT,                        -- 'direct', 'Kris+', ...
   bonus_pct       REAL    NOT NULL DEFAULT 0,  -- promotional uplift on miles out
   bonus_until     TEXT,
+  verified_at     TEXT,                        -- null = never checked against the bank
+  source_url      TEXT,
+  note            TEXT,
   active          INTEGER NOT NULL DEFAULT 1
 );
 

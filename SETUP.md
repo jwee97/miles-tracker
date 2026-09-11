@@ -326,6 +326,39 @@ Transfers move in whole blocks with a per-transaction fee, so the planner
 compares routes rather than multiplying by a ratio — 40,000 Citi points is
 16,000 miles via Kris+ but only 10,000 direct, with 15,000 stranded.
 
+## Transfer routes and the weekly review
+
+`seed.sql` loads eleven Singapore programmes and thirteen transfer routes. The
+**ratios** are corroborated across several public summaries; the **fees and
+minimums are not** — sources disagree, and they move (UOB raised its fee in
+Dec 2025, HSBC reworked its ratio in Jan 2025).
+
+So every seeded route starts with `verified_at` unset, and the weekly review
+reports it as unverified until you check it yourself:
+
+```
+/routes                      every route, with when it was last checked
+/verified 4                  mark one checked against the bank today
+/setrate 4|5000|10000|27.25|5000|5000    correct it and mark verified
+/setbonus 2|8|2026-12-31     record a promo bonus and its end date
+/rates                       run the weekly review now
+```
+
+Every Sunday morning the digest is followed by a review covering:
+
+- promo bonuses ending within 14 days
+- points expiring within 90 days
+- routes never verified, and routes older than `RATE_RECHECK_DAYS` (90)
+- anything in the RSS feeds that week about transfer bonuses, ratio changes
+  or fee increases
+
+The feed scan classifies each item as `promo` or `rates` as it arrives, so
+sign-up offers still come through daily with Track/Ignore while rate news is
+held for the weekly summary.
+
+The review runs inside the daily cron on Sundays rather than taking a third
+cron trigger, which the free plan limits.
+
 ## Verify end to end
 
 ```

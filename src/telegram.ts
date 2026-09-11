@@ -4,7 +4,7 @@ import { extractionPrompt, HELP } from './extraction';
 import { evaluateOffer } from './eligibility';
 import { scanFeeds } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
-import { balances, planRoutes, rankCards } from './points';
+import { balances, planRoutes, rankCards, ratesReview } from './points';
 import type { Card, Env, Offer } from './types';
 
 const api = (env: Env, method: string) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
@@ -458,6 +458,68 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           );
         });
         return send(env, chatId, `*${pts.toLocaleString()} ${from} → ${to}*\n\n` + out.join('\n\n'));
+      }
+
+      case '/rates':
+        return send(env, chatId, await ratesReview(env));
+
+      case '/routes': {
+        const { results } = await env.DB.prepare(
+          `SELECT c.*, pf.name AS from_name, pt.name AS to_name FROM conversions c
+           JOIN programs pf ON pf.key = c.from_program JOIN programs pt ON pt.key = c.to_program
+           WHERE c.active = 1 ORDER BY pf.name, c.id`
+        ).all<any>();
+        if (!results?.length) return send(env, chatId, 'No routes configured.');
+        return send(
+          env,
+          chatId,
+          '*Transfer routes*\n' +
+            results
+              .map(
+                (c) =>
+                  `#${c.id} ${c.from_name} → ${c.to_name}${c.route ? ` (${c.route})` : ''}\n` +
+                  `  ${c.from_units.toLocaleString()} → ${c.to_units.toLocaleString()} · fee $${money(c.fee_cents)} · min ${c.min_block.toLocaleString()}\n` +
+                  `  ${c.verified_at ? `verified ${c.verified_at}` : '❓ never verified'}${c.note ? ` · _${c.note}_` : ''}`
+              )
+              .join('\n')
+        );
+      }
+
+      case '/verified': {
+        const [idRaw, dateRaw] = args.trim().split(/\s+/);
+        const id = parseInt(idRaw, 10);
+        const when = dateRaw ? parseDateToken(dateRaw, env) : today(env);
+        if (!id || !when) return send(env, chatId, 'Format: `/verified 4` (or `/verified 4 2026-09-01`).');
+        const r = await env.DB.prepare(`UPDATE conversions SET verified_at = ?, note = NULL WHERE id = ?`)
+          .bind(when, id)
+          .run();
+        if (!(r.meta.changes ?? 0)) return send(env, chatId, `No route #${id}. /routes to list them.`);
+        return send(env, chatId, `Route #${id} marked verified ${when}.`);
+      }
+
+      case '/setrate': {
+        // id|from_units|to_units|fee|min_block|increment
+        const p = args.split('|').map((s) => s.trim());
+        if (p.length < 6) return send(env, chatId, 'Format: `/setrate 4|5000|10000|27.25|5000|5000`');
+        const [idRaw, fu, tu, fee, minB, inc] = p;
+        const r = await env.DB.prepare(
+          `UPDATE conversions SET from_units=?, to_units=?, fee_cents=?, min_block=?, block_increment=?,
+             verified_at=?, note=NULL WHERE id=?`
+        )
+          .bind(parseInt(fu, 10), parseInt(tu, 10), parseMoney(fee) ?? 0, parseInt(minB, 10), parseInt(inc, 10), today(env), parseInt(idRaw, 10))
+          .run();
+        if (!(r.meta.changes ?? 0)) return send(env, chatId, `No route #${parseInt(idRaw, 10)}.`);
+        return send(env, chatId, `Route #${parseInt(idRaw, 10)} updated and marked verified.`);
+      }
+
+      case '/setbonus': {
+        // id|pct|until
+        const [idRaw, pct, until] = args.split('|').map((s) => s.trim());
+        if (!idRaw || !pct) return send(env, chatId, 'Format: `/setbonus 2|8|2026-12-31` — use 0 to clear.');
+        await env.DB.prepare(`UPDATE conversions SET bonus_pct = ?, bonus_until = ? WHERE id = ?`)
+          .bind(parseFloat(pct), until || null, parseInt(idRaw, 10))
+          .run();
+        return send(env, chatId, `Route #${parseInt(idRaw, 10)}: ${pct}% bonus${until ? ` until ${until}` : ''}.`);
       }
 
       case '/earn': {

@@ -66,6 +66,15 @@ export function parseFeed(xml: string): FeedItem[] {
 const PROMO = /\b(sign[- ]?up|welcome (?:offer|gift|bonus)|new[- ]to[- ]bank|bonus miles|promo(?:tion)?|cashback offer|apply and (?:get|receive)|limited[- ]time)\b/i;
 const CONTEXT = /\b(card|miles|krisflyer|asia miles|points|mpd|annual fee|issuer|amex|citi|dbs|posb|uob|ocbc|hsbc|maybank|standard chartered|scb|trust bank)\b/i;
 
+/** Transfer bonuses, ratio changes and fee moves — the things that make a
+ *  stored conversion rate wrong. Deliberately separate from sign-up promos. */
+const RATE_NEWS =
+  /\b(transfer bonus|conversion (?:rate|bonus|fee)|points?[- ]to[- ]miles|devalu\w*|revalu\w*|earn rate|mile ?rate|redemption rate|fee (?:increase|hike|change)|(?:raising|hiking|lowering) .{0,20}fee)\b/i;
+
+export function isRateNews(item: FeedItem): boolean {
+  return RATE_NEWS.test(`${item.title} ${item.summary}`);
+}
+
 export function isRelevant(item: FeedItem, watchTerms: string[] = []): boolean {
   const hay = `${item.title} ${item.summary}`;
   if (watchTerms.some((t) => t && hay.toLowerCase().includes(t.toLowerCase()))) return true;
@@ -115,7 +124,15 @@ export async function scanFeeds(env: Env): Promise<ScanResult[]> {
 
       // changes === 0 means we have shown this item before.
       if ((ins.meta.changes ?? 0) === 0) continue;
-      if (!isRelevant(item, watch)) continue;
+      const rateNews = isRateNews(item);
+      if (!isRelevant(item, watch) && !rateNews) continue;
+
+      await env.DB.prepare(`UPDATE feed_items SET topic = ? WHERE id = ?`)
+        .bind(rateNews ? 'rates' : 'promo', ins.meta.last_row_id as number)
+        .run();
+
+      // Rate news is reported in the weekly review, not pushed as a card offer.
+      if (rateNews && !isRelevant(item, watch)) continue;
 
       fresh.push({
         id: ins.meta.last_row_id as number,

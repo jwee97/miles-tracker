@@ -3,17 +3,40 @@ import { readFileSync } from 'node:fs';
 import { buildDigest, checkAlerts } from '../src/digest';
 import { evaluateOffer } from '../src/eligibility';
 import { utilization, requirementProgress, requirementsFor, activeCards } from '../src/spend';
-import { balances, planTransfer, planRoutes, rankCards } from '../src/points';
+import { balances, planTransfer, planRoutes, rankCards, rateIssues, ratesReview } from '../src/points';
 import type { Env } from '../src/types';
 
 // Minimal D1 shim over node:sqlite so the real Worker code runs unmodified.
 const db = new DatabaseSync(':memory:');
-const ddl = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8')
-  .split('\n')
-  .map((line) => line.replace(/--.*$/, ''))
-  .join('\n');
-for (const stmt of ddl.split(';')) {
-  if (stmt.trim()) db.exec(stmt);
+/** Splits on semicolons that actually terminate a statement — not ones inside
+ *  a string literal or a line comment, both of which broke earlier versions. */
+function statements(sql: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let inStr = false;
+  let inComment = false;
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+    if (inComment) {
+      if (c === '\n') { inComment = false; buf += c; }
+      continue;
+    }
+    if (inStr) {
+      buf += c;
+      if (c === "'") inStr = sql[i + 1] === "'" ? (buf += sql[++i], true) : false;
+      continue;
+    }
+    if (c === '-' && sql[i + 1] === '-') { inComment = true; i++; continue; }
+    if (c === "'") { inStr = true; buf += c; continue; }
+    if (c === ';') { if (buf.trim()) out.push(buf); buf = ''; continue; }
+    buf += c;
+  }
+  if (buf.trim()) out.push(buf);
+  return out;
+}
+
+for (const stmt of statements(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'))) {
+  db.exec(stmt);
 }
 const wrap = (sql: string, args: unknown[] = []) => ({
   bind: (...a: unknown[]) => wrap(sql, a),
@@ -30,6 +53,7 @@ const env = {
   UTIL_THRESHOLDS: '50,80,90',
   MIN_SPEND_WARN_DAYS: '7',
   POSTING_LAG_DAYS: '3',
+  RATE_RECHECK_DAYS: '90',
 } as unknown as Env;
 
 Date.now = () => Date.parse('2026-09-11T04:00:00Z'); // 12:00 SGT, 11 Sep
@@ -237,7 +261,7 @@ check('nothing at risk once confirmed', jp2.at_risk_cents === 0, `got ${jp2.at_r
 
 // --- points conversion ------------------------------------------------------
 const direct = { id: 1, from_program: 'citi_ty', to_program: 'krisflyer', from_units: 25000, to_units: 10000,
-  fee_cents: 2725, min_block: 25000, block_increment: 25000, route: 'direct', bonus_pct: 0, bonus_until: null };
+  fee_cents: 2725, min_block: 25000, block_increment: 25000, route: 'direct', bonus_pct: 0, bonus_until: null, verified_at: null, source_url: null, note: null };
 const krisplus = { ...direct, id: 2, from_units: 10000, to_units: 4000, fee_cents: 0, min_block: 10000, block_increment: 10000, route: 'Kris+' };
 
 const p50 = planTransfer(50000, direct, '2026-09-11');
@@ -339,6 +363,51 @@ ranked = await rankCards(env, 'dining', 10000, {
   minSpendNudge: [{ cardId: crw.id, remaining: 20000, daysLeft: 45 }],
 });
 check('a distant minimum does not beat a better rate', ranked[0].card.nickname === 'lady', ranked[0].card.nickname);
+
+// --- weekly rates review ----------------------------------------------------
+// Seeded routes are deliberately unverified; the review must say so rather
+// than let a placeholder fee be trusted silently.
+let issues = await rateIssues(env);
+check('unverified routes are reported', issues.some((i) => i.kind === 'never_verified'), JSON.stringify(issues.map((i) => i.kind)));
+
+sql(`UPDATE conversions SET verified_at = '2026-09-01' WHERE id = 1`);
+issues = await rateIssues(env);
+check('a freshly verified route stops being flagged',
+  !issues.some((i) => i.kind === 'never_verified' && i.text.includes('#1')),
+  issues.filter((i) => i.kind === 'never_verified').map((i) => i.text).join(' | '));
+
+// Checked 200 days ago, against a 90-day recheck window.
+sql(`UPDATE conversions SET verified_at = '2026-02-20' WHERE id = 2`);
+issues = await rateIssues(env);
+check('a long-stale route is flagged for re-checking',
+  issues.some((i) => i.kind === 'stale' && i.text.includes('#2')),
+  issues.filter((i) => i.kind === 'stale').map((i) => i.text).join(' | '));
+
+// A bonus ending inside a fortnight is the one that needs acting on.
+sql(`UPDATE conversions SET bonus_pct = 8, bonus_until = '2026-09-20' WHERE id = 1`);
+issues = await rateIssues(env);
+check('a bonus ending soon outranks everything', issues[0].kind === 'bonus_ending', issues[0].kind);
+sql(`UPDATE conversions SET bonus_until = '2027-06-30' WHERE id = 1`);
+issues = await rateIssues(env);
+check('a distant bonus is not urgent', !issues.some((i) => i.kind === 'bonus_ending'), 'should not flag');
+
+// Expiring points, but only those actually within the horizon.
+issues = await rateIssues(env);
+check('near-term expiry is reported',
+  issues.some((i) => i.kind === 'points_expiring' && i.text.includes('12,000')),
+  issues.filter((i) => i.kind === 'points_expiring').map((i) => i.text).join(' | '));
+check('a 2027 tranche is not reported yet',
+  !issues.some((i) => i.kind === 'points_expiring' && i.text.includes('38,000')),
+  'should be outside the 90-day horizon');
+
+// A third route, never checked, so the review has all its groups populated.
+sql(`INSERT INTO conversions (from_program,to_program,from_units,to_units,fee_cents,min_block,block_increment,route)
+     VALUES ('citi_ty','krisflyer',20000,8000,2000,20000,20000,'seeded')`);
+const review = await ratesReview(env);
+check('review names the re-check command', /\/verified/.test(review), review.slice(0, 120));
+check('review lists never-verified routes', /Never verified/.test(review), review.slice(0, 300));
+check('review lists stale routes', /Worth re-checking/.test(review), review.slice(0, 300));
+check('review lists expiring points', /Points expiring/.test(review), review.slice(0, 300));
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

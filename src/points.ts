@@ -21,6 +21,9 @@ export interface Conversion {
   route: string | null;
   bonus_pct: number;
   bonus_until: string | null;
+  verified_at: string | null;
+  source_url: string | null;
+  note: string | null;
 }
 
 export interface TransferPlan {
@@ -100,6 +103,114 @@ export async function planRoutes(env: Env, points: number, from: string, to: str
       if (b.miles !== a.miles) return b.miles - a.miles;
       return a.fee_cents - b.fee_cents;
     });
+}
+
+export interface RateIssue {
+  kind: 'bonus_ending' | 'never_verified' | 'stale' | 'points_expiring';
+  text: string;
+  urgency: number;
+}
+
+/**
+ * Weekly sweep over everything that silently goes out of date: promo bonuses
+ * about to end, conversion terms never checked or checked long ago, and points
+ * approaching expiry. Seeded rates are deliberately unverified, so this reports
+ * them until you confirm each against your own bank.
+ */
+export async function rateIssues(env: Env): Promise<RateIssue[]> {
+  const now = today(env);
+  const plus = (days: number) =>
+    new Date(Date.parse(now + 'T00:00:00Z') + days * 86400_000).toISOString().slice(0, 10);
+  const staleDays = parseInt(env.RATE_RECHECK_DAYS || '90', 10);
+  const issues: RateIssue[] = [];
+
+  const { results: convs } = await env.DB.prepare(
+    `SELECT c.*, pf.name AS from_name, pt.name AS to_name
+     FROM conversions c
+     JOIN programs pf ON pf.key = c.from_program
+     JOIN programs pt ON pt.key = c.to_program
+     WHERE c.active = 1`
+  ).all<Conversion & { from_name: string; to_name: string }>();
+
+  for (const c of convs ?? []) {
+    const label = `${c.from_name} → ${c.to_name}${c.route ? ` (${c.route})` : ''}`;
+
+    if (c.bonus_pct > 0 && c.bonus_until && c.bonus_until >= now && c.bonus_until <= plus(14)) {
+      issues.push({
+        kind: 'bonus_ending',
+        urgency: 3,
+        text: `🔥 ${label}: ${c.bonus_pct}% bonus ends ${c.bonus_until}`,
+      });
+    }
+    if (!c.verified_at) {
+      issues.push({ kind: 'never_verified', urgency: 2, text: `❓ #${c.id} ${label} — never verified` });
+    } else if (c.verified_at < plus(-staleDays)) {
+      issues.push({
+        kind: 'stale',
+        urgency: 1,
+        text: `🕓 #${c.id} ${label} — last checked ${c.verified_at}`,
+      });
+    }
+  }
+
+  const { results: exp } = await env.DB.prepare(
+    `SELECT t.points, t.expires_at, p.name, p.unit FROM balance_tranches t
+     JOIN programs p ON p.key = t.program_key
+     WHERE t.expires_at IS NOT NULL AND t.expires_at <= ? AND t.expires_at >= ?
+     ORDER BY t.expires_at`
+  )
+    .bind(plus(90), now)
+    .all<{ points: number; expires_at: string; name: string; unit: string }>();
+
+  for (const t of exp ?? []) {
+    const days = Math.round((Date.parse(t.expires_at) - Date.parse(now)) / 86400_000);
+    issues.push({
+      kind: 'points_expiring',
+      urgency: days <= 30 ? 3 : 2,
+      text: `⏳ ${t.points.toLocaleString()} ${t.name} ${t.unit} expire ${t.expires_at} (${days}d)`,
+    });
+  }
+
+  return issues.sort((a, b) => b.urgency - a.urgency);
+}
+
+/** The weekly report: what changed, what is about to, and what to re-check. */
+export async function ratesReview(env: Env): Promise<string> {
+  const issues = await rateIssues(env);
+  const { results: news } = await env.DB.prepare(
+    `SELECT title, link FROM feed_items
+     WHERE topic = 'rates' AND seen_at >= datetime('now', '-8 days')
+     ORDER BY seen_at DESC LIMIT 8`
+  ).all<{ title: string; link: string }>();
+
+  const lines: string[] = ['*Weekly rates review*', ''];
+
+  const group = (kind: string, heading: string) => {
+    const rows = issues.filter((i) => i.kind === kind);
+    if (!rows.length) return;
+    lines.push(`*${heading}*`);
+    for (const r of rows) lines.push(r.text);
+    lines.push('');
+  };
+
+  group('bonus_ending', 'Ending soon');
+  group('points_expiring', 'Points expiring');
+  group('never_verified', 'Never verified');
+  group('stale', 'Worth re-checking');
+
+  if (news?.length) {
+    lines.push('*In the feeds this week*');
+    for (const n of news) lines.push(`• ${n.title}\n  ${n.link}`);
+    lines.push('');
+  }
+
+  if (issues.length === 0 && !news?.length) {
+    lines.push('Nothing to flag — every route verified recently, no expiries within 90 days.');
+  } else {
+    lines.push('_`/verified <id>` once you have checked a route against the bank._');
+  }
+
+  return lines.join('\n');
 }
 
 export interface BalanceRow {

@@ -8,6 +8,7 @@ export interface Env {
   UTIL_THRESHOLDS: string;
   MIN_SPEND_WARN_DAYS: string;
   POSTING_LAG_DAYS: string;
+  RATE_RECHECK_DAYS: string;
 }
 
 export interface Card {
