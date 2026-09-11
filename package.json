@@ -10,11 +10,12 @@
     "db:init:local": "wrangler d1 execute miles --local --file=./schema.sql",
     "db:seed": "wrangler d1 execute miles --remote --file=./seed.sql",
     "tail": "wrangler tail",
-    "test": "npm run test:units && npm run test:e2e",
-    "test:units": "esbuild test/units.ts --bundle --platform=node --format=esm --outfile=test/.units.mjs && node test/.units.mjs",
-    "test:e2e": "esbuild test/e2e.ts --bundle --platform=node --format=esm --external:node:* --outfile=test/.e2e.mjs && node test/.e2e.mjs",
+    "test": "npm run test:units && npm run test:e2e && npm run test:migrate",
+    "test:units": "esbuild test/units.ts --bundle --loader:.sql=text --platform=node --format=esm --outfile=test/.units.mjs && node test/.units.mjs",
+    "test:e2e": "esbuild test/e2e.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.e2e.mjs && node test/.e2e.mjs",
     "build": "npm --prefix web ci && npm --prefix web run build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:migrate": "esbuild test/migrate.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.migrate.mjs && node test/.migrate.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",

@@ -4,37 +4,11 @@ import { buildDigest, checkAlerts } from '../src/digest';
 import { evaluateOffer } from '../src/eligibility';
 import { utilization, requirementProgress, requirementsFor, activeCards } from '../src/spend';
 import { balances, planTransfer, planRoutes, rankCards, rateIssues, ratesReview } from '../src/points';
+import { statements } from '../src/sql';
 import type { Env } from '../src/types';
 
 // Minimal D1 shim over node:sqlite so the real Worker code runs unmodified.
 const db = new DatabaseSync(':memory:');
-/** Splits on semicolons that actually terminate a statement — not ones inside
- *  a string literal or a line comment, both of which broke earlier versions. */
-function statements(sql: string): string[] {
-  const out: string[] = [];
-  let buf = '';
-  let inStr = false;
-  let inComment = false;
-  for (let i = 0; i < sql.length; i++) {
-    const c = sql[i];
-    if (inComment) {
-      if (c === '\n') { inComment = false; buf += c; }
-      continue;
-    }
-    if (inStr) {
-      buf += c;
-      if (c === "'") inStr = sql[i + 1] === "'" ? (buf += sql[++i], true) : false;
-      continue;
-    }
-    if (c === '-' && sql[i + 1] === '-') { inComment = true; i++; continue; }
-    if (c === "'") { inStr = true; buf += c; continue; }
-    if (c === ';') { if (buf.trim()) out.push(buf); buf = ''; continue; }
-    buf += c;
-  }
-  if (buf.trim()) out.push(buf);
-  return out;
-}
-
 for (const stmt of statements(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'))) {
   db.exec(stmt);
 }

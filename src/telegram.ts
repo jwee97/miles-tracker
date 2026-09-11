@@ -5,6 +5,7 @@ import { evaluateOffer } from './eligibility';
 import { scanFeeds } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import { balances, planRoutes, rankCards, ratesReview } from './points';
+import { runMigrations, runSeed } from './migrate';
 import type { Card, Env, Offer } from './types';
 
 const api = (env: Env, method: string) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
@@ -458,6 +459,27 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           );
         });
         return send(env, chatId, `*${pts.toLocaleString()} ${from} → ${to}*\n\n` + out.join('\n\n'));
+      }
+
+      case '/migrate': {
+        const r = await runMigrations(env);
+        const bits: string[] = [];
+        if (r.created.length) bits.push(`Created: ${r.created.join(', ')}`);
+        if (r.altered.length) bits.push(`Added columns: ${r.altered.join(', ')}`);
+        if (r.alreadyCurrent) bits.push('Database already up to date.');
+        if (r.errors.length) bits.push(`\nProblems:\n${r.errors.join('\n')}`);
+        else if (!r.alreadyCurrent) bits.push('\nRun /seed to load the default feeds and transfer routes.');
+        return send(env, chatId, bits.join('\n'));
+      }
+
+      case '/seed': {
+        const r = await runSeed(env);
+        return send(
+          env,
+          chatId,
+          `Seed applied (${r.applied} statements).` +
+            (r.errors.length ? `\n\nProblems:\n${r.errors.join('\n')}` : '\n/routes and /feeds to see what loaded.')
+        );
       }
 
       case '/rates':

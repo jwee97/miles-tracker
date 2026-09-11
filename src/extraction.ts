@@ -117,4 +117,6 @@ Tag spend with a category so caps track: \`25.40 citirw #groceries NTUC\`
 /feeds — list RSS sources
 /addfeed <url>|<label>
 
-/app — open the dashboard`;
+/app — open the dashboard
+/migrate — bring the database up to date after a deploy
+/seed — load the default feeds and transfer routes`;

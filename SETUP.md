@@ -326,6 +326,23 @@ Transfers move in whole blocks with a per-transaction fee, so the planner
 compares routes rather than multiplying by a ratio — 40,000 Citi points is
 16,000 miles via Kris+ but only 10,000 direct, with 15,000 stranded.
 
+## Keeping the database in step with the code
+
+After any deploy that changes the schema, send the bot:
+
+```
+/migrate      creates missing tables, adds missing columns, reports what it did
+/seed         loads the default feeds, programmes and transfer routes
+```
+
+Both are idempotent — safe to run any time, and a no-op when nothing is
+needed. The Worker bundles `schema.sql` and `seed.sql` as text, so it can
+bring its own database up to date without a CLI.
+
+`migrations/*.sql` are still there for reference, but you should not need to
+paste them by hand. If a command fails with `no such table` or
+`no such column`, run `/migrate`.
+
 ## Transfer routes and the weekly review
 
 `seed.sql` loads eleven Singapore programmes and thirteen transfer routes. The
