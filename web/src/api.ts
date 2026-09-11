@@ -112,8 +112,14 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 export const fetchTransactions = (limit = 25) => get<{ transactions: Txn[] }>(`/api/transactions?limit=${limit}`);
 
-export const addTransaction = (body: { nickname: string; amount: string; date: string; note: string }) =>
-  post<{ ok: true; id: number; card: string; date: string }>('/api/tx', body);
+export const addTransaction = (body: {
+  nickname: string;
+  amount: string;
+  date: string;
+  note: string;
+  posted?: string;
+  category?: string;
+}) => post<{ ok: true; id: number; card: string; date: string; posted_at: string | null; category: string | null }>('/api/tx', body);
 
 export const deleteTransaction = (id: number) => post<{ ok: true }>('/api/tx/delete', { id });
 

@@ -478,6 +478,12 @@ never shown as met:
 Confirm a real posting date with `/posted <id> <date>`, or tap the dashed date
 box on that row in the dashboard. `/recent` marks unconfirmed entries with ⏳.
 
+The dashboard's **Log spend** form has a **Posted** field too. Leave it blank
+while a purchase is still pending; fill it in when you are entering an older
+purchase you have already seen on a statement. The form warns when you
+backdate without one, since the entry will count from the purchase date until
+you say otherwise.
+
 Then confirm both cron triggers registered under
 **Workers & Pages → miles-tracker → Settings → Triggers**.
 

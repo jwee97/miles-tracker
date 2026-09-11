@@ -138,14 +138,26 @@ function Offer({ o }: { o: OfferRow }) {
   );
 }
 
-function AddSpend({ cards, onSaved }: { cards: CardSummary[]; onSaved: () => void }) {
+function AddSpend({
+  cards,
+  categories,
+  onSaved,
+}: {
+  cards: CardSummary[];
+  categories: string[];
+  onSaved: () => void;
+}) {
   const todayIso = new Date().toISOString().slice(0, 10);
   const [nickname, setNickname] = useState(cards[0]?.nickname ?? '');
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(todayIso);
+  const [posted, setPosted] = useState('');
+  const [category, setCategory] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  const backdated = date !== todayIso;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -153,12 +165,19 @@ function AddSpend({ cards, onSaved }: { cards: CardSummary[]; onSaved: () => voi
     setBusy(true);
     setMsg(null);
     try {
-      const r = await addTransaction({ nickname, amount, date, note });
+      const r = await addTransaction({ nickname, amount, date, note, posted, category });
       // Keep the card and date, clear the entry — several receipts from the
       // same day is the common case.
       setAmount('');
       setNote('');
-      setMsg({ kind: 'ok', text: `Added $${amount} to ${r.card}` });
+      setPosted('');
+      setMsg({
+        kind: 'ok',
+        text:
+          `Added $${amount} to ${r.card}` +
+          (r.posted_at ? `, posted ${r.posted_at}` : '') +
+          (r.category ? ` · ${r.category}` : ''),
+      });
       onSaved();
     } catch (err) {
       setMsg({ kind: 'err', text: (err as Error).message });
@@ -198,6 +217,32 @@ function AddSpend({ cards, onSaved }: { cards: CardSummary[]; onSaved: () => voi
           <span>Date</span>
           <input id="date" type="date" value={date} max={todayIso} onChange={(e) => setDate(e.target.value)} />
         </label>
+        {/* Windows are judged on the posting date. For an older purchase you
+            often already know it; leave it blank while it is still pending. */}
+        <label className="f">
+          <span>Posted {backdated ? '' : '(optional)'}</span>
+          <input
+            id="posted"
+            type="date"
+            value={posted}
+            min={date}
+            max={todayIso}
+            onChange={(e) => setPosted(e.target.value)}
+          />
+        </label>
+        {categories.length > 0 && (
+          <label className="f">
+            <span>Category</span>
+            <select id="cat" value={category} onChange={(e) => setCategory(e.target.value)}>
+              <option value="">auto</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="f f-note">
           <span>Note</span>
           <input id="note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="merchant" />
@@ -209,6 +254,11 @@ function AddSpend({ cards, onSaved }: { cards: CardSummary[]; onSaved: () => voi
         </button>
         {msg && <span className={msg.kind === 'ok' ? 'ok-text' : 'err-text'}>{msg.text}</span>}
       </div>
+      {backdated && !posted && (
+        <p className="risk">
+          ⏳ Backdated with no posting date — it will count from {date} until you set one.
+        </p>
+      )}
     </form>
   );
 }
@@ -527,7 +577,7 @@ export default function App() {
                 ${money(summary.overall.balance_cents)} / ${money(summary.overall.limit_cents)}
               </p>
             </section>
-            <AddSpend cards={summary.cards} onSaved={refresh} />
+            <AddSpend cards={summary.cards} categories={categories} onSaved={refresh} />
             <WhichCard categories={categories} />
             {summary.cards.map((c) => (
               <Card key={c.id} c={c} />

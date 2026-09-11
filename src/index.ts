@@ -11,7 +11,7 @@ import {
   today,
   utilization,
 } from './spend';
-import { balances, planRoutes, rankCards, ratesReview } from './points';
+import { balances, categoryForMerchant, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
 import type { Env, Offer } from './types';
 
 // The dashboard is served from this same Worker, so there is no cross-origin
@@ -183,6 +183,8 @@ export default {
           amount?: string | number;
           note?: string;
           date?: string;
+          posted?: string;
+          category?: string;
         };
         const card = await env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`)
           .bind(String(body.nickname ?? '').trim())
@@ -195,15 +197,40 @@ export default {
         if (!date) return json({ error: 'bad date' }, 400);
         if (date > today(env)) return json({ error: 'date is in the future' }, 400);
 
+        // Optional: for an older purchase you may already know when it posted,
+        // which is the date every window is actually judged on.
+        let posted: string | null = null;
+        if (body.posted) {
+          posted = parseDateToken(String(body.posted), env);
+          if (!posted) return json({ error: 'bad posted date' }, 400);
+          if (posted < date) return json({ error: 'posted before it happened' }, 400);
+          if (posted > today(env)) return json({ error: 'posted date is in the future' }, 400);
+        }
+
+        // Same merchant learning the bot uses, so the dashboard benefits too.
+        const note = body.note?.trim() || null;
+        let category = body.category?.trim().toLowerCase() || null;
+        if (category) await rememberMerchant(env, note, category);
+        else category = await categoryForMerchant(env, note);
+
         const ins = await env.DB.prepare(
-          `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, source) VALUES (?, ?, ?, ?, 'manual')`
+          `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category, source)
+           VALUES (?, ?, ?, ?, ?, ?, 'manual')`
         )
-          .bind(card.id, cents, date, body.note ?? null)
+          .bind(card.id, cents, date, posted, note, category)
           .run();
 
         const alerts = await checkAlerts(env, card);
         for (const a of alerts) await send(env, env.OWNER_CHAT_ID, a);
-        return json({ ok: true, id: ins.meta.last_row_id, card: card.product, date, alerts: alerts.length });
+        return json({
+          ok: true,
+          id: ins.meta.last_row_id,
+          card: card.product,
+          date,
+          posted_at: posted,
+          category,
+          alerts: alerts.length,
+        });
       }
 
       if (url.pathname === '/api/transactions' && req.method === 'GET') {
