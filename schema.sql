@@ -107,6 +107,14 @@ CREATE TABLE IF NOT EXISTS alerts_sent (
 
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
 
+-- Learned from your own tagging, so spend categorises itself over time.
+CREATE TABLE IF NOT EXISTS merchant_categories (
+  merchant   TEXT PRIMARY KEY,                  -- lowercased
+  category   TEXT NOT NULL,
+  hits       INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- card earns per spending category.
 
 CREATE TABLE IF NOT EXISTS programs (
@@ -157,7 +165,8 @@ CREATE TABLE IF NOT EXISTS earn_rules (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   card_id     INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
   category    TEXT    NOT NULL,
-  mpd         REAL    NOT NULL,                -- miles (or points) per dollar
+  mpd         REAL    NOT NULL,                -- miles per dollar, or percent if cashback
+  reward_type TEXT    NOT NULL DEFAULT 'miles', -- miles | cashback
   program_key TEXT    REFERENCES programs(key),
   cap_cents   INTEGER,                         -- bonus rate applies below this
   cap_group   TEXT,                            -- rules sharing one cap

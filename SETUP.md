@@ -277,42 +277,94 @@ actually get lost, so it gets its own alert.
 a dollar total — UOB One is the common example. A requirement is only reported
 as met when *both* halves clear, and the digest tells you which one is short.
 
-## Earn rules and categories
+## Earn rules — telling it what your cards pay
 
-`/which` needs to know what each card earns. Rate is a property of the
-**card and category**, not the card — and caps are usually shared across
-several categories rather than one each.
+There is no API for this. Every card's earning structure lives in its terms,
+so the app has to be told once per card. Three ways, easiest first.
+
+**1. Let Claude read the card's page.**
 
 ```
-/addearn citirw|shopping|4|1000|statement_cycle|tenx|10X online
-/addearn citirw|online|4|1000|statement_cycle|tenx
-/addearn citirw|*|0.4
+/cardrules citirw
 ```
 
-Fields: `nickname|category|mpd|cap|cap_window|cap_group|note`
+The bot replies with a prompt. Paste it into Claude along with the card's
+rewards page, and Claude returns ready-to-send `/addearn` lines. Same pattern
+as the T&C flow, no API key.
 
-- `*` is the fallback for anything not matched.
-- Rules sharing a **cap_group** share one cap. Citi Rewards' $1,000 cap covers
-  all 10X categories together, so spending it on groceries leaves nothing for
-  shopping — `tenx` above models exactly that.
-- For a card where you **choose** the bonus category, like UOB Lady's, the
-  choice is just a rule. Change it with `/delearn` and `/addearn` when you
-  switch, using `calendar_quarter` as the cap window if that's how it resets.
+**2. Type them yourself.**
 
-Then tag spend so the caps actually track:
+```
+/addearn citirw shopping 4              4 miles per dollar
+/addearn uobone groceries 5%            5% cashback (the % matters)
+/addearn citirw shopping 4 cap 1000     bonus stops after $1,000
+/addearn citirw * 0.4                   the fallback for everything else
+```
+
+Extras go after the rate in any order: `cap <amount>`,
+`window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`,
+`note <text>`.
+
+**Always add a `*` rule.** It is the rate for anything not otherwise matched,
+and without it the app has no idea what a card does off-category.
+
+**`group` is the one that catches people.** Citi Rewards' $1,000 cap covers
+*all* its 10X categories together — spend it on groceries and nothing is left
+for shopping. Give those rules the same group name and the app measures them
+as one pool:
+
+```
+/addearn citirw shopping 4 cap 1000 group tenx
+/addearn citirw online 4 cap 1000 group tenx
+```
+
+Omit `group` when each category has its own separate cap. Getting this wrong
+makes the app think you have more bonus headroom than you do.
+
+For a card where you **choose** the bonus category, like UOB Lady's, just add
+a rule for the category you picked and swap it with `/delearn` + `/addearn`
+when you change.
+
+## Which card to use
+
+```
+/which                    the best card for every category
+/which groceries 120      ranked, with what each actually returns
+/which NTUC 120           a merchant works too
+```
+
+Ranking is by **value in dollars**, not by rate — which is the only way a
+cashback card and a miles card can be compared at all:
+
+```
+groceries · $100.00
+
+👉 Citi Rewards — 4 mpd · 400 miles (≈$6.00)
+   UOB One Card — 5% back · $5.00 back (≈$5.00)
+
+Compared at 1.5¢ per mile.
+```
+
+`MILE_VALUE_CENTS` in `wrangler.toml` is what a mile is worth to you. It is a
+real lever: at 1.5¢ the miles card above wins, at 1.0¢ the cashback card does.
+Set it to what you actually get on redemption.
+
+Ranking also accounts for caps already spent this window, and puts a card whose
+minimum spend is about to lapse above everything else — missing a sign-up bonus
+costs far more than a few miles per dollar.
+
+## Categories, learned once
+
+Tag a merchant the first time:
 
 ```
 25.40 citirw #groceries NTUC
 ```
 
-Untagged spend counts as `*`.
+After that, `25.40 citirw NTUC` categorises itself, and `/which NTUC` works.
+`/merchants` lists what it has learned. Re-tagging corrects it.
 
-```
-/which dining 80
-  👉 UOB Lady's — 4 mpd · 320 miles
-       $640.00 left at 4 mpd
-     Citi Rewards — 0.4 mpd · 32 miles
-```
+Untagged spend counts as `*`, so caps only track properly for spend you tag.
 
 ## Points and transfers
 

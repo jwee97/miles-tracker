@@ -146,8 +146,11 @@ export default {
             nickname: p.card.nickname,
             effective_mpd: p.effective_mpd,
             base_mpd: p.base_mpd,
+            reward_type: p.reward_type,
             headroom_cents: p.headroom_cents,
             miles: p.miles,
+            cashback_cents: p.cashback_cents,
+            value_cents: p.value_cents,
             reasons: p.reasons,
           })),
         });

@@ -287,7 +287,7 @@ function WhichCard({ categories }: { categories: string[] }) {
       <header>
         <div>
           <h2>Which card?</h2>
-          <p className="sub">Accounts for caps already spent and minimums about to lapse</p>
+          <p className="sub">Ranked by what you actually get back — cashback and miles on one scale</p>
         </div>
       </header>
       <form className="entry-grid" onSubmit={run}>
@@ -317,8 +317,11 @@ function WhichCard({ categories }: { categories: string[] }) {
             <li key={p.card_id} className={i === 0 ? 'best' : ''}>
               <div className="pick-head">
                 <span>{p.product}</span>
+                {/* Value in dollars is the only scale on which a cashback card
+                    and a miles card can be compared. */}
                 <span className="mono">
-                  {p.effective_mpd} mpd{p.miles !== null && <> · {p.miles.toLocaleString()} mi</>}
+                  {p.reward_type === 'cashback' ? `${p.effective_mpd}% back` : `${p.effective_mpd} mpd`}
+                  {p.value_cents > 0 && <> · ≈${money(Math.round(p.value_cents))}</>}
                 </span>
               </div>
               {p.reasons.map((r, j) => (

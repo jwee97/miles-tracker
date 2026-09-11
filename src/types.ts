@@ -9,6 +9,7 @@ export interface Env {
   MIN_SPEND_WARN_DAYS: string;
   POSTING_LAG_DAYS: string;
   RATE_RECHECK_DAYS: string;
+  MILE_VALUE_CENTS: string;
 }
 
 export interface Card {

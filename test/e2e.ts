@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { buildDigest, checkAlerts } from '../src/digest';
 import { evaluateOffer } from '../src/eligibility';
 import { utilization, requirementProgress, requirementsFor, activeCards } from '../src/spend';
-import { balances, planTransfer, planRoutes, rankCards, rateIssues, ratesReview } from '../src/points';
+import { balances, planTransfer, planRoutes, rankCards, rateIssues, ratesReview, categoryForMerchant, rememberMerchant } from '../src/points';
 import { statements } from '../src/sql';
 import type { Env } from '../src/types';
 
@@ -28,6 +28,7 @@ const env = {
   MIN_SPEND_WARN_DAYS: '7',
   POSTING_LAG_DAYS: '3',
   RATE_RECHECK_DAYS: '90',
+  MILE_VALUE_CENTS: '1.5',
 } as unknown as Env;
 
 Date.now = () => Date.parse('2026-09-11T04:00:00Z'); // 12:00 SGT, 11 Sep
@@ -382,6 +383,54 @@ check('review names the re-check command', /\/verified/.test(review), review.sli
 check('review lists never-verified routes', /Never verified/.test(review), review.slice(0, 300));
 check('review lists stale routes', /Worth re-checking/.test(review), review.slice(0, 300));
 check('review lists expiring points', /Points expiring/.test(review), review.slice(0, 300));
+
+// --- cashback vs miles, compared on value ----------------------------------
+// The whole point: 5% back and 4 mpd are not comparable numbers, and at
+// 1.5c per mile the cashback card is worth more per dollar (5c vs 6c... check).
+sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at)
+     VALUES ('UOB','One Card','uob_one_v','one1',600000,10,'2026-01-01')`);
+const one1 = (await activeCards(env)).find((c) => c.nickname === 'one1')!;
+sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'groceries',5,'cashback')`, one1.id);
+sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'*',0.3,'cashback')`, one1.id);
+
+sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at)
+     VALUES ('Citi','Rewards 2','citi_rw2','crw2',500000,15,'2026-01-01')`);
+const crw2 = (await activeCards(env)).find((c) => c.nickname === 'crw2')!;
+sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'groceries',4,'miles')`, crw2.id);
+sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'*',0.4,'miles')`, crw2.id);
+
+// $100 of groceries: 5% cashback = $5.00, versus 400 miles at 1.5c = $6.00.
+let vr = await rankCards(env, 'groceries', 10000, { cards: [one1, crw2] });
+check('cashback is valued in cents', vr.find((p) => p.card.nickname === 'one1')!.cashback_cents === 500,
+  `got ${vr.find((p) => p.card.nickname === 'one1')!.cashback_cents}`);
+check('miles are valued at the configured rate',
+  Math.round(vr.find((p) => p.card.nickname === 'crw2')!.value_cents) === 600,
+  `got ${vr.find((p) => p.card.nickname === 'crw2')!.value_cents}`);
+check('the more valuable card wins regardless of reward type', vr[0].card.nickname === 'crw2', vr[0].card.nickname);
+
+// Value a mile lower and the ranking flips — which is the point of making it
+// a setting rather than a constant.
+const cheapEnv = { ...env, MILE_VALUE_CENTS: '1.0' } as typeof env;
+vr = await rankCards(cheapEnv, 'groceries', 10000, { cards: [one1, crw2] });
+check('a lower mile valuation flips the winner', vr[0].card.nickname === 'one1', vr[0].card.nickname);
+check('miles revalue accordingly', Math.round(vr.find((p) => p.card.nickname === 'crw2')!.value_cents) === 400,
+  `got ${vr.find((p) => p.card.nickname === 'crw2')!.value_cents}`);
+
+// Ranking without an amount still has to compare the two kinds.
+vr = await rankCards(env, 'groceries', null, { cards: [one1, crw2] });
+check('ranks without an amount too', vr[0].card.nickname === 'crw2', vr[0].card.nickname);
+check('value per dollar is the scale', Math.abs(vr[0].value_per_dollar - 6) < 0.001, `got ${vr[0].value_per_dollar}`);
+
+// --- learned merchants ------------------------------------------------------
+check('an unknown merchant resolves to nothing', (await categoryForMerchant(env, 'NTUC')) === null);
+await rememberMerchant(env, 'NTUC', 'groceries');
+check('a tagged merchant is remembered', (await categoryForMerchant(env, 'NTUC')) === 'groceries');
+check('lookup ignores case and padding', (await categoryForMerchant(env, '  ntuc ')) === 'groceries');
+await rememberMerchant(env, 'NTUC', 'shopping');
+check('re-tagging corrects it', (await categoryForMerchant(env, 'ntuc')) === 'shopping');
+const hits = (db.prepare(`SELECT hits FROM merchant_categories WHERE merchant='ntuc'`).get() as { hits: number }).hits;
+check('and counts the sightings', hits === 2, `got ${hits}`);
+check('a null merchant is safe', (await categoryForMerchant(env, null)) === null);
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

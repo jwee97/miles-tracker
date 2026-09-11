@@ -248,7 +248,9 @@ export interface EarnRule {
   id: number;
   card_id: number;
   category: string;
+  /** Miles per dollar, or percent back when reward_type is 'cashback'. */
   mpd: number;
+  reward_type: 'miles' | 'cashback';
   program_key: string | null;
   cap_cents: number | null;
   cap_group: string | null;
@@ -262,13 +264,43 @@ export interface CardPick {
   /** Rate that applies to the next dollar, after any exhausted cap. */
   effective_mpd: number;
   base_mpd: number;
+  reward_type: 'miles' | 'cashback';
   /** Spend still available at the bonus rate, null when uncapped. */
   headroom_cents: number | null;
   cap_spent_cents: number;
-  /** Miles this specific purchase would earn, blended across the cap. */
+  /** Miles this purchase earns, blended across the cap. Null for cashback. */
   miles: number | null;
+  /** Cashback in cents. Null for miles cards. */
+  cashback_cents: number | null;
+  /**
+   * What the reward is worth in cents, whatever form it takes. This is what
+   * makes a cashback card and a miles card comparable, and what ranking uses.
+   */
+  value_cents: number;
+  /** Value per dollar spent, for comparing when no amount was given. */
+  value_per_dollar: number;
   reasons: string[];
   score: number;
+}
+
+/** Learned merchant -> category mapping, so spend categorises itself. */
+export async function categoryForMerchant(env: Env, merchant: string | null): Promise<string | null> {
+  if (!merchant) return null;
+  const row = await env.DB.prepare(`SELECT category FROM merchant_categories WHERE merchant = ?`)
+    .bind(merchant.trim().toLowerCase())
+    .first<{ category: string }>();
+  return row?.category ?? null;
+}
+
+export async function rememberMerchant(env: Env, merchant: string | null, category: string | null): Promise<void> {
+  if (!merchant || !category) return;
+  await env.DB.prepare(
+    `INSERT INTO merchant_categories (merchant, category) VALUES (?, ?)
+     ON CONFLICT(merchant) DO UPDATE SET category = excluded.category,
+       hits = hits + 1, updated_at = datetime('now')`
+  )
+    .bind(merchant.trim().toLowerCase(), category)
+    .run();
 }
 
 function windowFor(w: string | null, card: Card, env: Env) {
@@ -324,6 +356,11 @@ export async function rankCards(
     if (!rule && baseMpd === 0) continue; // nothing known about this card's earning
 
     const reasons: string[] = [];
+    const rewardType: 'miles' | 'cashback' = rule?.reward_type ?? 'miles';
+    const mileValue = parseFloat(env.MILE_VALUE_CENTS || '1.5');
+    /** One dollar of spend, in cents of reward value, at a given rate. */
+    const valueOf = (rate: number) => (rewardType === 'cashback' ? rate : rate * mileValue);
+
     let headroom: number | null = null;
     let capSpent = 0;
     let effective = rule?.mpd ?? baseMpd;
@@ -340,20 +377,36 @@ export async function rankCards(
     }
 
     let miles: number | null = null;
+    let cashback: number | null = null;
+    let valueCents = 0;
+    const bonusRate = rule?.mpd ?? baseMpd;
+
     if (amountCents !== null) {
       const atBonus = headroom === null ? amountCents : Math.min(amountCents, headroom);
       const atBase = amountCents - atBonus;
-      miles = Math.round(((atBonus * (rule?.mpd ?? baseMpd)) / 100) + (atBase * baseMpd) / 100);
+      const dollarsBonus = atBonus / 100;
+      const dollarsBase = atBase / 100;
+
+      if (rewardType === 'cashback') {
+        cashback = Math.round(atBonus * (bonusRate / 100) + atBase * (baseMpd / 100));
+        valueCents = cashback;
+      } else {
+        miles = Math.round(dollarsBonus * bonusRate + dollarsBase * baseMpd);
+        valueCents = miles * mileValue;
+      }
       if (atBase > 0 && atBonus > 0) reasons.push(`$${money(atBase)} of this spills past the cap`);
     }
 
-    // Rate normally decides the ranking. A minimum that is genuinely about to
+    const valuePerDollar = valueOf(effective);
+
+    // Value per dollar, not the headline rate, is what ranks cards — it is the
+    // only scale on which cashback and miles can be compared at all. A minimum that is genuinely about to
     // lapse is a different kind of consideration — missing it forfeits a whole
     // bonus, which dwarfs the per-dollar difference — so it ranks as its own
     // tier rather than as points added to a rate. A minimum with weeks left
     // gets only a tie-breaking nudge, never enough to beat a better rate.
     const warnDays = parseInt(env.MIN_SPEND_WARN_DAYS || '7', 10);
-    let score = effective * 1000;
+    let score = valuePerDollar * 1000;
     const nudge = opts.minSpendNudge?.find((n) => n.cardId === card.id);
     if (nudge && nudge.remaining > 0) {
       const urgent = nudge.daysLeft <= warnDays;
@@ -369,9 +422,13 @@ export async function rankCards(
       rule,
       effective_mpd: effective,
       base_mpd: baseMpd,
+      reward_type: rewardType,
       headroom_cents: headroom,
       cap_spent_cents: capSpent,
       miles,
+      cashback_cents: cashback,
+      value_cents: valueCents,
+      value_per_dollar: valuePerDollar,
       reasons,
       score,
     });

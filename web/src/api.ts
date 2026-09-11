@@ -163,8 +163,11 @@ export interface Pick {
   nickname: string;
   effective_mpd: number;
   base_mpd: number;
+  reward_type: 'miles' | 'cashback';
   headroom_cents: number | null;
   miles: number | null;
+  cashback_cents: number | null;
+  value_cents: number;
   reasons: string[];
 }
 

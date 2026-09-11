@@ -42,6 +42,11 @@ POSTING_LAG_DAYS = "3"
 # Re-check a conversion's terms after this many days. Fees and ratios move
 # often enough that a figure this old should not be trusted silently.
 RATE_RECHECK_DAYS = "90"
+# What one mile is worth to you, in cents. This is the exchange rate that lets
+# a cashback card and a miles card be compared on the same scale. 1.5 is a
+# common working figure for KrisFlyer redeemed on premium cabins; use less if
+# you redeem for economy.
+MILE_VALUE_CENTS = "1.5"
 
 # Secrets — set with `wrangler secret put <NAME>`, never in this file:
 #   TELEGRAM_BOT_TOKEN   from @BotFather

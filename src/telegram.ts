@@ -1,10 +1,10 @@
 import { mintToken } from './auth';
 import { buildDigest, checkAlerts } from './digest';
-import { extractionPrompt, HELP } from './extraction';
+import { cardRulesPrompt, extractionPrompt, HELP } from './extraction';
 import { evaluateOffer } from './eligibility';
 import { scanFeeds } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
-import { balances, planRoutes, rankCards, ratesReview } from './points';
+import { balances, categoryForMerchant, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
 import { runMigrations, runSeed } from './migrate';
 import type { Card, Env, Offer } from './types';
 
@@ -382,8 +382,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       }
 
       case '/which': {
-        const [cat, amt] = args.trim().split(/\s+/);
-        if (!cat) return send(env, chatId, 'Format: `/which groceries 120` — the amount is optional.');
+        const [rawCat, amt] = args.trim().split(/\s+/);
         const cents = amt ? parseMoney(amt) : null;
         const cards = await activeCards(env);
         if (!cards.length) return send(env, chatId, 'No cards yet.');
@@ -397,17 +396,61 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           }
         }
 
-        const picks = await rankCards(env, cat.toLowerCase(), cents, { cards, minSpendNudge: nudges });
-        if (!picks.length) return send(env, chatId, 'No earn rules yet — add one with /addearn (see /help).');
+        // With no category, show the winner for each category you have rules for.
+        if (!rawCat) {
+          const { results: cats } = await env.DB.prepare(
+            `SELECT DISTINCT category FROM earn_rules WHERE active = 1 AND category <> '*' ORDER BY category`
+          ).all<{ category: string }>();
+          if (!cats?.length)
+            return send(env, chatId, 'No earn rules yet.\nStart with `/addearn <card> <category> <rate>` — see /help.');
+
+          const lines: string[] = ['*Best card by category*', ''];
+          for (const { category } of cats) {
+            const top = (await rankCards(env, category, null, { cards, minSpendNudge: nudges }))[0];
+            if (!top) continue;
+            lines.push(
+              `*${category}* — ${top.card.product}` +
+                ` (${top.reward_type === 'cashback' ? `${top.effective_mpd}%` : `${top.effective_mpd} mpd`})`
+            );
+          }
+          lines.push('', '_`/which <category or merchant> <amount>` for detail._');
+          return send(env, chatId, lines.join('\n'));
+        }
+
+        // The argument may be a merchant you have tagged before, not a category.
+        const asMerchant = await categoryForMerchant(env, rawCat);
+        const category = (asMerchant ?? rawCat).toLowerCase();
+
+        const picks = await rankCards(env, category, cents, { cards, minSpendNudge: nudges });
+        if (!picks.length)
+          return send(env, chatId, 'No earn rules yet.\nStart with `/addearn <card> <category> <rate>` — see /help.');
+
+        const header =
+          `*${category}*${asMerchant ? ` _(${rawCat})_` : ''}${cents ? ` · $${money(cents)}` : ''}`;
 
         const lines = picks.map((p, i) => {
-          const head =
-            `${i === 0 ? '👉' : '  '} *${p.card.product}* — ${p.effective_mpd} mpd` +
-            (p.miles !== null ? ` · ${p.miles.toLocaleString()} miles` : '');
+          const rate = p.reward_type === 'cashback' ? `${p.effective_mpd}% back` : `${p.effective_mpd} mpd`;
+          const earned =
+            cents === null
+              ? ''
+              : p.reward_type === 'cashback'
+                ? ` · $${money(p.cashback_cents ?? 0)} back`
+                : ` · ${(p.miles ?? 0).toLocaleString()} miles`;
+          // Both card types get a cash value, which is the only fair comparison.
+          const worth = cents !== null ? ` _(≈$${money(Math.round(p.value_cents))})_` : '';
           const why = p.reasons.length ? '\n     _' + p.reasons.join('; ') + '_' : '';
-          return head + why;
+          return `${i === 0 ? '👉' : '  '} *${p.card.product}* — ${rate}${earned}${worth}${why}`;
         });
-        return send(env, chatId, `*${cat}*${cents ? ` · $${money(cents)}` : ''}\n\n` + lines.join('\n'));
+
+        const mv = parseFloat(env.MILE_VALUE_CENTS || '1.5');
+        return send(
+          env,
+          chatId,
+          `${header}\n\n${lines.join('\n')}` +
+            (picks.some((p) => p.reward_type === 'cashback') && picks.some((p) => p.reward_type === 'miles')
+              ? `\n\n_Compared at ${mv}¢ per mile._`
+              : '')
+        );
       }
 
       case '/bal': {
@@ -566,27 +609,98 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       }
 
       case '/addearn': {
-        // nickname|category|mpd|cap|cap_window|cap_group|note
-        const p = args.split('|').map((s) => s.trim());
-        if (p.length < 3)
-          return send(
-            env,
-            chatId,
-            'Format: `nickname|category|mpd|cap|cap_window|cap_group|note`\n\n' +
-              '`/addearn citirw|shopping|4|1000|statement_cycle|tenx|10X online`\n' +
-              '`/addearn citirw|*|0.4`  ← base rate for everything else\n' +
-              "Use `*` for the fallback category. Rules sharing a cap_group share one cap."
-          );
-        const [nick, cat, mpd, cap, capWindow, capGroup, note] = p;
+        // Readable form:  citirw shopping 4 cap 1000 group tenx window statement_cycle
+        // A rate ending in % means cashback; anything else means miles.
+        // The older pipe form still works.
+        let nick: string, cat: string, rateRaw: string;
+        let cap: string | undefined;
+        let capWindow: string | undefined;
+        let capGroup: string | undefined;
+        let note: string | undefined;
+
+        if (args.includes('|')) {
+          const p = args.split('|').map((s) => s.trim());
+          [nick, cat, rateRaw, cap, capWindow, capGroup, note] = p;
+        } else {
+          const tok = args.trim().split(/\s+/);
+          if (tok.length < 3)
+            return send(
+              env,
+              chatId,
+              '*Add an earn rule*\n`/addearn <card> <category> <rate>`\n\n' +
+                'Examples:\n' +
+                '`/addearn citirw shopping 4` — 4 miles per dollar\n' +
+                '`/addearn uobone groceries 5%` — 5% cashback\n' +
+                '`/addearn citirw shopping 4 cap 1000` — bonus rate stops after $1,000\n' +
+                '`/addearn citirw online 4 cap 1000 group tenx` — shares that cap with other `tenx` rules\n' +
+                '`/addearn citirw * 0.4` — the fallback rate for everything else\n\n' +
+                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`, `note <text>`'
+            );
+          [nick, cat, rateRaw] = tok;
+          for (let i = 3; i < tok.length; i += 2) {
+            const k = tok[i].toLowerCase();
+            const v = tok[i + 1];
+            if (k === 'cap') cap = v;
+            else if (k === 'window') capWindow = v;
+            else if (k === 'group') capGroup = v;
+            else if (k === 'note') {
+              note = tok.slice(i + 1).join(' ');
+              break;
+            }
+          }
+        }
+
         const card = await cardByNick(env, nick);
-        if (!card) return send(env, chatId, `No card with nickname \`${nick}\`.`);
+        if (!card) return send(env, chatId, `No card with nickname \`${nick}\`. /cards to list them.`);
+
+        const isCashback = /%$/.test(rateRaw ?? '');
+        const rate = parseFloat((rateRaw ?? '').replace('%', ''));
+        if (!Number.isFinite(rate)) return send(env, chatId, `Could not read a rate from "${rateRaw}".`);
+
         await env.DB.prepare(
-          `INSERT INTO earn_rules (card_id, category, mpd, cap_cents, cap_window, cap_group, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO earn_rules (card_id, category, mpd, reward_type, cap_cents, cap_window, cap_group, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         )
-          .bind(card.id, cat.toLowerCase(), parseFloat(mpd), cap ? parseMoney(cap) : null, capWindow || null, capGroup || null, note || null)
+          .bind(
+            card.id,
+            cat.toLowerCase(),
+            rate,
+            isCashback ? 'cashback' : 'miles',
+            cap ? parseMoney(cap) : null,
+            capWindow || (cap ? 'statement_cycle' : null),
+            capGroup || null,
+            note || null
+          )
           .run();
-        return send(env, chatId, `Rule added: ${card.product} earns ${mpd} mpd on ${cat}.`);
+
+        return send(
+          env,
+          chatId,
+          `*${card.product}* earns ${isCashback ? `${rate}% back` : `${rate} mpd`} on *${cat}*` +
+            (cap ? `, up to $${money(parseMoney(cap) ?? 0)} per ${capWindow || 'statement_cycle'}` : '') +
+            (capGroup ? `\n_Shares that cap with other \`${capGroup}\` rules._` : '') +
+            '\n\nTry `/which ' + cat.toLowerCase() + ' 100`.'
+        );
+      }
+
+      case '/cardrules': {
+        const card = await cardByNick(env, args.trim());
+        if (!card) return send(env, chatId, 'Format: `/cardrules citirw` — use /cards for nicknames.');
+        await send(env, chatId, `Open ${card.product}'s rewards page, then paste this into Claude with it:`);
+        return send(env, chatId, cardRulesPrompt(card.nickname, card.product), { parse_mode: undefined });
+      }
+
+      case '/merchants': {
+        const { results } = await env.DB.prepare(
+          `SELECT merchant, category, hits FROM merchant_categories ORDER BY hits DESC, merchant LIMIT 30`
+        ).all<any>();
+        if (!results?.length)
+          return send(env, chatId, 'Nothing learned yet. Tag a merchant once: `25.40 citirw #groceries NTUC`');
+        return send(
+          env,
+          chatId,
+          '*Learned merchants*\n' + results.map((r) => `${r.merchant} → ${r.category} _(${r.hits}×)_`).join('\n')
+        );
       }
 
       case '/delearn':
@@ -675,16 +789,30 @@ async function logSpend(env: Env, chatId: string, input: string) {
   const card = await cardByNick(env, nick);
   if (!card) return send(env, chatId, `No card with nickname \`${nick}\`. /cards to list them.`);
 
+  // Tagging a merchant once is enough: later spend there categorises itself.
+  let resolved = category;
+  let learned = false;
+  if (category) {
+    await rememberMerchant(env, note, category);
+  } else if (note) {
+    resolved = await categoryForMerchant(env, note);
+    learned = resolved !== null;
+  }
+
   const ins = await env.DB.prepare(
     `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, category, source) VALUES (?, ?, ?, ?, ?, 'manual')`
   )
-    .bind(card.id, amount, date, note || null, category)
+    .bind(card.id, amount, date, note || null, resolved)
     .run();
 
   // Immediate feedback: what this swipe did to the limit and to any minimum.
   const reqs = await requirementsFor(env, card.id);
   const when = date === today(env) ? '' : ` on ${date}`;
-  const bits: string[] = [`Logged $${money(amount)} to *${card.product}*${when}. (#${ins.meta.last_row_id})`];
+  const bits: string[] = [
+    `Logged $${money(amount)} to *${card.product}*${when}.` +
+      (resolved ? ` #${resolved}${learned ? ' _(remembered)_' : ''}` : '') +
+      ` (#${ins.meta.last_row_id})`,
+  ];
   for (const req of reqs) {
     const p = await requirementProgress(env, card, req);
     if (p.met) {

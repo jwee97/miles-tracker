@@ -65,6 +65,40 @@ T&C text follows:
 `;
 }
 
+export function cardRulesPrompt(nickname: string, product: string): string {
+  return `Extract this credit card's earning structure into commands.
+
+I will paste the card's rewards page and terms below.
+
+Return ONLY a list of commands, one per line, in this exact shape:
+
+/addearn ${nickname} <category> <rate> cap <amount> window <window> group <name>
+
+Rules:
+1. <rate> is miles per dollar as a plain number (4), OR a percentage with a
+   % sign for cashback cards (5%). Never mix the two on one line.
+2. <category> is one lowercase word. Use the closest of: dining, groceries,
+   online, shopping, transport, travel, fuel, utilities, entertainment,
+   contactless, foreign. Use * for the fallback rate on everything else.
+3. ALWAYS include a /addearn ${nickname} * <rate> line for the base rate.
+4. cap is the spend at which the bonus rate stops, in dollars. Omit if none.
+5. window is statement_cycle, calendar_month or calendar_quarter — whichever
+   the cap resets on. Omit if there is no cap.
+6. If ONE cap is shared across several categories, give those lines the SAME
+   group name. If each category has its own cap, omit group. This matters:
+   getting it wrong makes the app think you have more bonus headroom than you do.
+7. If the card lets you CHOOSE the bonus category, output only the category
+   currently selected, and add a comment line saying so.
+8. Do not invent rates. If the page does not state one, leave that line out
+   and add a comment naming what is missing.
+
+Card: ${product} (nickname: ${nickname})
+
+Rewards page and terms follow:
+---
+`;
+}
+
 export const HELP = `*Miles tracker*
 
 *Logging spend*
@@ -79,14 +113,23 @@ Add a date anywhere to backdate:
 /del <id> — remove one · /undo — remove the last
 
 *Which card to use*
-/which groceries 120 — ranks cards by what you'd actually earn
-Tag spend with a category so caps track: \`25.40 citirw #groceries NTUC\`
+/which — best card for each category
+/which groceries 120 — ranked, with what each would actually return
+/which NTUC 120 — a merchant works too, once you've tagged it
+Tag a merchant once: \`25.40 citirw #groceries NTUC\`
+After that \`25.40 citirw NTUC\` categorises itself.
+Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 
 *Points & miles*
 /bal — balances, with the nearest expiry
 /addbal program|points|expires|note
 /convert 50000 citi\_ty krisflyer — blocks, fees, best route
-/earn — earn rules · /addearn · /delearn
+/earn — list earn rules
+/addearn <card> <category> <rate> — e.g. \`/addearn citirw shopping 4\`
+   add \`cap 1000\`, \`window calendar_month\`, \`group tenx\` as needed
+   a rate ending in % means cashback: \`/addearn uobone groceries 5%\`
+/cardrules <card> — get a prompt to extract a card's rates with Claude
+/delearn <id>
 /routes — every transfer route and when it was last checked
 /rates — the weekly rates review, on demand
 /verified <id> — mark a route checked against the bank

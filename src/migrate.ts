@@ -15,6 +15,11 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
   { table: 'conversions', column: 'note', ddl: 'ALTER TABLE conversions ADD COLUMN note TEXT' },
   { table: 'feed_items', column: 'topic', ddl: 'ALTER TABLE feed_items ADD COLUMN topic TEXT' },
+  {
+    table: 'earn_rules',
+    column: 'reward_type',
+    ddl: "ALTER TABLE earn_rules ADD COLUMN reward_type TEXT NOT NULL DEFAULT 'miles'",
+  },
 ];
 
 async function tableExists(env: Env, table: string): Promise<boolean> {
