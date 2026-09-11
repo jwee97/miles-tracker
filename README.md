@@ -45,6 +45,9 @@ pull and a 12-month cooldown.
 
 ## Setup
 
+**[SETUP.md](SETUP.md) is the full walkthrough** — Cloudflare account through
+first logged transaction, with troubleshooting. The short version:
+
 ### 1. Create the bot
 
 Message [@BotFather](https://t.me/botfather) → `/newbot` → keep the token.

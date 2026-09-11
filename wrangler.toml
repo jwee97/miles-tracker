@@ -1,6 +1,6 @@
 name = "miles-tracker"
 main = "src/index.ts"
-compatibility_date = "2025-01-01"
+compatibility_date = "2026-09-01"
 
 # Two nightly jobs. Times are UTC. Defaults below are tuned for SGT (UTC+8):
 #   "0 0 * * *"  -> 08:00 SGT  scan RSS feeds for new promos
