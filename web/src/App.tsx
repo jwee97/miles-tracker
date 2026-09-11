@@ -31,6 +31,7 @@ function RequirementRow({ p }: { p: Progress }) {
         <span>{label}</span>
         <span className="mono">
           ${money(p.spent_cents)} / ${money(p.amount_cents)}
+          {p.txns_required > 0 && ` · ${p.txn_count}/${p.txns_required} txns`}
         </span>
       </div>
       <Meter percent={pct} tone={p.met ? 'ok' : urgent ? 'warn' : 'mid'} />
@@ -39,8 +40,11 @@ function RequirementRow({ p }: { p: Progress }) {
           <span className="ok-text">Met</span>
         ) : (
           <span>
-            ${money(p.remaining_cents)} to go · {p.days_left}d
-            {p.days_left > 0 && <> · ~${money(p.per_day_cents)}/day</>}
+            {p.remaining_cents > 0 && <>${money(p.remaining_cents)} to go</>}
+            {p.remaining_cents > 0 && p.txns_remaining > 0 && <> and </>}
+            {p.txns_remaining > 0 && <>{p.txns_remaining} more txn{p.txns_remaining > 1 ? 's' : ''}</>}
+            {' · '}{p.days_left}d
+            {p.remaining_cents > 0 && p.days_left > 0 && <> · ~${money(p.per_day_cents)}/day</>}
           </span>
         )}
         {p.reward_note && <span className="note">{p.reward_note}</span>}

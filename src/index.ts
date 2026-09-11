@@ -62,6 +62,9 @@ export default {
               days_left: p.days_left,
               per_day_cents: p.per_day_cents,
               met: p.met,
+              txn_count: p.txn_count,
+              txns_required: p.txns_required,
+              txns_remaining: p.txns_remaining,
               cap_reached: p.cap_reached,
               window: p.window,
             });

@@ -41,6 +41,9 @@ export interface Progress {
   days_left: number;
   per_day_cents: number;
   met: boolean;
+  txn_count: number;
+  txns_required: number;
+  txns_remaining: number;
   cap_reached: boolean;
   window: { start: string; end: string };
 }

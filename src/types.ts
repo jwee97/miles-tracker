@@ -28,9 +28,10 @@ export interface Requirement {
   card_id: number;
   kind: 'monthly_min' | 'signup_min';
   amount_cents: number;
-  window: 'calendar_month' | 'statement_cycle' | 'fixed_window';
+  window: 'calendar_month' | 'calendar_quarter' | 'statement_cycle' | 'fixed_window';
   deadline: string | null;
   starts_at: string | null;
+  min_txns: number | null;
   bonus_cap_cents: number | null;
   reward_note: string | null;
   active: number;

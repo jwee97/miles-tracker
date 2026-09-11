@@ -37,9 +37,10 @@ CREATE TABLE IF NOT EXISTS requirements (
   card_id         INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
   kind            TEXT    NOT NULL,              -- monthly_min | signup_min
   amount_cents    INTEGER NOT NULL,
-  window          TEXT    NOT NULL,              -- calendar_month | statement_cycle | fixed_window
+  window          TEXT    NOT NULL,              -- calendar_month | calendar_quarter | statement_cycle | fixed_window
   deadline        TEXT,                          -- YYYY-MM-DD, for signup_min / fixed_window
   starts_at       TEXT,                          -- YYYY-MM-DD, for fixed_window
+  min_txns        INTEGER,                       -- some cards also require N transactions
   bonus_cap_cents INTEGER,                       -- elevated rate applies to first N only
   reward_note     TEXT,                          -- '4 mpd on first $1,000'
   active          INTEGER NOT NULL DEFAULT 1

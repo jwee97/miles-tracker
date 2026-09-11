@@ -64,6 +64,18 @@ export function statementCycle(statementDay: number, env: Env): { start: string;
   return { start: isoDate(new Date(prevClose.getTime() + 86400_000)), end: isoDate(end) };
 }
 
+export function calendarQuarter(env: Env): { start: string; end: string } {
+  const l = localNow(env);
+  const y = l.getUTCFullYear();
+  const q = Math.floor(l.getUTCMonth() / 3);
+  const startM = q * 3;
+  const endM = startM + 2;
+  return {
+    start: isoDate(new Date(Date.UTC(y, startM, 1))),
+    end: isoDate(new Date(Date.UTC(y, endM, daysInMonth(y, endM)))),
+  };
+}
+
 export function calendarMonth(env: Env): { start: string; end: string } {
   const l = localNow(env);
   const y = l.getUTCFullYear();
@@ -79,6 +91,16 @@ export async function spentBetween(env: Env, cardId: number, start: string, end:
     .bind(cardId, start, end)
     .first<{ total: number }>();
   return row?.total ?? 0;
+}
+
+export async function countBetween(env: Env, cardId: number, start: string, end: string): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM transactions
+     WHERE card_id = ? AND occurred_at >= ? AND occurred_at <= ? AND amount_cents > 0`
+  )
+    .bind(cardId, start, end)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 export interface Utilization {
@@ -111,7 +133,11 @@ export interface Progress {
   remaining_cents: number;
   days_left: number;
   per_day_cents: number;
+  /** True only when BOTH the amount and the transaction count are satisfied. */
   met: boolean;
+  txn_count: number;
+  txns_required: number;
+  txns_remaining: number;
   /** Set when the elevated earn rate has been exhausted — stop using this card. */
   cap_reached: boolean;
   over_cap_cents: number;
@@ -120,6 +146,7 @@ export interface Progress {
 export async function requirementProgress(env: Env, card: Card, req: Requirement): Promise<Progress> {
   let window: { start: string; end: string };
   if (req.window === 'calendar_month') window = calendarMonth(env);
+  else if (req.window === 'calendar_quarter') window = calendarQuarter(env);
   else if (req.window === 'statement_cycle') window = statementCycle(card.statement_day, env);
   else window = { start: req.starts_at ?? card.opened_at ?? today(env), end: req.deadline ?? today(env) };
 
@@ -127,6 +154,12 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
   const remaining = Math.max(0, req.amount_cents - spent);
   const daysLeft = Math.max(0, daysBetween(today(env), window.end));
   const cap = req.bonus_cap_cents ?? 0;
+
+  // Cards like UOB One gate the reward on a transaction count as well as a
+  // dollar amount, so a requirement is only met when both are satisfied.
+  const txnsRequired = req.min_txns ?? 0;
+  const txnCount = txnsRequired > 0 ? await countBetween(env, card.id, window.start, window.end) : 0;
+  const txnsRemaining = Math.max(0, txnsRequired - txnCount);
 
   return {
     requirement: req,
@@ -136,7 +169,10 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
     remaining_cents: remaining,
     days_left: daysLeft,
     per_day_cents: daysLeft > 0 ? Math.ceil(remaining / daysLeft) : remaining,
-    met: remaining === 0,
+    met: remaining === 0 && txnsRemaining === 0,
+    txn_count: txnCount,
+    txns_required: txnsRequired,
+    txns_remaining: txnsRemaining,
     cap_reached: cap > 0 && spent >= cap,
     over_cap_cents: cap > 0 ? Math.max(0, spent - cap) : 0,
   };

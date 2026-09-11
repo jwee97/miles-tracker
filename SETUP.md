@@ -259,16 +259,23 @@ missing closed card is how you get a confident, wrong "eligible", and a hard
 pull you didn't need.
 
 ```
-/req alt|signup_min|1000|fixed_window|2026-11-14||30k miles
-/req wwmc|monthly_min|800|calendar_month||1000|4 mpd on first $1k
+/req alt|signup_min|1000|fixed_window|2026-11-14|||30k miles
+/req wwmc|monthly_min|800|calendar_month||1000||4 mpd on first $1k
+/req uobone|monthly_min|1000|calendar_quarter|||5|$100 quarterly rebate
 ```
 
-`nickname | kind | amount | window | deadline | bonus cap | note`
-Window is `calendar_month`, `statement_cycle`, or `fixed_window`.
+`nickname | kind | amount | window | deadline | bonus cap | min txns | note`
 
-The sixth field — **bonus cap** — is the one people skip and shouldn't. Past
-that amount the elevated rate stops and further spend belongs on another card.
-It's where miles actually get lost, so it gets its own alert.
+Window is `calendar_month`, `calendar_quarter`, `statement_cycle`, or
+`fixed_window`. Leave a field empty to skip it.
+
+**Bonus cap** is the one people skip and shouldn't. Past that amount the
+elevated rate stops and further spend belongs on another card. It's where miles
+actually get lost, so it gets its own alert.
+
+**Min txns** covers cards that also require a number of transactions, not just
+a dollar total — UOB One is the common example. A requirement is only reported
+as met when *both* halves clear, and the digest tells you which one is short.
 
 ## Verify end to end
 

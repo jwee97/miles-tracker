@@ -109,5 +109,46 @@ sql(`INSERT INTO offers (status) VALUES ('tracked')`);
 const e3 = await evaluateOffer(env, 3);
 check('offer with no rules is needs_review', e3.verdict === 'needs_review', e3.verdict);
 
+// --- quarterly minimum with a transaction count (UOB One shape) ---
+sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at)
+     VALUES ('UOB','One Card','uob_one','uobone',600000,10,'2026-01-15')`);
+const uob = (await activeCards(env)).find((c) => c.nickname === 'uobone')!;
+sql(`INSERT INTO requirements (card_id,kind,amount_cents,window,min_txns,reward_note)
+     VALUES (${uob.id},'monthly_min',100000,'calendar_quarter',5,'$100 quarterly rebate')`);
+
+// Four transactions totalling $1,200 — amount cleared, count is not.
+for (const [amt, d] of [[30000,'2026-07-05'],[40000,'2026-08-02'],[30000,'2026-09-01'],[20000,'2026-09-09']] as [number,string][]) {
+  sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at) VALUES (?,?,?)`, uob.id, amt, d);
+}
+// Dated inside Q2, so it must fall outside the current quarter's window.
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at) VALUES (?,?,?)`, uob.id, 50000, '2026-06-30');
+
+const [qreq] = await requirementsFor(env, uob.id);
+const qp = await requirementProgress(env, uob, qreq);
+check('quarter window is Q3', qp.window.start === '2026-07-01' && qp.window.end === '2026-09-30', JSON.stringify(qp.window));
+check('prior quarter excluded', qp.spent_cents === 120000, `got ${qp.spent_cents}`);
+check('amount satisfied', qp.remaining_cents === 0, `got ${qp.remaining_cents}`);
+check('txn count tracked', qp.txn_count === 4 && qp.txns_remaining === 1, `${qp.txn_count}/${qp.txns_required}`);
+check('NOT met while a txn is short', qp.met === false, 'met should require both halves');
+
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at) VALUES (?,?,?)`, uob.id, 1500, '2026-09-10');
+const qp2 = await requirementProgress(env, uob, qreq);
+check('met once both halves clear', qp2.met === true && qp2.txns_remaining === 0, `${qp2.txn_count} txns`);
+
+const d2 = await buildDigest(env);
+check('digest shows the txn fraction', /5\/5 txns|4\/5 txns/.test(d2), 'no txn fraction in digest');
+
+// --- cap with no minimum (Citi Rewards shape) ---
+sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at)
+     VALUES ('Citi','Rewards','citi_rewards_2','citirw2',500000,15,'2026-02-01')`);
+const citi = (await activeCards(env)).find((c) => c.nickname === 'citirw2')!;
+sql(`INSERT INTO requirements (card_id,kind,amount_cents,window,bonus_cap_cents,reward_note)
+     VALUES (${citi.id},'monthly_min',0,'statement_cycle',100000,'4 mpd, capped')`);
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at) VALUES (?,?,?)`, citi.id, 110000, '2026-09-05');
+const [creq] = await requirementsFor(env, citi.id);
+const cp = await requirementProgress(env, citi, creq);
+check('zero-minimum requirement is met immediately', cp.met === true, `remaining ${cp.remaining_cents}`);
+check('cap still flags past the ceiling', cp.cap_reached && cp.over_cap_cents === 10000, `over ${cp.over_cap_cents}`);
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

@@ -1,4 +1,4 @@
-import { statementCycle, calendarMonth, addMonths, daysBetween, parseMoney, today } from '../src/spend';
+import { statementCycle, calendarMonth, calendarQuarter, addMonths, daysBetween, parseMoney, today } from '../src/spend';
 import { evaluateRule } from '../src/eligibility';
 import { parseFeed, isRelevant } from '../src/rss';
 import type { Card, Env } from '../src/types';
@@ -22,6 +22,12 @@ eq('cycle, stmt day 18, before close', statementCycle(18, env), { start: '2026-0
 eq('cycle, stmt day 5, after close',   statementCycle(5, env),  { start: '2026-09-06', end: '2026-10-05' });
 eq('cycle, stmt day 11 = today',       statementCycle(11, env), { start: '2026-08-12', end: '2026-09-11' });
 eq('calendar month',                   calendarMonth(env),      { start: '2026-09-01', end: '2026-09-30' });
+eq('calendar quarter (Q3)',            calendarQuarter(env),    { start: '2026-07-01', end: '2026-09-30' });
+
+at('2026-02-15T04:00:00Z');
+eq('quarter Q1 ends on 31 Mar', calendarQuarter(env), { start: '2026-01-01', end: '2026-03-31' });
+at('2026-12-25T04:00:00Z');
+eq('quarter Q4 ends on 31 Dec', calendarQuarter(env), { start: '2026-10-01', end: '2026-12-31' });
 
 at('2026-01-31T04:00:00Z');            // clamping into February
 eq('cycle clamps short month', statementCycle(31, env), { start: '2026-01-01', end: '2026-01-31' });

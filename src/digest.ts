@@ -41,15 +41,23 @@ export async function buildDigest(env: Env): Promise<string> {
       const p = await requirementProgress(env, card, req);
       const label = req.kind === 'signup_min' ? 'Sign-up' : 'Monthly min';
 
+      // A card can gate its reward on a transaction count as well as an amount,
+      // so report whichever half is still outstanding.
+      const txns = p.txns_required > 0 ? ` · ${p.txn_count}/${p.txns_required} txns` : '';
+
       if (p.met) {
-        lines.push(`  ✅ ${label} $${money(req.amount_cents)} met ($${money(p.spent_cents)})`);
+        lines.push(`  ✅ ${label} $${money(req.amount_cents)} met ($${money(p.spent_cents)}${txns})`);
       } else {
         const urgent = p.days_left <= warnDays ? '⚠️ ' : '';
-        lines.push(
-          `  ${urgent}${label}: $${money(p.spent_cents)} / $${money(req.amount_cents)} · ` +
-            `$${money(p.remaining_cents)} to go, ${p.days_left}d` +
-            (p.days_left > 0 ? ` (~$${money(p.per_day_cents)}/day)` : '')
-        );
+        const amountPart =
+          p.remaining_cents > 0
+            ? `$${money(p.spent_cents)} / $${money(req.amount_cents)} · $${money(p.remaining_cents)} to go`
+            : `$${money(p.spent_cents)} ✓`;
+        lines.push(`  ${urgent}${label}: ${amountPart}${txns}, ${p.days_left}d` +
+          (p.remaining_cents > 0 && p.days_left > 0 ? ` (~$${money(p.per_day_cents)}/day)` : ''));
+        if (p.remaining_cents === 0 && p.txns_remaining > 0) {
+          lines.push(`  ↳ amount met — still needs ${p.txns_remaining} more transaction(s)`);
+        }
       }
 
       // The mirror of a minimum: past the cap, this card earns its base rate and
@@ -109,10 +117,13 @@ export async function checkAlerts(env: Env, onlyCard?: Card): Promise<string[]> 
       const p = await requirementProgress(env, card, req);
       if (!p.met && p.days_left <= warnDays) {
         if (await claimAlert(env, `minspend:${req.id}:${p.window.end}`)) {
+          const short: string[] = [];
+          if (p.remaining_cents > 0) short.push(`$${money(p.remaining_cents)} of $${money(req.amount_cents)}`);
+          if (p.txns_remaining > 0) short.push(`${p.txns_remaining} more transaction(s)`);
           out.push(
-            `⚠️ *${card.product}* ${req.kind === 'signup_min' ? 'sign-up' : 'monthly'} minimum\n` +
-              `$${money(p.remaining_cents)} left of $${money(req.amount_cents)} · ${p.days_left}d to ${p.window.end}` +
-              (p.days_left > 0 ? `\nNeed ~$${money(p.per_day_cents)}/day` : '')
+            `⚠️ *${card.product}* ${req.kind === 'signup_min' ? 'sign-up' : 'minimum'} not met\n` +
+              `${short.join(' and ')} left · ${p.days_left}d to ${p.window.end}` +
+              (p.remaining_cents > 0 && p.days_left > 0 ? `\nNeed ~$${money(p.per_day_cents)}/day` : '')
           );
         }
       }

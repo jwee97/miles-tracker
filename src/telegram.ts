@@ -167,20 +167,23 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       }
 
       case '/req': {
-        // nickname|kind|amount|window|deadline|cap|note
+        // nickname|kind|amount|window|deadline|cap|txns|note
         const p = args.split('|').map((s) => s.trim());
         if (p.length < 4)
           return send(
             env,
             chatId,
-            'Format:\n`/req wwmc|monthly_min|800|calendar_month||1000|4 mpd on first $1k`\n`/req alt|signup_min|1000|fixed_window|2026-11-14||30k miles`'
+            'Format: `nickname|kind|amount|window|deadline|cap|txns|note`\n\n' +
+              '`/req citirw|monthly_min|0|statement_cycle||1000||4 mpd, capped`\n' +
+              '`/req uobone|monthly_min|1000|calendar_quarter|||5|$100 quarterly rebate`\n' +
+              '`/req alt|signup_min|1000|fixed_window|2026-11-14|||30k miles`'
           );
-        const [nick, kind, amount, window, deadline, cap, note] = p;
+        const [nick, kind, amount, window, deadline, cap, txns, note] = p;
         const card = await cardByNick(env, nick);
         if (!card) return send(env, chatId, `No card with nickname \`${nick}\`.`);
         await env.DB.prepare(
-          `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, bonus_cap_cents, reward_note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, bonus_cap_cents, min_txns, reward_note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             card.id,
@@ -190,6 +193,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             deadline || null,
             kind === 'signup_min' ? card.opened_at : null,
             cap ? parseMoney(cap) : null,
+            txns ? parseInt(txns, 10) : null,
             note || null
           )
           .run();
@@ -210,6 +214,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
               (r) =>
                 `#${r.id} *${r.nickname}* ${r.kind} $${money(r.amount_cents)} / ${r.window}` +
                 (r.deadline ? ` by ${r.deadline}` : '') +
+                (r.min_txns ? ` · ${r.min_txns} txns` : '') +
                 (r.bonus_cap_cents ? ` · cap $${money(r.bonus_cap_cents)}` : '')
             )
             .join('\n')
@@ -364,11 +369,14 @@ async function logSpend(env: Env, chatId: string, input: string) {
   const bits: string[] = [`Logged $${money(amount)} on *${card.product}*.`];
   for (const req of reqs) {
     const p = await requirementProgress(env, card, req);
-    bits.push(
-      p.met
-        ? `✅ ${req.kind === 'signup_min' ? 'Sign-up' : 'Monthly'} minimum met.`
-        : `$${money(p.remaining_cents)} to go on the ${req.kind === 'signup_min' ? 'sign-up' : 'monthly'} minimum (${p.days_left}d).`
-    );
+    if (p.met) {
+      bits.push(`✅ ${req.kind === 'signup_min' ? 'Sign-up' : 'Minimum'} met.`);
+    } else {
+      const left: string[] = [];
+      if (p.remaining_cents > 0) left.push(`$${money(p.remaining_cents)}`);
+      if (p.txns_remaining > 0) left.push(`${p.txns_remaining} txn(s)`);
+      bits.push(`${left.join(' and ')} to go on the ${req.kind === 'signup_min' ? 'sign-up' : 'minimum'} (${p.days_left}d).`);
+    }
   }
   await send(env, chatId, bits.join('\n'));
 
