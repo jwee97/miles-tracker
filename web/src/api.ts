@@ -177,6 +177,14 @@ export interface Pick {
   reasons: string[];
 }
 
+export const addTranche = (body: { program_key: string; points: string; expires_at?: string; note?: string }) =>
+  post<{ ok: true; id: number; expires_at: string | null }>('/api/tranche', body);
+
+export const deleteTranche = (id: number) => post<{ ok: true }>('/api/tranche/delete', { id });
+
+export const addProgram = (body: { key: string; name: string; kind: string; unit: string }) =>
+  post<{ ok: true; key: string }>('/api/program', body);
+
 export const fetchPoints = () =>
   get<{ balances: BalanceRow[]; programs: ProgramRow[]; tranches: Tranche[] }>('/api/points');
 

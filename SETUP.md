@@ -371,11 +371,24 @@ Untagged spend counts as `*`, so caps only track properly for spend you tag.
 
 ## Points and transfers
 
+The dashboard's **Points** tab holds everything you have: a table of balances
+across banks and airlines, with what expires in the next 90 days and the
+nearest expiry date. Add a balance there, or from the bot:
+
 ```
 /addbal citi_ty|50000|2027-06-30|statement balance
 /bal
 /convert 50000 citi_ty krisflyer
 ```
+
+**Record each batch separately when they expire on different dates.** A single
+total hides the batch about to lapse, which is the only number worth acting on.
+Omit the expiry and the programme's own rule fills it in where one is known
+(KrisFlyer's 36 months, say); where none is known, none is invented.
+
+Twenty programmes are seeded — the Singapore bank currencies plus KrisFlyer,
+Asia Miles, HeyMax, EVA, ANA, Qatar, BA, Emirates, Qantas, United and Turkish.
+Anything missing can be added from the tab under *Programme not listed?*
 
 Transfers move in whole blocks with a per-transaction fee, so the planner
 compares routes rather than multiplying by a ratio — 40,000 Citi points is

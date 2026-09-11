@@ -4,6 +4,7 @@ import { evaluateOffer } from './eligibility';
 import { handleUpdate, pushFeedMatches, send } from './telegram';
 import {
   activeCards,
+  addMonths,
   parseDateToken,
   parseMoney,
   requirementProgress,
@@ -115,6 +116,62 @@ export default {
            ORDER BY t.expires_at IS NULL, t.expires_at`
         ).all<any>();
         return json({ balances: rows, programs: programs ?? [], tranches: tranches ?? [] });
+      }
+
+      // Recording and correcting balances from the dashboard, rather than
+      // only through the bot.
+      if (url.pathname === '/api/tranche' && req.method === 'POST') {
+        const b = (await req.json()) as {
+          program_key?: string;
+          points?: string | number;
+          expires_at?: string;
+          note?: string;
+        };
+        const key = String(b.program_key ?? '').trim();
+        const prog = await env.DB.prepare(`SELECT key, expiry_months FROM programs WHERE key = ?`)
+          .bind(key)
+          .first<{ key: string; expiry_months: number | null }>();
+        if (!prog) return json({ error: 'unknown programme' }, 400);
+
+        const points = parseInt(String(b.points ?? '').replace(/[, ]/g, ''), 10);
+        if (!Number.isFinite(points) || points === 0) return json({ error: 'bad points' }, 400);
+
+        let expires: string | null = null;
+        if (b.expires_at) {
+          expires = parseDateToken(String(b.expires_at), env);
+          if (!expires) return json({ error: 'bad expiry date' }, 400);
+        } else if (prog.expiry_months) {
+          // The programme's own rule as a starting point when none is given.
+          expires = addMonths(today(env), prog.expiry_months);
+        }
+
+        const ins = await env.DB.prepare(
+          `INSERT INTO balance_tranches (program_key, points, earned_at, expires_at, note) VALUES (?, ?, ?, ?, ?)`
+        )
+          .bind(key, points, today(env), expires, b.note?.trim() || null)
+          .run();
+        return json({ ok: true, id: ins.meta.last_row_id, expires_at: expires });
+      }
+
+      if (url.pathname === '/api/tranche/delete' && req.method === 'POST') {
+        const { id } = (await req.json()) as { id?: number };
+        if (!id) return json({ error: 'missing id' }, 400);
+        const r = await env.DB.prepare(`DELETE FROM balance_tranches WHERE id = ?`).bind(id).run();
+        return json({ ok: true, deleted: r.meta.changes ?? 0 });
+      }
+
+      if (url.pathname === '/api/program' && req.method === 'POST') {
+        const b = (await req.json()) as { key?: string; name?: string; kind?: string; unit?: string };
+        const key = String(b.key ?? '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+        const name = String(b.name ?? '').trim();
+        if (!key || !name) return json({ error: 'key and name are required' }, 400);
+        const kind = b.kind === 'bank' ? 'bank' : 'airline';
+        await env.DB.prepare(
+          `INSERT OR IGNORE INTO programs (key, name, kind, unit) VALUES (?, ?, ?, ?)`
+        )
+          .bind(key, name, kind, String(b.unit ?? 'miles').trim() || 'miles')
+          .run();
+        return json({ ok: true, key });
       }
 
       if (url.pathname === '/api/convert') {

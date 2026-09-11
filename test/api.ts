@@ -115,6 +115,69 @@ const rowFor = (id: number) => db.prepare(`SELECT * FROM transactions WHERE id =
   check('learns the merchant for next time', body2.category === 'groceries', JSON.stringify(body2));
 }
 
+// --- balances recorded from the dashboard -----------------------------------
+const postTo = (path: string, body: unknown) =>
+  worker.fetch(
+    new Request(`https://x.test${path}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    env
+  );
+
+db.prepare(`INSERT INTO programs (key,name,kind,unit,expiry_months) VALUES ('krisflyer','KrisFlyer','airline','miles',36)`).run();
+db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi ThankYou','bank','points')`).run();
+
+{
+  const res = await postTo('/api/tranche', { program_key: 'citi_ty', points: '50,000', expires_at: '2027-06-30', note: 'statement' });
+  const b = (await res.json()) as any;
+  check('records a balance', res.status === 200, JSON.stringify(b));
+  check('accepts a comma-formatted amount',
+    (db.prepare(`SELECT points FROM balance_tranches WHERE id = ?`).get(b.id) as any).points === 50000, '');
+  check('keeps the expiry given', b.expires_at === '2027-06-30', JSON.stringify(b));
+}
+{
+  // KrisFlyer carries a 36-month rule, so an omitted expiry is derived from it.
+  const res = await postTo('/api/tranche', { program_key: 'krisflyer', points: '20000' });
+  const b = (await res.json()) as any;
+  check("derives an expiry from the programme's own rule", b.expires_at === '2029-09-11', JSON.stringify(b));
+}
+{
+  // Citi has no expiry rule here, so none is invented.
+  const res = await postTo('/api/tranche', { program_key: 'citi_ty', points: '1000' });
+  check('invents no expiry when the programme has no rule', ((await res.json()) as any).expires_at === null, '');
+}
+{
+  check('refuses an unknown programme', (await postTo('/api/tranche', { program_key: 'nope', points: '10' })).status === 400, '');
+  check('refuses a non-numeric amount', (await postTo('/api/tranche', { program_key: 'citi_ty', points: 'abc' })).status === 400, '');
+  check('refuses a zero amount', (await postTo('/api/tranche', { program_key: 'citi_ty', points: '0' })).status === 400, '');
+  check('refuses an unparseable expiry', (await postTo('/api/tranche', { program_key: 'citi_ty', points: '10', expires_at: 'soon' })).status === 400, '');
+}
+{
+  // Batches roll up into one balance, and the nearest expiry is the one shown.
+  const res = await worker.fetch(new Request(`https://x.test/api/points?t=${token}`), env);
+  const b = (await res.json()) as any;
+  const ty = b.balances.find((r: any) => r.program_key === 'citi_ty');
+  check('batches sum into one balance', ty.total === 51000, JSON.stringify(ty));
+  check('every programme is listed for the dropdown', b.programs.length >= 2, String(b.programs.length));
+  check('batches come back individually', b.tranches.length === 3, String(b.tranches.length));
+}
+{
+  const before = ((await (await worker.fetch(new Request(`https://x.test/api/points?t=${token}`), env)).json()) as any).tranches;
+  const res = await postTo('/api/tranche/delete', { id: before[0].id });
+  check('a batch can be deleted', res.status === 200, '');
+  const after = ((await (await worker.fetch(new Request(`https://x.test/api/points?t=${token}`), env)).json()) as any).tranches;
+  check('and is gone', after.length === before.length - 1, `${after.length} vs ${before.length}`);
+}
+{
+  const res = await postTo('/api/program', { name: 'Malaysia Airlines Enrich', kind: 'airline', unit: 'miles', key: 'Malaysia Airlines Enrich' });
+  const b = (await res.json()) as any;
+  check('a new programme can be added', res.status === 200, JSON.stringify(b));
+  check('and its key is slugified', b.key === 'malaysia_airlines_enrich', b.key);
+  check('refuses a programme with no name', (await postTo('/api/program', { key: 'x' })).status === 400, '');
+}
+
 // --- auth -------------------------------------------------------------------
 {
   const res = await worker.fetch(

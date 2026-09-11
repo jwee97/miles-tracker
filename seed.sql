@@ -19,7 +19,20 @@ INSERT OR IGNORE INTO programs (key, name, kind, unit, expiry_months) VALUES
   ('scb_360',     'SC 360 Rewards',          'bank',    'points', NULL),
   ('amex_mr',     'Amex Membership Rewards', 'bank',    'points', NULL),
   ('krisflyer',   'KrisFlyer',               'airline', 'miles',  36),
-  ('asia_miles',  'Asia Miles',              'airline', 'miles',  NULL);
+  ('asia_miles',  'Asia Miles',              'airline', 'miles',  NULL),
+  ('heymax',      'HeyMax Max Miles',        'bank',    'miles',  NULL),
+  ('eva_air',     'EVA Infinity MileageLands','airline','miles',  NULL),
+  ('ana',         'ANA Mileage Club',        'airline', 'miles',  36),
+  ('qatar',       'Qatar Privilege Club',    'airline', 'Avios',  NULL),
+  ('british_aw',  'British Airways Club',    'airline', 'Avios',  NULL),
+  ('emirates',    'Emirates Skywards',       'airline', 'miles',  NULL),
+  ('qantas',      'Qantas Frequent Flyer',   'airline', 'points', NULL),
+  ('united',      'United MileagePlus',      'airline', 'miles',  NULL),
+  ('turkish',     'Turkish Miles&Smiles',    'airline', 'miles',  NULL);
+
+-- expiry_months is left NULL wherever the rule is not something to assert from
+-- memory. It is only a default for new batches; the date on each batch is what
+-- actually drives the expiry warnings, so set that when you record a balance.
 
 -- The RATIOS below are corroborated across several public summaries published
 -- between Nov 2025 and Sep 2026. The FEES AND MINIMUMS are not: sources

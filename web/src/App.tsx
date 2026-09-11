@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
+  addProgram,
+  addTranche,
   addTransaction,
+  deleteTranche,
   fetchCategories,
   fetchConvert,
   fetchPoints,
@@ -389,20 +392,38 @@ function WhichCard({ categories }: { categories: string[] }) {
 }
 
 function PointsTab() {
+  const todayIso = new Date().toISOString().slice(0, 10);
   const [data, setData] = useState<{ balances: BalanceRow[]; programs: ProgramRow[]; tranches: Tranche[] } | null>(null);
   const [points, setPoints] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [plans, setPlans] = useState<Plan[] | null>(null);
 
-  useEffect(() => {
-    fetchPoints()
+  // Add-a-balance form
+  const [bProg, setBProg] = useState('');
+  const [bPoints, setBPoints] = useState('');
+  const [bExpires, setBExpires] = useState('');
+  const [bNote, setBNote] = useState('');
+  const [bMsg, setBMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  // Add-a-programme form
+  const [pName, setPName] = useState('');
+  const [pKind, setPKind] = useState('airline');
+  const [pUnit, setPUnit] = useState('miles');
+
+  function load() {
+    return fetchPoints()
       .then((d) => {
         setData(d);
         setFrom((f) => f || d.programs.find((p) => p.kind === 'bank')?.key || '');
         setTo((t) => t || d.programs.find((p) => p.kind === 'airline')?.key || '');
+        setBProg((b) => b || d.programs[0]?.key || '');
       })
       .catch(() => void 0);
+  }
+
+  useEffect(() => {
+    load();
   }, []);
 
   async function convert(e: React.FormEvent) {
@@ -411,7 +432,39 @@ function PointsTab() {
     setPlans((await fetchConvert(points, from, to)).plans);
   }
 
+  async function saveBalance(e: React.FormEvent) {
+    e.preventDefault();
+    setBMsg(null);
+    try {
+      const r = await addTranche({ program_key: bProg, points: bPoints, expires_at: bExpires, note: bNote });
+      setBPoints('');
+      setBNote('');
+      setBExpires('');
+      setBMsg({ kind: 'ok', text: r.expires_at ? `Saved, expires ${r.expires_at}` : 'Saved' });
+      await load();
+    } catch (err) {
+      setBMsg({ kind: 'err', text: (err as Error).message });
+    }
+  }
+
+  async function saveProgram(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pName.trim()) return;
+    await addProgram({ key: pName, name: pName.trim(), kind: pKind, unit: pUnit });
+    setPName('');
+    await load();
+  }
+
+  async function removeTranche(id: number) {
+    await deleteTranche(id);
+    await load();
+  }
+
   if (!data) return <p className="pad sub">Loading…</p>;
+
+  const held = data.balances.filter((b) => b.total > 0);
+  const nameOf = (key: string) => data.programs.find((p) => p.key === key)?.name ?? key;
+  const kindOf = (key: string) => data.programs.find((p) => p.key === key)?.kind;
 
   return (
     <>
@@ -419,28 +472,128 @@ function PointsTab() {
         <header>
           <div>
             <h2>Balances</h2>
-            <p className="sub">Points expire in batches, so the nearest one is what matters</p>
+            <p className="sub">Everything you hold, across banks and airlines</p>
           </div>
         </header>
-        {data.balances.filter((b) => b.total > 0).map((b) => (
-          <div key={b.program_key} className="bal">
-            <div className="pick-head">
-              <span>{b.name}</span>
-              <span className="mono">
-                {b.total.toLocaleString()} {b.unit}
-              </span>
-            </div>
-            {b.expiring_soon > 0 && (
-              <p className="risk">
-                ⏳ {b.expiring_soon.toLocaleString()} expire by {b.next_expiry}
-              </p>
-            )}
+
+        {held.length ? (
+          <div className="scroller">
+            <table className="pts">
+              <thead>
+                <tr>
+                  <th>Programme</th>
+                  <th className="num">Balance</th>
+                  <th className="num">Expiring 90d</th>
+                  <th className="num">Next expiry</th>
+                </tr>
+              </thead>
+              <tbody>
+                {held.map((b) => (
+                  <tr key={b.program_key}>
+                    <td>
+                      {b.name}
+                      <span className={`kind ${kindOf(b.program_key)}`}>{kindOf(b.program_key)}</span>
+                    </td>
+                    <td className="num strong">
+                      {b.total.toLocaleString()} <span className="unit">{b.unit}</span>
+                    </td>
+                    <td className={`num ${b.expiring_soon > 0 ? 'warn-num' : 'dim-num'}`}>
+                      {b.expiring_soon > 0 ? b.expiring_soon.toLocaleString() : '—'}
+                    </td>
+                    <td className="num dim-num">{b.next_expiry ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        ))}
-        {!data.balances.some((b) => b.total > 0) && (
-          <p className="sub">Nothing recorded yet — use <code>/addbal</code> in the bot.</p>
+        ) : (
+          <p className="sub">Nothing recorded yet. Add a balance below.</p>
+        )}
+
+        {/* Points expire in batches, so the individual rows are what you act on. */}
+        {data.tranches.length > 0 && (
+          <details className="batches">
+            <summary>{data.tranches.length} batch{data.tranches.length === 1 ? '' : 'es'}</summary>
+            <ul className="txns">
+              {data.tranches.map((t) => (
+                <li key={t.id}>
+                  <span className="t-card">{nameOf(t.program_key)}</span>
+                  <span className="t-note">{t.note ?? ''}</span>
+                  <span className="mono t-posted">{t.expires_at ?? 'no expiry'}</span>
+                  <span className="mono t-amt">{t.points.toLocaleString()}</span>
+                  <button type="button" className="t-del" onClick={() => removeTranche(t.id)} aria-label="Delete batch">
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
       </section>
+
+      <form className="card entry" onSubmit={saveBalance}>
+        <h2>Add a balance</h2>
+        <div className="entry-grid">
+          <label className="f">
+            <span>Programme</span>
+            <select id="b-prog" value={bProg} onChange={(e) => setBProg(e.target.value)}>
+              <optgroup label="Airline">
+                {data.programs.filter((p) => p.kind === 'airline').map((p) => (
+                  <option key={p.key} value={p.key}>{p.name}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Bank & other">
+                {data.programs.filter((p) => p.kind === 'bank').map((p) => (
+                  <option key={p.key} value={p.key}>{p.name}</option>
+                ))}
+              </optgroup>
+            </select>
+          </label>
+          <label className="f">
+            <span>Amount</span>
+            <input id="b-pts" value={bPoints} onChange={(e) => setBPoints(e.target.value)} inputMode="numeric" placeholder="50000" required />
+          </label>
+          <label className="f">
+            <span>Expires (optional)</span>
+            <input id="b-exp" type="date" value={bExpires} min={todayIso} onChange={(e) => setBExpires(e.target.value)} />
+          </label>
+          <label className="f">
+            <span>Note</span>
+            <input id="b-note" value={bNote} onChange={(e) => setBNote(e.target.value)} placeholder="statement balance" />
+          </label>
+        </div>
+        <div className="entry-foot">
+          <button type="submit">Add</button>
+          {bMsg && <span className={bMsg.kind === 'ok' ? 'ok-text' : 'err-text'}>{bMsg.text}</span>}
+        </div>
+        <p className="sub">
+          Record each batch separately when they expire on different dates — a single total hides the one about to lapse.
+        </p>
+
+        <details className="batches">
+          <summary>Programme not listed?</summary>
+          <div className="entry-grid" style={{ marginTop: 10 }}>
+            <label className="f f-note">
+              <span>Name</span>
+              <input id="p-name" value={pName} onChange={(e) => setPName(e.target.value)} placeholder="Malaysia Airlines Enrich" />
+            </label>
+            <label className="f">
+              <span>Kind</span>
+              <select id="p-kind" value={pKind} onChange={(e) => setPKind(e.target.value)}>
+                <option value="airline">Airline</option>
+                <option value="bank">Bank / other</option>
+              </select>
+            </label>
+            <label className="f">
+              <span>Unit</span>
+              <input id="p-unit" value={pUnit} onChange={(e) => setPUnit(e.target.value)} />
+            </label>
+          </div>
+          <div className="entry-foot">
+            <button type="button" onClick={saveProgram}>Add programme</button>
+          </div>
+        </details>
+      </form>
 
       <section className="card">
         <header>
