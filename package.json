@@ -1,0 +1,23 @@
+{
+  "name": "miles-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute miles --remote --file=./schema.sql",
+    "db:init:local": "wrangler d1 execute miles --local --file=./schema.sql",
+    "db:seed": "wrangler d1 execute miles --remote --file=./seed.sql",
+    "tail": "wrangler tail",
+    "test": "npm run test:units && npm run test:e2e",
+    "test:units": "esbuild test/units.ts --bundle --platform=node --format=esm --outfile=test/.units.mjs && node test/.units.mjs",
+    "test:e2e": "esbuild test/e2e.ts --bundle --platform=node --format=esm --external:node:* --outfile=test/.e2e.mjs && node test/.e2e.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^3.90.0",
+    "esbuild": "^0.24.0"
+  }
+}

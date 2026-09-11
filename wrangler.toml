@@ -1,0 +1,30 @@
+name = "miles-tracker"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# Two nightly jobs. Times are UTC. Defaults below are tuned for SGT (UTC+8):
+#   "0 0 * * *"  -> 08:00 SGT  scan RSS feeds for new promos
+#   "30 1 * * *" -> 09:30 SGT  send the daily digest
+[triggers]
+crons = ["0 0 * * *", "30 1 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "miles"
+database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
+
+[vars]
+# Your Pages URL; the /app command links here.
+APP_URL = "https://miles.pages.dev"
+# Minutes east of UTC for your local time. 480 = SGT/HKT. -300 = US Eastern (EST).
+TZ_OFFSET_MINUTES = "480"
+# Utilization thresholds (percent) that trigger an alert, highest last.
+UTIL_THRESHOLDS = "50,80,90"
+# Warn this many days before a minimum-spend deadline.
+MIN_SPEND_WARN_DAYS = "7"
+
+# Secrets — set with `wrangler secret put <NAME>`, never in this file:
+#   TELEGRAM_BOT_TOKEN   from @BotFather
+#   TELEGRAM_SECRET      random string; Telegram echoes it on every webhook call
+#   OWNER_CHAT_ID        your numeric Telegram chat id (the bot tells you on /start)
+#   APP_SECRET           random string used to sign PWA magic-link tokens

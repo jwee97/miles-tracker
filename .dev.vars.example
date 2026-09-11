@@ -1,0 +1,4 @@
+TELEGRAM_BOT_TOKEN=123456:ABC-your-token-from-botfather
+TELEGRAM_SECRET=some-long-random-string
+OWNER_CHAT_ID=123456789
+APP_SECRET=another-long-random-string
