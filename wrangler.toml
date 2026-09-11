@@ -11,7 +11,7 @@ crons = ["0 0 * * *", "30 1 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "miles"
-database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
+database_id = "0084a099-e90c-4dc1-a88f-9792ac4093ab"
 
 # The PWA is served by this same Worker, so there is one origin, one deploy,
 # and no CORS. Navigation requests get index.html without invoking the Worker;
