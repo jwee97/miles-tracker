@@ -11,6 +11,7 @@ import {
   today,
   utilization,
 } from './spend';
+import { balances, planRoutes, rankCards } from './points';
 import type { Env, Offer } from './types';
 
 // The dashboard is served from this same Worker, so there is no cross-origin
@@ -98,6 +99,65 @@ export default {
             percent: totalLimit ? (totalBal / totalLimit) * 100 : 0,
           },
         });
+      }
+
+      if (url.pathname === '/api/points') {
+        const rows = await balances(env, 90);
+        const { results: programs } = await env.DB.prepare(
+          `SELECT key, name, kind, unit FROM programs ORDER BY kind, name`
+        ).all<any>();
+        const { results: tranches } = await env.DB.prepare(
+          `SELECT t.id, t.program_key, t.points, t.expires_at, t.note, p.unit
+           FROM balance_tranches t JOIN programs p ON p.key = t.program_key
+           ORDER BY t.expires_at IS NULL, t.expires_at`
+        ).all<any>();
+        return json({ balances: rows, programs: programs ?? [], tranches: tranches ?? [] });
+      }
+
+      if (url.pathname === '/api/convert') {
+        const pts = parseInt((url.searchParams.get('points') ?? '').replace(/,/g, ''), 10);
+        const from = url.searchParams.get('from') ?? '';
+        const to = url.searchParams.get('to') ?? '';
+        if (!pts || !from || !to) return json({ error: 'points, from and to are required' }, 400);
+        return json({ plans: await planRoutes(env, pts, from, to) });
+      }
+
+      if (url.pathname === '/api/which') {
+        const category = (url.searchParams.get('category') ?? '*').toLowerCase();
+        const amt = url.searchParams.get('amount');
+        const cents = amt ? parseMoney(amt) : null;
+        const cards = await activeCards(env);
+
+        const nudges: { cardId: number; remaining: number; daysLeft: number }[] = [];
+        for (const c of cards) {
+          for (const r of await requirementsFor(env, c.id)) {
+            const p = await requirementProgress(env, c, r);
+            if (!p.met) nudges.push({ cardId: c.id, remaining: p.remaining_cents, daysLeft: p.days_left });
+          }
+        }
+
+        const picks = await rankCards(env, category, cents, { cards, minSpendNudge: nudges });
+        return json({
+          category,
+          picks: picks.map((p) => ({
+            card_id: p.card.id,
+            product: p.card.product,
+            nickname: p.card.nickname,
+            effective_mpd: p.effective_mpd,
+            base_mpd: p.base_mpd,
+            headroom_cents: p.headroom_cents,
+            miles: p.miles,
+            reasons: p.reasons,
+          })),
+        });
+      }
+
+      // Categories the user actually has rules for, so the picker offers real options.
+      if (url.pathname === '/api/categories') {
+        const { results } = await env.DB.prepare(
+          `SELECT DISTINCT category FROM earn_rules WHERE active = 1 AND category <> '*' ORDER BY category`
+        ).all<{ category: string }>();
+        return json({ categories: (results ?? []).map((r) => r.category) });
       }
 
       if (url.pathname === '/api/offers') {

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { buildDigest, checkAlerts } from '../src/digest';
 import { evaluateOffer } from '../src/eligibility';
 import { utilization, requirementProgress, requirementsFor, activeCards } from '../src/spend';
+import { balances, planTransfer, planRoutes, rankCards } from '../src/points';
 import type { Env } from '../src/types';
 
 // Minimal D1 shim over node:sqlite so the real Worker code runs unmodified.
@@ -233,6 +234,111 @@ sql(`UPDATE transactions SET posted_at = '2026-09-23' WHERE card_id = ? AND occu
 const jp2 = await requirementProgress(env, sj, sreq);
 check('confirming a late post removes it', jp2.spent_cents === 90000 && !jp2.met, `spent ${jp2.spent_cents}`);
 check('nothing at risk once confirmed', jp2.at_risk_cents === 0, `got ${jp2.at_risk_cents}`);
+
+// --- points conversion ------------------------------------------------------
+const direct = { id: 1, from_program: 'citi_ty', to_program: 'krisflyer', from_units: 25000, to_units: 10000,
+  fee_cents: 2725, min_block: 25000, block_increment: 25000, route: 'direct', bonus_pct: 0, bonus_until: null };
+const krisplus = { ...direct, id: 2, from_units: 10000, to_units: 4000, fee_cents: 0, min_block: 10000, block_increment: 10000, route: 'Kris+' };
+
+const p50 = planTransfer(50000, direct, '2026-09-11');
+check('50k converts at 2.5:1', p50.miles === 20000, `got ${p50.miles}`);
+check('nothing stranded on a clean multiple', p50.stranded === 0, `got ${p50.stranded}`);
+check('fee is per transfer, not per point', p50.fee_cents === 2725, `got ${p50.fee_cents}`);
+
+// The case a naive ratio gets wrong: points below a block boundary are stuck.
+const p40 = planTransfer(40000, direct, '2026-09-11');
+check('rounds down to whole blocks', p40.transferable === 25000 && p40.miles === 10000, `${p40.transferable}/${p40.miles}`);
+check('reports the stranded remainder', p40.stranded === 15000, `got ${p40.stranded}`);
+
+const p24 = planTransfer(24000, direct, '2026-09-11');
+check('below the minimum is impossible, not pro-rated', !p24.possible && p24.miles === 0, JSON.stringify(p24.reason));
+check('says how far short', /1,000 short/.test(p24.reason ?? ''), p24.reason ?? '');
+
+// Same points, smaller blocks and no fee: strictly better.
+const k40 = planTransfer(40000, krisplus, '2026-09-11');
+check('smaller blocks strand less', k40.transferable === 40000 && k40.miles === 16000, `${k40.transferable}/${k40.miles}`);
+check('free route costs nothing per mile', k40.cents_per_mile === 0, `got ${k40.cents_per_mile}`);
+
+// A live promo lifts the miles out; an expired one does not.
+const promo = { ...krisplus, bonus_pct: 8, bonus_until: '2026-12-31' };
+check('live bonus applies', planTransfer(10000, promo, '2026-09-11').miles === 4320, 'expected 4000 + 8%');
+check('expired bonus ignored', planTransfer(10000, { ...promo, bonus_until: '2026-08-01' }, '2026-09-11').miles === 4000, 'should not apply');
+
+// Routes come back best-first from the seeded table.
+sql(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi ThankYou','bank','points')`);
+sql(`INSERT INTO programs (key,name,kind,unit,expiry_months) VALUES ('krisflyer','KrisFlyer','airline','miles',36)`);
+sql(`INSERT INTO conversions (from_program,to_program,from_units,to_units,fee_cents,min_block,block_increment,route)
+     VALUES ('citi_ty','krisflyer',25000,10000,2725,25000,25000,'direct')`);
+sql(`INSERT INTO conversions (from_program,to_program,from_units,to_units,fee_cents,min_block,block_increment,route)
+     VALUES ('citi_ty','krisflyer',10000,4000,0,10000,10000,'Kris+')`);
+const routes = await planRoutes(env, 40000, 'citi_ty', 'krisflyer');
+check('better route ranks first', routes[0].conversion.route === 'Kris+', routes.map((r) => r.conversion.route).join(','));
+
+// --- balances and expiry ---
+sql(`INSERT INTO balance_tranches (program_key,points,expires_at) VALUES ('citi_ty',38000,'2027-06-30')`);
+sql(`INSERT INTO balance_tranches (program_key,points,expires_at) VALUES ('citi_ty',12000,'2026-10-31')`);
+const bal = await balances(env, 90);
+const tyBal = bal.find((b) => b.program_key === 'citi_ty')!;
+check('tranches sum to the balance', tyBal.total === 50000, `got ${tyBal.total}`);
+check('only the near-term tranche is flagged', tyBal.expiring_soon === 12000, `got ${tyBal.expiring_soon}`);
+check('names the nearest expiry', tyBal.next_expiry === '2026-10-31', tyBal.next_expiry ?? 'null');
+
+// --- which card to use ------------------------------------------------------
+sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at,base_mpd)
+     VALUES ('Citi','Rewards','citi_rw','crw',500000,15,'2026-01-01',0.4)`);
+sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at,base_mpd)
+     VALUES ('UOB','Lady''s','uob_lady','lady',500000,15,'2026-01-01',0.4)`);
+const crw = (await activeCards(env)).find((c) => c.nickname === 'crw')!;
+const lady = (await activeCards(env)).find((c) => c.nickname === 'lady')!;
+
+// Citi Rewards: one $1,000 cap shared across several bonus categories.
+for (const cat of ['shopping', 'online', 'groceries']) {
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,cap_cents,cap_group,cap_window)
+       VALUES (?,?,4,100000,'tenx','statement_cycle')`, crw.id, cat);
+}
+sql(`INSERT INTO earn_rules (card_id,category,mpd) VALUES (?,'*',0.4)`, crw.id);
+// UOB Lady's: the bonus category is chosen, so it is just a rule you edit.
+sql(`INSERT INTO earn_rules (card_id,category,mpd,cap_cents,cap_group,cap_window,note)
+     VALUES (?,'dining',4,100000,'chosen','calendar_month','selected category')`, lady.id);
+sql(`INSERT INTO earn_rules (card_id,category,mpd) VALUES (?,'*',0.4)`, lady.id);
+
+let ranked = await rankCards(env, 'dining', 10000, { cards: [crw, lady] });
+check('chosen-category card wins on its category', ranked[0].card.nickname === 'lady', ranked.map((r) => r.card.nickname).join(','));
+check('the other card falls back to base', ranked[1].effective_mpd === 0.4, `got ${ranked[1].effective_mpd}`);
+check('miles computed for the purchase', ranked[0].miles === 400, `got ${ranked[0].miles}`);
+
+ranked = await rankCards(env, 'shopping', 10000, { cards: [crw, lady] });
+check('category the chosen card lacks goes to Citi', ranked[0].card.nickname === 'crw', ranked[0].card.nickname);
+
+// A shared cap is consumed by ANY category in its group, not just one.
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,category) VALUES (?,?,?,?)`, crw.id, 60000, '2026-09-02', 'online');
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,category) VALUES (?,?,?,?)`, crw.id, 45000, '2026-09-03', 'groceries');
+ranked = await rankCards(env, 'shopping', 10000, { cards: [crw] });
+check('shared cap counts sibling categories', ranked[0].cap_spent_cents === 105000, `got ${ranked[0].cap_spent_cents}`);
+check('exhausted cap drops to base rate', ranked[0].effective_mpd === 0.4, `got ${ranked[0].effective_mpd}`);
+check('says why', /cap of \$1,000\.00 used up/.test(ranked[0].reasons.join(' ')), ranked[0].reasons.join('; '));
+
+// Part of a purchase can earn the bonus and the rest spill past the cap.
+sql(`DELETE FROM transactions WHERE card_id = ?`, crw.id);
+sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,category) VALUES (?,?,?,?)`, crw.id, 96000, '2026-09-02', 'online');
+ranked = await rankCards(env, 'shopping', 10000, { cards: [crw] });
+check('blends across the cap boundary', ranked[0].miles === 184, `got ${ranked[0].miles} (40 at 4mpd + 60 at 0.4)`);
+
+// An urgent minimum can outrank a better headline rate.
+ranked = await rankCards(env, 'dining', 10000, {
+  cards: [crw, lady],
+  minSpendNudge: [{ cardId: crw.id, remaining: 20000, daysLeft: 3 }],
+});
+check('urgent minimum outranks the better rate', ranked[0].card.nickname === 'crw', ranked[0].card.nickname);
+check('and explains itself', /short of its minimum/.test(ranked[0].reasons.join(' ')), ranked[0].reasons.join('; '));
+
+// The converse matters just as much: a minimum with weeks left must not
+// override a materially better earn rate.
+ranked = await rankCards(env, 'dining', 10000, {
+  cards: [crw, lady],
+  minSpendNudge: [{ cardId: crw.id, remaining: 20000, daysLeft: 45 }],
+});
+check('a distant minimum does not beat a better rate', ranked[0].card.nickname === 'lady', ranked[0].card.nickname);
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

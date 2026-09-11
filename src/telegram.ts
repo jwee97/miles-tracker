@@ -3,7 +3,8 @@ import { buildDigest, checkAlerts } from './digest';
 import { extractionPrompt, HELP } from './extraction';
 import { evaluateOffer } from './eligibility';
 import { scanFeeds } from './rss';
-import { daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
+import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
+import { balances, planRoutes, rankCards } from './points';
 import type { Card, Env, Offer } from './types';
 
 const api = (env: Env, method: string) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
@@ -379,6 +380,150 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         return send(env, chatId, `Deleted #${row.id} — $${money(row.amount_cents)} on ${row.occurred_at}.`);
       }
 
+      case '/which': {
+        const [cat, amt] = args.trim().split(/\s+/);
+        if (!cat) return send(env, chatId, 'Format: `/which groceries 120` — the amount is optional.');
+        const cents = amt ? parseMoney(amt) : null;
+        const cards = await activeCards(env);
+        if (!cards.length) return send(env, chatId, 'No cards yet.');
+
+        // A minimum about to lapse can be worth more than a better rate.
+        const nudges: { cardId: number; remaining: number; daysLeft: number }[] = [];
+        for (const c of cards) {
+          for (const r of await requirementsFor(env, c.id)) {
+            const p = await requirementProgress(env, c, r);
+            if (!p.met) nudges.push({ cardId: c.id, remaining: p.remaining_cents, daysLeft: p.days_left });
+          }
+        }
+
+        const picks = await rankCards(env, cat.toLowerCase(), cents, { cards, minSpendNudge: nudges });
+        if (!picks.length) return send(env, chatId, 'No earn rules yet — add one with /addearn (see /help).');
+
+        const lines = picks.map((p, i) => {
+          const head =
+            `${i === 0 ? '👉' : '  '} *${p.card.product}* — ${p.effective_mpd} mpd` +
+            (p.miles !== null ? ` · ${p.miles.toLocaleString()} miles` : '');
+          const why = p.reasons.length ? '\n     _' + p.reasons.join('; ') + '_' : '';
+          return head + why;
+        });
+        return send(env, chatId, `*${cat}*${cents ? ` · $${money(cents)}` : ''}\n\n` + lines.join('\n'));
+      }
+
+      case '/bal': {
+        const rows = await balances(env);
+        if (!rows.length) return send(env, chatId, 'No programmes yet. /addbal to record a balance.');
+        return send(
+          env,
+          chatId,
+          '*Balances*\n' +
+            rows
+              .map(
+                (r) =>
+                  `*${r.name}* ${r.total.toLocaleString()} ${r.unit}` +
+                  (r.expiring_soon > 0 ? `\n  ⏳ ${r.expiring_soon.toLocaleString()} expire by ${r.next_expiry}` : '')
+              )
+              .join('\n')
+        );
+      }
+
+      case '/addbal': {
+        // program|points|expires_at|note
+        const [prog, pts, exp, note] = args.split('|').map((s) => s.trim());
+        if (!prog || !pts) return send(env, chatId, 'Format: `/addbal citi_ty|50000|2027-03-31|statement balance`');
+        await env.DB.prepare(
+          `INSERT INTO balance_tranches (program_key, points, earned_at, expires_at, note) VALUES (?, ?, ?, ?, ?)`
+        )
+          .bind(prog, parseInt(pts.replace(/,/g, ''), 10), today(env), exp || null, note || null)
+          .run();
+        return send(env, chatId, `Recorded ${parseInt(pts.replace(/,/g, ''), 10).toLocaleString()} in ${prog}. /bal to check.`);
+      }
+
+      case '/convert': {
+        const [ptsRaw, from, to] = args.trim().split(/\s+/);
+        const pts = parseInt((ptsRaw ?? '').replace(/,/g, ''), 10);
+        if (!pts || !from || !to) return send(env, chatId, 'Format: `/convert 50000 citi_ty krisflyer`');
+        const plans = await planRoutes(env, pts, from, to);
+        if (!plans.length) return send(env, chatId, `No route from ${from} to ${to}. Add one with /addconv.`);
+
+        const out = plans.map((p) => {
+          const c = p.conversion;
+          if (!p.possible) return `✖ *${c.route ?? 'route'}* — ${p.reason}`;
+          return (
+            `*${c.route ?? 'route'}* → ${p.miles.toLocaleString()} miles` +
+            (p.bonus_miles ? ` _(incl. ${p.bonus_miles.toLocaleString()} bonus)_` : '') +
+            `\n  ${p.transferable.toLocaleString()} transferred in ${c.block_increment.toLocaleString()} blocks` +
+            (p.stranded ? `, ${p.stranded.toLocaleString()} stranded` : '') +
+            `\n  fee $${money(p.fee_cents)}` +
+            (p.fee_cents ? ` · ${p.cents_per_mile.toFixed(3)}¢ per mile` : ' · free')
+          );
+        });
+        return send(env, chatId, `*${pts.toLocaleString()} ${from} → ${to}*\n\n` + out.join('\n\n'));
+      }
+
+      case '/earn': {
+        const { results } = await env.DB.prepare(
+          `SELECT e.*, c.nickname FROM earn_rules e JOIN cards c ON c.id = e.card_id
+           WHERE e.active = 1 ORDER BY c.nickname, e.mpd DESC`
+        ).all<any>();
+        if (!results?.length) return send(env, chatId, 'No earn rules yet. /addearn to add one.');
+        return send(
+          env,
+          chatId,
+          '*Earn rules*\n' +
+            results
+              .map(
+                (r) =>
+                  `#${r.id} *${r.nickname}* ${r.category} → ${r.mpd} mpd` +
+                  (r.cap_cents ? ` (cap $${money(r.cap_cents)}/${r.cap_window ?? 'cycle'}${r.cap_group ? `, shared: ${r.cap_group}` : ''})` : '') +
+                  (r.note ? `\n     _${r.note}_` : '')
+              )
+              .join('\n')
+        );
+      }
+
+      case '/addearn': {
+        // nickname|category|mpd|cap|cap_window|cap_group|note
+        const p = args.split('|').map((s) => s.trim());
+        if (p.length < 3)
+          return send(
+            env,
+            chatId,
+            'Format: `nickname|category|mpd|cap|cap_window|cap_group|note`\n\n' +
+              '`/addearn citirw|shopping|4|1000|statement_cycle|tenx|10X online`\n' +
+              '`/addearn citirw|*|0.4`  ← base rate for everything else\n' +
+              "Use `*` for the fallback category. Rules sharing a cap_group share one cap."
+          );
+        const [nick, cat, mpd, cap, capWindow, capGroup, note] = p;
+        const card = await cardByNick(env, nick);
+        if (!card) return send(env, chatId, `No card with nickname \`${nick}\`.`);
+        await env.DB.prepare(
+          `INSERT INTO earn_rules (card_id, category, mpd, cap_cents, cap_window, cap_group, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(card.id, cat.toLowerCase(), parseFloat(mpd), cap ? parseMoney(cap) : null, capWindow || null, capGroup || null, note || null)
+          .run();
+        return send(env, chatId, `Rule added: ${card.product} earns ${mpd} mpd on ${cat}.`);
+      }
+
+      case '/delearn':
+        await env.DB.prepare(`UPDATE earn_rules SET active = 0 WHERE id = ?`).bind(parseInt(args, 10)).run();
+        return send(env, chatId, `Earn rule #${parseInt(args, 10)} removed.`);
+
+      case '/addconv': {
+        // from|to|from_units|to_units|fee|min_block|increment|route
+        const p = args.split('|').map((s) => s.trim());
+        if (p.length < 7)
+          return send(env, chatId, 'Format: `/addconv citi_ty|krisflyer|25000|10000|27.25|25000|25000|direct`');
+        const [from, to, fu, tu, fee, minB, inc, route] = p;
+        await env.DB.prepare(
+          `INSERT INTO conversions (from_program, to_program, from_units, to_units, fee_cents, min_block, block_increment, route)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(from, to, parseInt(fu, 10), parseInt(tu, 10), parseMoney(fee) ?? 0, parseInt(minB, 10), parseInt(inc, 10), route || null)
+          .run();
+        return send(env, chatId, `Route added: ${from} → ${to} via ${route || 'direct'}.`);
+      }
+
       case '/add':
         return logSpend(env, chatId, args);
 
@@ -407,9 +552,14 @@ async function logSpend(env: Env, chatId: string, input: string) {
 
   let amount: number | null = null;
   let occurred: string | null = null;
+  let category: string | null = null;
   const rest: string[] = [];
 
   for (const tok of tokens) {
+    if (tok.startsWith('#') && tok.length > 1) {
+      category = tok.slice(1).toLowerCase();
+      continue;
+    }
     if (amount === null) {
       const m = parseMoney(tok);
       if (m !== null) {
@@ -442,9 +592,9 @@ async function logSpend(env: Env, chatId: string, input: string) {
   if (!card) return send(env, chatId, `No card with nickname \`${nick}\`. /cards to list them.`);
 
   const ins = await env.DB.prepare(
-    `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, source) VALUES (?, ?, ?, ?, 'manual')`
+    `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, category, source) VALUES (?, ?, ?, ?, ?, 'manual')`
   )
-    .bind(card.id, amount, date, note || null)
+    .bind(card.id, amount, date, note || null, category)
     .run();
 
   // Immediate feedback: what this swipe did to the limit and to any minimum.

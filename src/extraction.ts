@@ -78,6 +78,17 @@ Add a date anywhere to backdate:
 /posted <id> <date> — set when the bank actually posted it
 /del <id> — remove one · /undo — remove the last
 
+*Which card to use*
+/which groceries 120 — ranks cards by what you'd actually earn
+Tag spend with a category so caps track: \`25.40 citirw #groceries NTUC\`
+
+*Points & miles*
+/bal — balances, with the nearest expiry
+/addbal program|points|expires|note
+/convert 50000 citi\_ty krisflyer — blocks, fees, best route
+/earn — earn rules · /addearn · /delearn
+/addconv — add a transfer route
+
 *Status*
 /status — full digest: utilization + minimum spend
 /cards — one line per card

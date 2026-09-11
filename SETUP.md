@@ -277,6 +277,55 @@ actually get lost, so it gets its own alert.
 a dollar total — UOB One is the common example. A requirement is only reported
 as met when *both* halves clear, and the digest tells you which one is short.
 
+## Earn rules and categories
+
+`/which` needs to know what each card earns. Rate is a property of the
+**card and category**, not the card — and caps are usually shared across
+several categories rather than one each.
+
+```
+/addearn citirw|shopping|4|1000|statement_cycle|tenx|10X online
+/addearn citirw|online|4|1000|statement_cycle|tenx
+/addearn citirw|*|0.4
+```
+
+Fields: `nickname|category|mpd|cap|cap_window|cap_group|note`
+
+- `*` is the fallback for anything not matched.
+- Rules sharing a **cap_group** share one cap. Citi Rewards' $1,000 cap covers
+  all 10X categories together, so spending it on groceries leaves nothing for
+  shopping — `tenx` above models exactly that.
+- For a card where you **choose** the bonus category, like UOB Lady's, the
+  choice is just a rule. Change it with `/delearn` and `/addearn` when you
+  switch, using `calendar_quarter` as the cap window if that's how it resets.
+
+Then tag spend so the caps actually track:
+
+```
+25.40 citirw #groceries NTUC
+```
+
+Untagged spend counts as `*`.
+
+```
+/which dining 80
+  👉 UOB Lady's — 4 mpd · 320 miles
+       $640.00 left at 4 mpd
+     Citi Rewards — 0.4 mpd · 32 miles
+```
+
+## Points and transfers
+
+```
+/addbal citi_ty|50000|2027-06-30|statement balance
+/bal
+/convert 50000 citi_ty krisflyer
+```
+
+Transfers move in whole blocks with a per-transaction fee, so the planner
+compares routes rather than multiplying by a ratio — 40,000 Citi points is
+16,000 miles via Kris+ but only 10,000 direct, with 15,000 stranded.
+
 ## Verify end to end
 
 ```

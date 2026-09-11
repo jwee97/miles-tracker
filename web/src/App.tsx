@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
   addTransaction,
+  fetchCategories,
+  fetchConvert,
+  fetchPoints,
+  fetchWhich,
   bootstrapToken,
   deleteTransaction,
   fetchOffers,
@@ -13,6 +17,11 @@ import {
   type Progress,
   type Summary,
   type Txn,
+  type BalanceRow,
+  type Pick,
+  type Plan,
+  type ProgramRow,
+  type Tranche,
 } from './api';
 
 const tone = (pct: number) => (pct >= 90 ? 'bad' : pct >= 80 ? 'warn' : pct >= 50 ? 'mid' : 'ok');
@@ -255,8 +264,198 @@ function Recent({
   );
 }
 
+function WhichCard({ categories }: { categories: string[] }) {
+  const [category, setCategory] = useState(categories[0] ?? 'dining');
+  const [amount, setAmount] = useState('');
+  const [picks, setPicks] = useState<Pick[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function run(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      setPicks((await fetchWhich(category, amount)).picks);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!categories.length) return null;
+
+  return (
+    <section className="card">
+      <header>
+        <div>
+          <h2>Which card?</h2>
+          <p className="sub">Accounts for caps already spent and minimums about to lapse</p>
+        </div>
+      </header>
+      <form className="entry-grid" onSubmit={run}>
+        <label className="f">
+          <span>Category</span>
+          <select id="wc-cat" value={category} onChange={(e) => setCategory(e.target.value)}>
+            {categories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="f">
+          <span>Amount (optional)</span>
+          <input id="wc-amt" value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="120" />
+        </label>
+      </form>
+      <div className="entry-foot">
+        <button type="button" onClick={run as unknown as () => void} disabled={busy}>
+          {busy ? 'Checking…' : 'Rank cards'}
+        </button>
+      </div>
+      {picks && (
+        <ol className="picks">
+          {picks.map((p, i) => (
+            <li key={p.card_id} className={i === 0 ? 'best' : ''}>
+              <div className="pick-head">
+                <span>{p.product}</span>
+                <span className="mono">
+                  {p.effective_mpd} mpd{p.miles !== null && <> · {p.miles.toLocaleString()} mi</>}
+                </span>
+              </div>
+              {p.reasons.map((r, j) => (
+                <p key={j} className="sub">
+                  {r}
+                </p>
+              ))}
+            </li>
+          ))}
+          {!picks.length && <li className="sub">No earn rules yet — add them with /addearn in the bot.</li>}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function PointsTab() {
+  const [data, setData] = useState<{ balances: BalanceRow[]; programs: ProgramRow[]; tranches: Tranche[] } | null>(null);
+  const [points, setPoints] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [plans, setPlans] = useState<Plan[] | null>(null);
+
+  useEffect(() => {
+    fetchPoints()
+      .then((d) => {
+        setData(d);
+        setFrom((f) => f || d.programs.find((p) => p.kind === 'bank')?.key || '');
+        setTo((t) => t || d.programs.find((p) => p.kind === 'airline')?.key || '');
+      })
+      .catch(() => void 0);
+  }, []);
+
+  async function convert(e: React.FormEvent) {
+    e.preventDefault();
+    if (!points || !from || !to) return;
+    setPlans((await fetchConvert(points, from, to)).plans);
+  }
+
+  if (!data) return <p className="pad sub">Loading…</p>;
+
+  return (
+    <>
+      <section className="card">
+        <header>
+          <div>
+            <h2>Balances</h2>
+            <p className="sub">Points expire in batches, so the nearest one is what matters</p>
+          </div>
+        </header>
+        {data.balances.filter((b) => b.total > 0).map((b) => (
+          <div key={b.program_key} className="bal">
+            <div className="pick-head">
+              <span>{b.name}</span>
+              <span className="mono">
+                {b.total.toLocaleString()} {b.unit}
+              </span>
+            </div>
+            {b.expiring_soon > 0 && (
+              <p className="risk">
+                ⏳ {b.expiring_soon.toLocaleString()} expire by {b.next_expiry}
+              </p>
+            )}
+          </div>
+        ))}
+        {!data.balances.some((b) => b.total > 0) && (
+          <p className="sub">Nothing recorded yet — use <code>/addbal</code> in the bot.</p>
+        )}
+      </section>
+
+      <section className="card">
+        <header>
+          <div>
+            <h2>Transfer planner</h2>
+            <p className="sub">Blocks and per-transfer fees, not a flat ratio</p>
+          </div>
+        </header>
+        <form className="entry-grid" onSubmit={convert}>
+          <label className="f">
+            <span>Points</span>
+            <input id="cv-pts" value={points} onChange={(e) => setPoints(e.target.value)} inputMode="numeric" placeholder="50000" />
+          </label>
+          <label className="f">
+            <span>From</span>
+            <select id="cv-from" value={from} onChange={(e) => setFrom(e.target.value)}>
+              {data.programs.filter((p) => p.kind === 'bank').map((p) => (
+                <option key={p.key} value={p.key}>{p.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="f">
+            <span>To</span>
+            <select id="cv-to" value={to} onChange={(e) => setTo(e.target.value)}>
+              {data.programs.filter((p) => p.kind === 'airline').map((p) => (
+                <option key={p.key} value={p.key}>{p.name}</option>
+              ))}
+            </select>
+          </label>
+        </form>
+        <div className="entry-foot">
+          <button type="button" onClick={convert as unknown as () => void}>Plan</button>
+        </div>
+        {plans && (
+          <ol className="picks">
+            {plans.map((p, i) => (
+              <li key={i} className={i === 0 && p.possible ? 'best' : ''}>
+                <div className="pick-head">
+                  <span>{p.conversion.route ?? 'route'}</span>
+                  <span className="mono">{p.possible ? `${p.miles.toLocaleString()} mi` : '—'}</span>
+                </div>
+                {p.possible ? (
+                  <>
+                    <p className="sub">
+                      {p.transferable.toLocaleString()} transferred in {p.conversion.block_increment.toLocaleString()} blocks
+                      {p.stranded > 0 && <> · {p.stranded.toLocaleString()} stranded</>}
+                    </p>
+                    <p className="sub">
+                      {p.fee_cents ? `Fee $${money(p.fee_cents)} · ${p.cents_per_mile.toFixed(3)}¢ per mile` : 'No fee'}
+                      {p.bonus_miles > 0 && <> · incl. {p.bonus_miles.toLocaleString()} bonus</>}
+                    </p>
+                  </>
+                ) : (
+                  <p className="risk">{p.reason}</p>
+                )}
+              </li>
+            ))}
+            {!plans.length && <li className="sub">No route configured. Add one with <code>/addconv</code>.</li>}
+          </ol>
+        )}
+      </section>
+    </>
+  );
+}
+
 export default function App() {
-  const [tab, setTab] = useState<'cards' | 'offers'>('cards');
+  const [tab, setTab] = useState<'cards' | 'points' | 'offers'>('cards');
+  const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
   const [txns, setTxns] = useState<Txn[]>([]);
@@ -278,6 +477,9 @@ export default function App() {
     fetchOffers()
       .then((d) => setOffers(d.offers))
       .catch(() => void 0);
+    fetchCategories()
+      .then((d) => setCategories(d.categories))
+      .catch(() => void 0);
   }, []);
 
   async function removeTxn(id: number) {
@@ -297,6 +499,9 @@ export default function App() {
       <nav className="tabs">
         <button className={tab === 'cards' ? 'on' : ''} onClick={() => setTab('cards')}>
           Cards
+        </button>
+        <button className={tab === 'points' ? 'on' : ''} onClick={() => setTab('points')}>
+          Points
         </button>
         <button className={tab === 'offers' ? 'on' : ''} onClick={() => setTab('offers')}>
           Offers{offers?.length ? ` (${offers.length})` : ''}
@@ -320,6 +525,7 @@ export default function App() {
               </p>
             </section>
             <AddSpend cards={summary.cards} onSaved={refresh} />
+            <WhichCard categories={categories} />
             {summary.cards.map((c) => (
               <Card key={c.id} c={c} />
             ))}
@@ -329,6 +535,8 @@ export default function App() {
         ) : (
           <p className="pad sub">Loading…</p>
         ))}
+
+      {tab === 'points' && <PointsTab />}
 
       {tab === 'offers' &&
         (offers ? (

@@ -120,6 +120,67 @@ export const deleteTransaction = (id: number) => post<{ ok: true }>('/api/tx/del
 export const markPosted = (id: number, date: string) =>
   post<{ ok: true; posted_at: string }>('/api/tx/posted', { id, date });
 
+export interface BalanceRow {
+  program_key: string;
+  name: string;
+  unit: string;
+  total: number;
+  expiring_soon: number;
+  next_expiry: string | null;
+}
+
+export interface Tranche {
+  id: number;
+  program_key: string;
+  points: number;
+  expires_at: string | null;
+  note: string | null;
+  unit: string;
+}
+
+export interface ProgramRow {
+  key: string;
+  name: string;
+  kind: 'bank' | 'airline';
+  unit: string;
+}
+
+export interface Plan {
+  conversion: { route: string | null; block_increment: number; from_units: number; to_units: number };
+  transferable: number;
+  stranded: number;
+  miles: number;
+  bonus_miles: number;
+  fee_cents: number;
+  cents_per_mile: number;
+  possible: boolean;
+  reason: string | null;
+}
+
+export interface Pick {
+  card_id: number;
+  product: string;
+  nickname: string;
+  effective_mpd: number;
+  base_mpd: number;
+  headroom_cents: number | null;
+  miles: number | null;
+  reasons: string[];
+}
+
+export const fetchPoints = () =>
+  get<{ balances: BalanceRow[]; programs: ProgramRow[]; tranches: Tranche[] }>('/api/points');
+
+export const fetchConvert = (points: string, from: string, to: string) =>
+  get<{ plans: Plan[] }>(`/api/convert?points=${encodeURIComponent(points)}&from=${from}&to=${to}`);
+
+export const fetchWhich = (category: string, amount: string) =>
+  get<{ category: string; picks: Pick[] }>(
+    `/api/which?category=${encodeURIComponent(category)}${amount ? `&amount=${encodeURIComponent(amount)}` : ''}`
+  );
+
+export const fetchCategories = () => get<{ categories: string[] }>('/api/categories');
+
 export const fetchSummary = () => get<Summary>('/api/summary');
 export const fetchOffers = () => get<{ offers: OfferRow[] }>('/api/offers');
 

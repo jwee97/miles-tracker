@@ -166,3 +166,19 @@ main { max-width: 640px; margin: 0 auto; padding: 12px 16px 48px; }
 }
 .t-posted-input:focus { outline: none; border-color: var(--mid); border-style: solid; color: var(--text); }
 .txns li.unposted .t-date::after { content: ' ⏳'; font-size: 10px; }
+
+/* ---------- ranked lists (card picks, transfer routes) ---------- */
+.picks { list-style: none; padding: 0; margin: 14px 0 0; counter-reset: pick; }
+.picks li { padding: 11px 0 11px 26px; border-top: 1px solid var(--line); position: relative; }
+.picks li:first-child { border-top: none; }
+.picks li::before {
+  counter-increment: pick; content: counter(pick);
+  position: absolute; left: 0; top: 11px;
+  font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums;
+}
+.picks li.best::before { content: '★'; color: var(--ok); }
+.picks li.best .pick-head { color: var(--ok); }
+.picks .sub { margin-top: 2px; }
+.pick-head { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; font-weight: 600; }
+.bal { padding: 10px 0; border-top: 1px solid var(--line); }
+.bal:first-of-type { border-top: none; }
