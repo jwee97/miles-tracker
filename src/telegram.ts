@@ -4,7 +4,7 @@ import { cardRulesPrompt, extractionPrompt, HELP } from './extraction';
 import { evaluateOffer } from './eligibility';
 import { scanFeeds } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
-import { balances, categoryForMerchant, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
+import { balances, categoryForMerchant, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
 import { runMigrations, runSeed } from './migrate';
 import type { Card, Env, Offer } from './types';
 
@@ -410,7 +410,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             if (!top) continue;
             lines.push(
               `*${category}* — ${top.card.product}` +
-                ` (${top.reward_type === 'cashback' ? `${top.effective_mpd}%` : `${top.effective_mpd} mpd`})`
+                ` (${formatRate(top.effective_mpd, top.reward_type)})`
             );
           }
           lines.push('', '_`/which <category or merchant> <amount>` for detail._');
@@ -429,7 +429,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           `*${category}*${asMerchant ? ` _(${rawCat})_` : ''}${cents ? ` · $${money(cents)}` : ''}`;
 
         const lines = picks.map((p, i) => {
-          const rate = p.reward_type === 'cashback' ? `${p.effective_mpd}% back` : `${p.effective_mpd} mpd`;
+          const rate = formatRate(p.effective_mpd, p.reward_type);
           const earned =
             cents === null
               ? ''
@@ -600,7 +600,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             results
               .map(
                 (r) =>
-                  `#${r.id} *${r.nickname}* ${r.category} → ${r.mpd} mpd` +
+                  `#${r.id} *${r.nickname}* ${r.category} → ${formatRate(r.mpd, r.reward_type)}` +
                   (r.cap_cents ? ` (cap $${money(r.cap_cents)}/${r.cap_window ?? 'cycle'}${r.cap_group ? `, shared: ${r.cap_group}` : ''})` : '') +
                   (r.note ? `\n     _${r.note}_` : '')
               )
@@ -676,7 +676,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         return send(
           env,
           chatId,
-          `*${card.product}* earns ${isCashback ? `${rate}% back` : `${rate} mpd`} on *${cat}*` +
+          `*${card.product}* earns ${formatRate(rate, isCashback ? 'cashback' : 'miles')} on *${cat}*` +
             (cap ? `, up to $${money(parseMoney(cap) ?? 0)} per ${capWindow || 'statement_cycle'}` : '') +
             (capGroup ? `\n_Shares that cap with other \`${capGroup}\` rules._` : '') +
             '\n\nTry `/which ' + cat.toLowerCase() + ' 100`.'

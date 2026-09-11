@@ -1,6 +1,7 @@
 import { statementCycle, calendarMonth, calendarQuarter, addMonths, daysBetween, parseDateToken, parseMoney, today } from '../src/spend';
 import { evaluateRule } from '../src/eligibility';
 import { parseFeed, isRelevant } from '../src/rss';
+import { formatRate } from '../src/points';
 import type { Card, Env } from '../src/types';
 
 const env = { TZ_OFFSET_MINUTES: '480' } as Env;
@@ -110,6 +111,17 @@ const lapsed = evaluateRule({ type: 'no_issuer_card_within_months', issuer: 'DBS
   [card({ opened_at: '2023-01-01', closed_at: '2026-05-01' })], env);
 eq('fail explains when eligible', /2027-05-01/.test(lapsed.reason), true);
 Date.now = realNow;
+
+// --- rate formatting --------------------------------------------------------
+// /earn hardcoded "mpd" and so reported cashback rules as miles. Every display
+// path now goes through formatRate, so this is the single place it can regress.
+eq('miles rate reads as mpd',        formatRate(4, 'miles'),    '4 mpd');
+eq('cashback rate reads as percent', formatRate(5, 'cashback'), '5% back');
+eq('fractional cashback',            formatRate(3.33, 'cashback'), '3.33% back');
+eq('fractional miles',               formatRate(0.4, 'miles'),  '0.4 mpd');
+// Rules predating the reward_type column read back as null or undefined.
+eq('a missing reward type falls back to miles', formatRate(1.2, null), '1.2 mpd');
+eq('an unknown reward type falls back to miles', formatRate(1.2, 'points'), '1.2 mpd');
 
 // --- RSS --------------------------------------------------------------------
 const rss = `<?xml version="1.0"?><rss><channel>

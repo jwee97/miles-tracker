@@ -283,6 +283,15 @@ export interface CardPick {
   score: number;
 }
 
+/**
+ * How a rate reads. Every display path must go through this — /earn previously
+ * hardcoded "mpd" and so reported cashback rules as miles, which looked like a
+ * storage bug but was only ever a formatting one.
+ */
+export function formatRate(rate: number, rewardType: 'miles' | 'cashback' | string | null): string {
+  return rewardType === 'cashback' ? `${rate}% back` : `${rate} mpd`;
+}
+
 /** Learned merchant -> category mapping, so spend categorises itself. */
 export async function categoryForMerchant(env: Env, merchant: string | null): Promise<string | null> {
   if (!merchant) return null;

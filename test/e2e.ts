@@ -5,6 +5,7 @@ import { evaluateOffer } from '../src/eligibility';
 import { utilization, requirementProgress, requirementsFor, activeCards } from '../src/spend';
 import { balances, planTransfer, planRoutes, rankCards, rateIssues, ratesReview, categoryForMerchant, rememberMerchant } from '../src/points';
 import { statements } from '../src/sql';
+import { formatRate } from '../src/points';
 import type { Env } from '../src/types';
 
 // Minimal D1 shim over node:sqlite so the real Worker code runs unmodified.
@@ -431,6 +432,32 @@ check('re-tagging corrects it', (await categoryForMerchant(env, 'ntuc')) === 'sh
 const hits = (db.prepare(`SELECT hits FROM merchant_categories WHERE merchant='ntuc'`).get() as { hits: number }).hits;
 check('and counts the sightings', hits === 2, `got ${hits}`);
 check('a null merchant is safe', (await categoryForMerchant(env, null)) === null);
+
+// --- a cashback rule stays cashback all the way through ---------------------
+// The reported bug: stored correctly, displayed as mpd.
+sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at)
+     VALUES ('UOB','One Card 2','uob_one_2','one2',600000,10,'2026-01-01')`);
+const one2 = (await activeCards(env)).find((c) => c.nickname === 'one2')!;
+sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'groceries',5,'cashback')`, one2.id);
+
+const stored = db.prepare(`SELECT mpd, reward_type FROM earn_rules WHERE card_id = ?`).get(one2.id) as any;
+check('the rule is stored as cashback', stored.reward_type === 'cashback', JSON.stringify(stored));
+check('and renders as cashback, not mpd', formatRate(stored.mpd, stored.reward_type) === '5% back',
+  formatRate(stored.mpd, stored.reward_type));
+
+const cb = await rankCards(env, 'groceries', 10000, { cards: [one2] });
+check('ranking treats it as cashback', cb[0].reward_type === 'cashback' && cb[0].cashback_cents === 500,
+  `${cb[0].reward_type} / ${cb[0].cashback_cents}`);
+check('and reports no miles for it', cb[0].miles === null, `got ${cb[0].miles}`);
+
+// A rule inherited from before the column existed defaults to miles, which is
+// exactly what /setearn is for.
+sql(`INSERT INTO earn_rules (card_id,category,mpd) VALUES (?,'dining',3)`, one2.id);
+const legacy = db.prepare(`SELECT id, reward_type FROM earn_rules WHERE card_id = ? AND category = 'dining'`).get(one2.id) as any;
+check('a pre-existing rule defaults to miles', legacy.reward_type === 'miles', JSON.stringify(legacy));
+sql(`UPDATE earn_rules SET mpd = 5, reward_type = 'cashback' WHERE id = ?`, legacy.id);
+const fixed = await rankCards(env, 'dining', 10000, { cards: [one2] });
+check('correcting it changes how it is valued', fixed[0].cashback_cents === 500, `got ${fixed[0].cashback_cents}`);
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

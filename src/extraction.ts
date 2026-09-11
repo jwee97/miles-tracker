@@ -129,6 +129,7 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
    add \`cap 1000\`, \`window calendar_month\`, \`group tenx\` as needed
    a rate ending in % means cashback: \`/addearn uobone groceries 5%\`
 /cardrules <card> — get a prompt to extract a card's rates with Claude
+/setearn <id> <rate> — correct a rule, e.g. \`/setearn 3 5%\`
 /delearn <id>
 /routes — every transfer route and when it was last checked
 /rates — the weekly rates review, on demand
