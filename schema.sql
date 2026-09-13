@@ -92,7 +92,8 @@ CREATE INDEX IF NOT EXISTS rules_offer ON offer_rules(offer_id);
 CREATE TABLE IF NOT EXISTS feeds (
   url    TEXT PRIMARY KEY,
   label  TEXT,
-  active INTEGER NOT NULL DEFAULT 1
+  active INTEGER NOT NULL DEFAULT 1,
+  kind   TEXT                              -- NULL = detect | rss | page
 );
 
 CREATE TABLE IF NOT EXISTS feed_items (
@@ -105,6 +106,11 @@ CREATE TABLE IF NOT EXISTS feed_items (
   seen_at      TEXT NOT NULL DEFAULT (datetime('now')),
   action       TEXT,                             -- NULL | tracked | ignored
   topic        TEXT,                             -- NULL | promo | rates
+  score        INTEGER,                          -- how strongly it matched
+  terms        TEXT,                             -- which phrases matched
+  excerpt      TEXT,                             -- first useful text of the page
+  apply_url    TEXT,                             -- the issuer link, when found
+  deep         INTEGER NOT NULL DEFAULT 0,       -- 1 = the article was fetched
   offer_id     INTEGER REFERENCES offers(id) ON DELETE SET NULL
 );
 

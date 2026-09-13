@@ -16,13 +16,18 @@ import {
   fetchWhich,
   bootstrapToken,
   deleteTransaction,
+  fetchFeed,
   fetchOffers,
   fetchSummary,
+  feedAction,
+  runScan,
   fetchTransactions,
   markPosted,
   money,
   type CardSummary,
+  type FeedItemRow,
   type OfferRow,
+  type ScanSummary,
   type Progress,
   type Summary,
   type Txn,
@@ -107,6 +112,116 @@ function Card({ c }: { c: CardSummary }) {
       {c.requirements.map((r) => (
         <RequirementRow key={r.id} p={r} />
       ))}
+    </section>
+  );
+}
+
+/**
+ * The scan the cron runs twice a day, on a button. Matches land here as well as
+ * in Telegram, so an offer can be judged and tracked without leaving the app.
+ */
+function Scanner({ onTracked }: { onTracked: () => void }) {
+  const [items, setItems] = useState<FeedItemRow[] | null>(null);
+  const [stats, setStats] = useState<ScanSummary | null>(null);
+  const [busy, setBusy] = useState<'' | 'deep' | 'quick' | 'url'>('');
+  const [url, setUrl] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+
+  function load() {
+    fetchFeed('new')
+      .then((d) => setItems(d.items))
+      .catch((e) => setErr(e.message));
+  }
+  useEffect(load, []);
+
+  async function scan(mode: 'deep' | 'quick' | 'url') {
+    setBusy(mode);
+    setErr(null);
+    try {
+      const res = await runScan(mode === 'url' ? { url } : { deep: mode === 'deep' });
+      setStats(res);
+      if (mode === 'url') setUrl('');
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function act(id: number, action: 'track' | 'ignore') {
+    await feedAction(id, action);
+    setItems((prev) => (prev ? prev.filter((i) => i.id !== id) : prev));
+    if (action === 'track') onTracked();
+  }
+
+  return (
+    <section className="card entry">
+      <h2>Scan for offers</h2>
+      <p className="sub">
+        Runs automatically at 06:00 and 14:00. A deep scan opens each article to read past the headline; a quick scan
+        only reads feed summaries.
+      </p>
+      <div className="entry-foot">
+        <button onClick={() => scan('deep')} disabled={!!busy}>
+          {busy === 'deep' ? 'Scanning…' : 'Scan now'}
+        </button>
+        <button onClick={() => scan('quick')} disabled={!!busy}>
+          {busy === 'quick' ? 'Scanning…' : 'Quick scan'}
+        </button>
+      </div>
+      <div className="entry-grid" style={{ marginTop: 12 }}>
+        <label className="f f-note">
+          <span>Or read one page</span>
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://milelion.com/2026/…"
+            inputMode="url"
+          />
+        </label>
+      </div>
+      <div className="entry-foot">
+        <button onClick={() => scan('url')} disabled={!!busy || !/^https?:\/\//i.test(url)}>
+          {busy === 'url' ? 'Reading…' : 'Read page'}
+        </button>
+        {stats && (
+          <span className="sub">
+            {stats.feeds_read} source{stats.feeds_read === 1 ? '' : 's'} · {stats.items_seen} new · {stats.pages_fetched}{' '}
+            opened · {stats.fresh.length} match{stats.fresh.length === 1 ? '' : 'es'}
+            {stats.feeds_failed.length ? ` · unreachable: ${stats.feeds_failed.join(', ')}` : ''}
+          </span>
+        )}
+        {err && <span className="err-text">{err}</span>}
+      </div>
+
+      {items && items.length > 0 && (
+        <ul className="rules">
+          {items.map((i) => (
+            <li key={i.id} className={i.topic === 'promo' ? 'pass' : 'unknown'}>
+              <a className="strong" href={i.link} target="_blank" rel="noreferrer">
+                {i.title || i.link}
+              </a>
+              <p className="sub">
+                {i.feed}
+                {i.deep ? ' · article read' : ' · headline only'}
+                {i.terms ? ` · ${i.terms}` : ''}
+              </p>
+              {i.excerpt && <blockquote>{i.excerpt}</blockquote>}
+              {i.apply_url && i.apply_url !== i.link && (
+                <a className="link" href={i.apply_url} target="_blank" rel="noreferrer">
+                  Offer page
+                </a>
+              )}
+              <div className="entry-foot">
+                <button onClick={() => act(i.id, 'track')}>Track</button>
+                <button onClick={() => act(i.id, 'ignore')}>Ignore</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {items && !items.length && <p className="sub">Nothing waiting. New matches appear here and in Telegram.</p>}
     </section>
   );
 }
@@ -800,16 +915,20 @@ export default function App() {
 
       {tab === 'points' && <PointsTab />}
 
-      {tab === 'offers' &&
-        (offers ? (
-          offers.length ? (
-            offers.map((o) => <Offer key={o.id} o={o} />)
+      {tab === 'offers' && (
+        <>
+          <Scanner onTracked={() => fetchOffers().then((d) => setOffers(d.offers)).catch(() => void 0)} />
+          {offers ? (
+            offers.length ? (
+              offers.map((o) => <Offer key={o.id} o={o} />)
+            ) : (
+              <p className="pad sub">No tracked offers yet. Track one above, then run /extract in the bot.</p>
+            )
           ) : (
-            <p className="pad sub">No tracked offers. The nightly scan will send new ones to Telegram.</p>
-          )
-        ) : (
-          <p className="pad sub">Loading…</p>
-        ))}
+            <p className="pad sub">Loading…</p>
+          )}
+        </>
+      )}
     </main>
   );
 }

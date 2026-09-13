@@ -31,7 +31,7 @@ miles-tracker.<you>.workers.dev
 ├── /                 the dashboard (React PWA, static assets)
 ├── /api/*            JSON API, token-authenticated
 ├── /tg               Telegram webhook
-└── cron ×2           nightly feed scan + morning digest
+└── cron ×3           two daily offer scans + morning digest
 ```
 
 | Resource | Free allowance | You'll use |
@@ -233,19 +233,20 @@ Default is SGT. Two settings must move together, and they mean different things.
 transaction lands in, what "today" means. The crons decide *when* jobs fire, and
 **cron expressions are always UTC**; Cloudflare does not convert them.
 
-| Zone | `TZ_OFFSET_MINUTES` | Scan 06:00 local | Digest 09:30 local |
-|---|---|---|---|
-| SGT / HKT (UTC+8) | `480` | `0 22 * * *` | `30 1 * * *` |
-| UK (UTC+1, BST) | `60` | `0 5 * * *` | `30 8 * * *` |
-| US Eastern (UTC−4, EDT) | `-240` | `0 10 * * *` | `30 13 * * *` |
-| US Pacific (UTC−7, PDT) | `-420` | `0 13 * * *` | `30 16 * * *` |
+| Zone | `TZ_OFFSET_MINUTES` | Scan 06:00 local | Digest 09:30 local | Scan 14:00 local |
+|---|---|---|---|---|
+| SGT / HKT (UTC+8) | `480` | `0 22 * * *` | `30 1 * * *` | `0 6 * * *` |
+| UK (UTC+1, BST) | `60` | `0 5 * * *` | `30 8 * * *` | `0 13 * * *` |
+| US Eastern (UTC−4, EDT) | `-240` | `0 10 * * *` | `30 13 * * *` | `0 18 * * *` |
+| US Pacific (UTC−7, PDT) | `-420` | `0 13 * * *` | `30 16 * * *` | `0 21 * * *` |
 
 Both live in `wrangler.toml`. Edit, commit, push (Path A) or `npm run deploy`
 (Path B). Daylight-saving zones drift an hour twice a year; a digest arriving at
 08:30 instead of 09:30 is harmless.
 
-If you change the morning cron, change `MORNING_SCAN_CRON` in `src/index.ts` to
-match — the handler branches on the exact string to decide which report to send.
+If you change either scan cron, change `SCAN_CRONS` in `src/index.ts` to match —
+the handler branches on the exact strings to decide which report to send, and a
+cron that is not listed there runs the digest instead.
 
 ## Load your cards
 
@@ -608,8 +609,8 @@ reports it as unverified until you check it yourself:
 /rates                       run the weekly review now
 ```
 
-At **06:00 local, every day**, the same job scans the feeds for new sign-up
-offers and then checks the transfer routes. It covers:
+At **06:00 and 14:00 local, every day**, the same job scans every source for new
+sign-up offers and then checks the transfer routes. It covers:
 
 - promo bonuses ending within 14 days
 - points expiring within 90 days
@@ -627,14 +628,32 @@ The feed scan classifies each item as `promo` or `rates` as it arrives, so
 sign-up offers arrive with Track/Ignore buttons while rate news folds into the
 check.
 
-Both reports ride on two cron triggers rather than three, which the free plan
-limits.
+### Scanning on demand
+
+```
+/scan                       scan every source now, opening articles
+/scan quick                 headlines only — faster, finds less
+/scan https://…             read one page you found yourself
+/feeds                      list sources and their kind
+/addfeed <url>|<label>|page watch a plain HTML listing page
+```
+
+The Offers tab has the same three buttons, plus an inbox of everything the
+scanner matched but you have not judged yet, with Track and Ignore on each.
+
+**What "opening articles" means.** A feed summary is often one truncated
+sentence, which is not enough to tell a sign-up offer from a hotel review. A
+deep scan fetches the article itself (at most 12 per scan, 10s timeout each,
+600 KB cap), classifies it on the full text, and pulls out the issuer link —
+`uob.com.sg/…/apply` rather than the blog post — which is what gets stored as
+the offer's source. Tracking URLs are stripped and redirector links unwrapped,
+so the same article found through two sources is recognised as one item.
 
 ## Verify end to end
 
 ```
 /status                     full digest with utilization bars
-/scan                       force a feed scan instead of waiting for 08:00
+/scan                       force a scan instead of waiting for 06:00
 25.40 alt lunch             logs spend today
 25.40 alt yesterday lunch   backdate it
 25.40 alt 5/9 lunch         day/month, or 2026-09-05, or -3 for 3 days ago

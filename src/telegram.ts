@@ -2,7 +2,8 @@ import { mintToken } from './auth';
 import { buildDigest, checkAlerts } from './digest';
 import { cardRulesPrompt, extractionPrompt, HELP } from './extraction';
 import { evaluateOffer } from './eligibility';
-import { scanFeeds } from './rss';
+import { ignoreFeedItem, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
+import type { ScanResult } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
 import { runMigrations, runSeed } from './migrate';
@@ -65,22 +66,30 @@ const cardByNick = (env: Env, nick: string) =>
   env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`).bind(nick.trim()).first<Card>();
 
 /** Notify about new feed matches, each with Track / Ignore buttons. */
-export async function pushFeedMatches(env: Env, chatId: string) {
-  const fresh = await scanFeeds(env);
-  for (const item of fresh) {
-    await send(env, chatId, `📰 *${item.feed}*\n${item.title}\n${item.link}`, {
-      disable_web_page_preview: true,
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '✅ Track', callback_data: `track:${item.id}` },
-            { text: '✖️ Ignore', callback_data: `ignore:${item.id}` },
-          ],
+export async function pushFeedMatches(env: Env, chatId: string, opts: { deep?: boolean } = {}) {
+  const scan = await scanFeedsDetailed(env, opts);
+  for (const item of scan.fresh) await pushFeedItem(env, chatId, item);
+  return scan.fresh.length;
+}
+
+/** One match, with whatever the page reader managed to learn about it. */
+export async function pushFeedItem(env: Env, chatId: string, item: ScanResult) {
+  const lines = [`📰 *${item.feed}*`, item.title, item.link];
+  if (item.excerpt) lines.push(`_${item.excerpt.slice(0, 220)}_`);
+  if (item.apply_url && item.apply_url !== item.link) lines.push(`🔗 Offer page: ${item.apply_url}`);
+  if (item.terms.length) lines.push(`matched: ${item.terms.join(', ')}`);
+
+  await send(env, chatId, lines.join('\n'), {
+    disable_web_page_preview: true,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Track', callback_data: `track:${item.id}` },
+          { text: '✖️ Ignore', callback_data: `ignore:${item.id}` },
         ],
-      },
-    });
-  }
-  return fresh.length;
+      ],
+    },
+  });
 }
 
 export async function handleUpdate(env: Env, update: any, origin: string): Promise<void> {
@@ -314,19 +323,48 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       }
 
       case '/feeds': {
-        const { results } = await env.DB.prepare(`SELECT url, label, active FROM feeds`).all<any>();
-        return send(env, chatId, (results ?? []).map((f) => `${f.active ? '·' : '✖'} ${f.label} — ${f.url}`).join('\n') || 'No feeds.');
+        const { results } = await env.DB.prepare(`SELECT url, label, active, kind FROM feeds`).all<any>();
+        return send(
+          env,
+          chatId,
+          (results ?? [])
+            .map((f) => `${f.active ? '·' : '✖'} ${f.label} [${f.kind ?? 'auto'}] — ${f.url}`)
+            .join('\n') || 'No feeds.'
+        );
       }
 
       case '/addfeed': {
-        const [url, label] = args.split('|').map((s) => s.trim());
-        await env.DB.prepare(`INSERT OR REPLACE INTO feeds (url, label) VALUES (?, ?)`).bind(url, label || url).run();
-        return send(env, chatId, `Feed added: ${label || url}`);
+        // kind is optional: rss, page (an HTML listing), or blank to detect.
+        const [url, label, kind] = args.split('|').map((s) => s.trim());
+        if (!/^https?:\/\//i.test(url ?? ''))
+          return send(env, chatId, 'Format:\n`/addfeed https://site/feed/|Label|rss`\nkind: `rss`, `page`, or blank to detect.');
+        const k = kind && ['rss', 'page'].includes(kind.toLowerCase()) ? kind.toLowerCase() : null;
+        await env.DB.prepare(`INSERT OR REPLACE INTO feeds (url, label, kind) VALUES (?, ?, ?)`)
+          .bind(url, label || url, k)
+          .run();
+        return send(env, chatId, `Feed added: ${label || url} [${k ?? 'auto'}]`);
       }
 
       case '/scan': {
-        const n = await pushFeedMatches(env, chatId);
-        if (n === 0) await send(env, chatId, 'No new promo items.');
+        // `/scan <url>` parses one page on demand; `/scan quick` skips opening
+        // articles, which is faster but only sees what the feed summary says.
+        if (/^https?:\/\//i.test(args.trim())) {
+          const hit = await scanUrl(env, args.trim());
+          if (!hit) return send(env, chatId, 'Could not read that page.');
+          await pushFeedItem(env, chatId, hit);
+          if (hit.topic !== 'promo')
+            await send(env, chatId, 'Nothing in that page reads like a card offer — track it anyway if you disagree.');
+          return;
+        }
+        const deep = args.trim().toLowerCase() !== 'quick';
+        await send(env, chatId, deep ? 'Scanning feeds and opening articles…' : 'Scanning feed summaries…');
+        const scan = await scanFeedsDetailed(env, { deep });
+        for (const item of scan.fresh) await pushFeedItem(env, chatId, item);
+        const stats =
+          `${scan.feeds_read} source${scan.feeds_read === 1 ? '' : 's'} · ${scan.items_seen} new item(s) · ` +
+          `${scan.pages_fetched} page(s) opened` +
+          (scan.feeds_failed.length ? `\n⚠️ unreachable: ${scan.feeds_failed.join(', ')}` : '');
+        await send(env, chatId, (scan.fresh.length ? `${scan.fresh.length} match(es).` : 'No new promo items.') + `\n${stats}`);
         return;
       }
 
@@ -984,22 +1022,13 @@ async function handleCallback(env: Env, cq: any, _origin: string) {
   const id = parseInt(idStr, 10);
 
   if (action === 'ignore') {
-    await env.DB.prepare(`UPDATE feed_items SET action = 'ignored' WHERE id = ?`).bind(id).run();
+    await ignoreFeedItem(env, id);
     return answerCallback(env, cq.id, 'Ignored');
   }
 
   if (action === 'track') {
-    const item = await env.DB.prepare(`SELECT * FROM feed_items WHERE id = ?`).bind(id).first<any>();
-    if (!item) return answerCallback(env, cq.id, 'Gone');
-    const ins = await env.DB.prepare(
-      `INSERT INTO offers (status, source_url, source_title) VALUES ('pending', ?, ?)`
-    )
-      .bind(item.link, item.title)
-      .run();
-    const offerId = ins.meta.last_row_id as number;
-    await env.DB.prepare(`UPDATE feed_items SET action = 'tracked', offer_id = ? WHERE id = ?`)
-      .bind(offerId, id)
-      .run();
+    const offerId = await trackFeedItem(env, id);
+    if (!offerId) return answerCallback(env, cq.id, 'Gone');
     await answerCallback(env, cq.id, `Tracked as offer #${offerId}`);
     await send(env, chatId, `Tracked as offer #${offerId}. Run \`/extract ${offerId}\` to get the prompt for Claude.`);
   }

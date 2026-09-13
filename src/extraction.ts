@@ -164,8 +164,11 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /extract <offer id> — get the prompt to paste into Claude
 /save <offer id> {json} — store what Claude returned
 /apply <offer id> — mark as applied
-/feeds — list RSS sources
-/addfeed <url>|<label>
+/scan — check every source now (opens articles)
+/scan quick — headlines only, no page fetches
+/scan <url> — read one promo page on demand
+/feeds — list sources
+/addfeed <url>|<label>|<rss|page>
 
 /app — open the dashboard
 /migrate — bring the database up to date after a deploy

@@ -1,7 +1,8 @@
 import { safeEqual, verifyToken } from './auth';
 import { buildDigest, checkAlerts } from './digest';
 import { evaluateOffer } from './eligibility';
-import { handleUpdate, pushFeedMatches, send } from './telegram';
+import { handleUpdate, pushFeedItem, pushFeedMatches, send } from './telegram';
+import { ignoreFeedItem, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import {
   activeCards,
   addMonths,
@@ -24,8 +25,9 @@ import type { Env, Offer } from './types';
 
 // The dashboard is served from this same Worker, so there is no cross-origin
 // request to permit and no CORS headers to set.
-/** Must match the first entry in wrangler.toml's `crons`. */
-const MORNING_SCAN_CRON = '0 22 * * *';
+/** Must match the scan entries in wrangler.toml's `crons`. Anything not listed
+ *  here runs the spend digest instead. */
+const SCAN_CRONS = ['0 22 * * *', '0 6 * * *'];
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -463,6 +465,59 @@ export default {
           return json({ categories: (results ?? []).map((r) => r.category) });
         }
 
+        // On-demand scan. The nightly cron does the same thing; this is the
+        // button for when a promo lands during the day.
+        if (url.pathname === '/api/scan' && req.method === 'POST') {
+          const body = (await req.json().catch(() => ({}))) as {
+            url?: string;
+            deep?: boolean;
+            push?: boolean;
+          };
+          const push = body.push !== false && !!env.OWNER_CHAT_ID;
+
+          if (body.url) {
+            const hit = await scanUrl(env, body.url);
+            if (!hit) return json({ error: 'Could not read that page.' }, 502);
+            if (push) await pushFeedItem(env, env.OWNER_CHAT_ID, hit);
+            return json({ fresh: [hit], feeds_read: 0, feeds_failed: [], items_seen: 1, pages_fetched: 1 });
+          }
+
+          const scan = await scanFeedsDetailed(env, { deep: body.deep !== false });
+          if (push) for (const item of scan.fresh) await pushFeedItem(env, env.OWNER_CHAT_ID, item);
+          return json(scan);
+        }
+
+        // Everything the scanner has seen, so a match can be judged in the app
+        // rather than only from the Telegram card.
+        if (url.pathname === '/api/feed') {
+          const state = url.searchParams.get('state') ?? 'new';
+          const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '40', 10) || 40, 200);
+          const where =
+            state === 'all' ? '1 = 1' : state === 'tracked' ? `action = 'tracked'` : `action IS NULL AND topic IS NOT NULL`;
+          const { results } = await env.DB.prepare(
+            `SELECT id, feed, title, link, apply_url, excerpt, terms, score, topic, action, deep,
+                    published_at, seen_at, offer_id
+             FROM feed_items WHERE ${where}
+             ORDER BY COALESCE(published_at, seen_at) DESC, id DESC LIMIT ?`
+          )
+            .bind(limit)
+            .all<any>();
+          return json({ items: results ?? [] });
+        }
+
+        if (url.pathname === '/api/feed/action' && req.method === 'POST') {
+          const { id, action } = (await req.json()) as { id?: number; action?: string };
+          if (!id || !['track', 'ignore'].includes(action ?? ''))
+            return json({ error: 'id and action (track|ignore) required' }, 400);
+          if (action === 'ignore') {
+            await ignoreFeedItem(env, id);
+            return json({ ok: true });
+          }
+          const offerId = await trackFeedItem(env, id);
+          if (!offerId) return json({ error: 'no such feed item' }, 404);
+          return json({ ok: true, offer_id: offerId });
+        }
+
         if (url.pathname === '/api/offers') {
           const { results } = await env.DB.prepare(
             `SELECT * FROM offers WHERE status IN ('tracked','applied') ORDER BY created_at DESC LIMIT 50`
@@ -708,7 +763,7 @@ export default {
       (async () => {
         const env = await withSettings(rawEnv);
         // Two crons share one handler; event.cron says which fired.
-        if (event.cron === MORNING_SCAN_CRON) {
+        if (SCAN_CRONS.includes(event.cron)) {
           // 06:00 local: new promos, then anything that changed about the
           // transfer routes. The review is quiet — it stays silent unless
           // something is urgent or genuinely new, so a daily job does not

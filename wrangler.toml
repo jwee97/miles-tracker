@@ -8,13 +8,15 @@ compatibility_date = "2026-09-01"
 type = "Text"
 globs = ["**/*.sql"]
 
-# Two daily jobs. Cron expressions are ALWAYS UTC — Cloudflare does not convert
+# Three daily jobs. Cron expressions are ALWAYS UTC — Cloudflare does not convert
 # them. Defaults below are tuned for SGT (UTC+8):
 #   "0 22 * * *" -> 06:00 SGT  new promos + transfer-rate changes
 #   "30 1 * * *" -> 09:30 SGT  spend digest and threshold alerts
-# Changing the first one means changing MORNING_SCAN_CRON in src/index.ts to match.
+#   "0 6 * * *"  -> 14:00 SGT  second promo scan, for offers posted during the day
+# The two scan times must match SCAN_CRONS in src/index.ts; anything else there
+# runs the digest instead.
 [triggers]
-crons = ["0 22 * * *", "30 1 * * *"]
+crons = ["0 22 * * *", "30 1 * * *", "0 6 * * *"]
 
 [[d1_databases]]
 binding = "DB"

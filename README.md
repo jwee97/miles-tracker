@@ -4,7 +4,7 @@ Credit card spend, limits, minimum-spend progress, and sign-up promo tracking.
 Runs entirely on Cloudflare's free tier. No domain, no email, no API key.
 
 - **Telegram bot** — logging spend, alerts, and login, all in one channel
-- **One Cloudflare Worker** — API, database, two nightly crons, and the dashboard
+- **One Cloudflare Worker** — API, database, three daily crons, and the dashboard
   itself as static assets, all on a single origin
 - **Cloudflare D1** — SQLite that doesn't sleep on inactivity
 - **Claude Pro, by hand** — turns T&C prose into eligibility rules; no API key needed
@@ -31,8 +31,11 @@ And `bonus_cap`, the mirror of a minimum: once you pass the cap, the elevated
 rate is gone and further spend belongs on another card. That's where miles
 actually get lost, so it gets its own alert.
 
-**Promotions.** A nightly RSS scan across miles blogs. Matches arrive in
-Telegram with Track / Ignore buttons.
+**Promotions.** Twice-daily scanning across miles blogs — RSS feeds *and* plain
+listing pages — which opens each promising article, reads past the headline and
+pulls out the issuer's own apply link. Matches arrive in Telegram with Track /
+Ignore buttons and in the Offers tab, where **Scan now** runs the same job on
+demand and a URL box reads any page you paste.
 
 **Eligibility.** Tracked offers get their T&C turned into typed predicates —
 `{"type":"no_issuer_card_within_months","issuer":"DBS","months":12}` — which a
@@ -65,8 +68,9 @@ Both end up in the same place, and you can use both.
 /help                     everything else
 ```
 
-Two crons fire daily: 08:00 local scans the feeds, 09:30 local sends the
-digest. Threshold alerts also fire the moment a transaction crosses one.
+Three crons fire daily: 06:00 and 14:00 local scan for offers, 09:30 local
+sends the digest. Threshold alerts also fire the moment a transaction crosses
+one. `/scan` runs a scan immediately; `/scan <url>` reads a single page.
 
 ### Adding a card and its minimums
 
@@ -136,8 +140,14 @@ web/                  React + Vite PWA, served by the Worker as assets
 .github/workflows/    CI: typecheck, both test suites, dashboard build
 ```
 
-## Adding feeds
+## Adding sources
 
-`/addfeed https://example.com/feed/|Label`, or edit `seed.sql`. Any RSS or Atom
-feed works. The keyword gate in `src/rss.ts` requires a promo term *and* a card
-term, and always matches your own cards' product names.
+`/addfeed <url>|<label>|<kind>`, or edit `seed.sql`. `kind` is `rss`, `page`, or
+blank to detect from the response. RSS and Atom both work; `page` treats an
+ordinary HTML listing — a bank's promotions page, a blog category — as a source
+by harvesting its headline links.
+
+The keyword gate in `src/rss.ts` requires a promo term *and* a card term, or a
+concrete reward figure next to a card term, and always matches your own cards'
+product names. When the summary is too thin to judge, the scanner opens the
+article and decides on the full text; at most 12 pages are fetched per scan.

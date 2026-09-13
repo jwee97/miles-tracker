@@ -439,5 +439,84 @@ db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi Th
   check('and is not mislabelled as a migration issue', body.needs_migration !== true, JSON.stringify(body));
 }
 
+// --- the scan trigger -------------------------------------------------------
+{
+  const before = sent.length;
+  const res = await worker.fetch(
+    new Request('https://x.test/api/scan', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deep: false, push: false }),
+    }),
+    env
+  );
+  const body = (await res.json()) as any;
+  check('a scan can be triggered from the app', res.status === 200, String(res.status));
+  check('and reports what it read', typeof body.feeds_read === 'number' && Array.isArray(body.fresh), JSON.stringify(body));
+  check('push: false keeps it off Telegram', sent.length === before, `${before} -> ${sent.length}`);
+}
+
+{
+  const res = await worker.fetch(
+    new Request('https://x.test/api/scan', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'not-a-url' }),
+    }),
+    env
+  );
+  check('an unreadable URL is reported, not thrown', res.status === 502, String(res.status));
+}
+
+// --- the scanner inbox ------------------------------------------------------
+db.prepare(
+  `INSERT INTO feed_items (guid, feed, title, link, apply_url, excerpt, terms, score, topic)
+   VALUES ('g1','MileLion','30,000 bonus miles','https://blog.test/p','https://uob.com.sg/apply','Spend S$1,000','bonus miles',6,'promo')`
+).run();
+db.prepare(
+  `INSERT INTO feed_items (guid, feed, title, link, topic, action)
+   VALUES ('g2','MileLion','Old news','https://blog.test/q','promo','ignored')`
+).run();
+{
+  const res = await worker.fetch(new Request(`https://x.test/api/feed?t=${token}`), env);
+  const body = (await res.json()) as any;
+  check('the inbox lists undecided matches', body.items.length === 1, JSON.stringify(body.items?.map((i: any) => i.guid)));
+  check('and carries what the reader found', body.items[0].apply_url === 'https://uob.com.sg/apply', JSON.stringify(body.items[0]));
+  check('with the excerpt', body.items[0].excerpt === 'Spend S$1,000', JSON.stringify(body.items[0]));
+
+  const all = (await (await worker.fetch(new Request(`https://x.test/api/feed?state=all&t=${token}`), env)).json()) as any;
+  check('state=all includes the decided ones', all.items.length === 2, String(all.items.length));
+}
+
+{
+  const id = (db.prepare(`SELECT id FROM feed_items WHERE guid = 'g1'`).get() as any).id;
+  const res = await worker.fetch(
+    new Request('https://x.test/api/feed/action', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, action: 'track' }),
+    }),
+    env
+  );
+  const body = (await res.json()) as any;
+  check('tracking from the app creates an offer', res.status === 200 && !!body.offer_id, JSON.stringify(body));
+  const offer = db.prepare(`SELECT * FROM offers WHERE id = ?`).get(body.offer_id) as any;
+  check('pointing at the apply link', offer.source_url === 'https://uob.com.sg/apply', JSON.stringify(offer));
+  const item = db.prepare(`SELECT * FROM feed_items WHERE id = ?`).get(id) as any;
+  check('and the item leaves the inbox', item.action === 'tracked' && item.offer_id === body.offer_id, JSON.stringify(item));
+}
+
+{
+  const res = await worker.fetch(
+    new Request('https://x.test/api/feed/action', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 1, action: 'burn' }),
+    }),
+    env
+  );
+  check('an unknown action is refused', res.status === 400, String(res.status));
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

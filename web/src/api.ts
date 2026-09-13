@@ -455,5 +455,41 @@ export const fetchMonths = () => get<{ months: string[] }>('/api/months');
 export const fetchSummary = () => get<Summary>('/api/summary');
 export const fetchOffers = () => get<{ offers: OfferRow[] }>('/api/offers');
 
+/** A headline the scanner has seen, before it is promoted to a tracked offer. */
+export interface FeedItemRow {
+  id: number;
+  feed: string;
+  title: string;
+  link: string;
+  apply_url: string | null;
+  excerpt: string | null;
+  terms: string | null;
+  score: number | null;
+  topic: 'promo' | 'rates' | null;
+  action: 'tracked' | 'ignored' | null;
+  deep: number;
+  published_at: string | null;
+  seen_at: string;
+  offer_id: number | null;
+}
+
+export interface ScanSummary {
+  fresh: FeedItemRow[];
+  feeds_read: number;
+  feeds_failed: string[];
+  items_seen: number;
+  pages_fetched: number;
+}
+
+export const fetchFeed = (state: 'new' | 'tracked' | 'all' = 'new') =>
+  get<{ items: FeedItemRow[] }>(`/api/feed?state=${state}`);
+
+/** Runs the same scan the cron runs. `url` parses a single page instead. */
+export const runScan = (body: { deep?: boolean; url?: string; push?: boolean } = {}) =>
+  post<ScanSummary>('/api/scan', body);
+
+export const feedAction = (id: number, action: 'track' | 'ignore') =>
+  post<{ ok: true; offer_id?: number }>('/api/feed/action', { id, action });
+
 export const money = (cents: number) =>
   (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
