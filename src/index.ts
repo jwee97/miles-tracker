@@ -10,6 +10,7 @@ import {
   activeCards,
   addMonths,
   EFFECTIVE_DATE,
+  resolveRange,
   parseDateToken,
   parseMoney,
   requirementProgress,
@@ -494,31 +495,102 @@ export default {
         // rather than only from the Telegram card.
         if (url.pathname === '/api/feed') {
           const state = url.searchParams.get('state') ?? 'new';
-          const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '40', 10) || 40, 200);
-          const where =
-            state === 'all' ? '1 = 1' : state === 'tracked' ? `action = 'tracked'` : `action IS NULL AND topic IS NOT NULL`;
+          const perPage = Math.min(Math.max(parseInt(url.searchParams.get('per_page') ?? '10', 10) || 10, 5), 50);
+          const { from, to, label: rangeLabel } = resolveRange(
+            env,
+            url.searchParams.get('range') ?? 'all',
+            url.searchParams.get('from'),
+            url.searchParams.get('to')
+          );
+
+          const where: string[] = [];
+          const binds: unknown[] = [];
+          // `new` is the inbox: matched, undecided. The others are history.
+          if (state === 'new') where.push(`action IS NULL AND topic IS NOT NULL`);
+          else if (state === 'tracked') where.push(`action = 'tracked'`);
+          else if (state === 'ignored') where.push(`action = 'ignored'`);
+          else if (state === 'promo') where.push(`topic = 'promo'`);
+          // Items are dated by publication where the source gave one, and by
+          // when we first saw them otherwise — the same date the list sorts on.
+          if (from) {
+            where.push(`DATE(COALESCE(published_at, seen_at)) >= ?`);
+            binds.push(from);
+          }
+          if (to) {
+            where.push(`DATE(COALESCE(published_at, seen_at)) <= ?`);
+            binds.push(to);
+          }
+          const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+          const counted = await env.DB.prepare(`SELECT COUNT(*) AS n FROM feed_items ${clause}`)
+            .bind(...binds)
+            .first<{ n: number }>();
+          const total = counted?.n ?? 0;
+          const pages = Math.max(1, Math.ceil(total / perPage));
+          // A filter change can leave you past the end; clamp rather than
+          // showing an empty page with no way to tell why.
+          const page = Math.min(Math.max(parseInt(url.searchParams.get('page') ?? '1', 10) || 1, 1), pages);
+
           const { results } = await env.DB.prepare(
             `SELECT id, feed, title, link, apply_url, excerpt, terms, score, topic, action, deep,
                     published_at, seen_at, offer_id
-             FROM feed_items WHERE ${where}
-             ORDER BY COALESCE(published_at, seen_at) DESC, id DESC LIMIT ?`
+             FROM feed_items ${clause}
+             ORDER BY COALESCE(published_at, seen_at) DESC, id DESC
+             LIMIT ? OFFSET ?`
           )
-            .bind(limit)
+            .bind(...binds, perPage, (page - 1) * perPage)
             .all<any>();
-          return json({ items: results ?? [] });
+
+          // Counts for the filter chips, so switching state is not a guess.
+          const tally = await env.DB.prepare(
+            `SELECT
+               SUM(CASE WHEN action IS NULL AND topic IS NOT NULL THEN 1 ELSE 0 END) AS new_count,
+               SUM(CASE WHEN action = 'tracked' THEN 1 ELSE 0 END) AS tracked_count,
+               SUM(CASE WHEN action = 'ignored' THEN 1 ELSE 0 END) AS ignored_count,
+               COUNT(*) AS all_count
+             FROM feed_items`
+          ).first<any>();
+
+          return json({
+            items: results ?? [],
+            page,
+            pages,
+            per_page: perPage,
+            total,
+            state,
+            range: { from, to, label: rangeLabel },
+            counts: {
+              new: tally?.new_count ?? 0,
+              tracked: tally?.tracked_count ?? 0,
+              ignored: tally?.ignored_count ?? 0,
+              all: tally?.all_count ?? 0,
+            },
+          });
         }
 
+        // Takes one id or many: judging a batch of headlines is the common
+        // case after a scan, and one request per row is the wrong shape for it.
         if (url.pathname === '/api/feed/action' && req.method === 'POST') {
-          const { id, action } = (await req.json()) as { id?: number; action?: string };
-          if (!id || !['track', 'ignore'].includes(action ?? ''))
-            return json({ error: 'id and action (track|ignore) required' }, 400);
-          if (action === 'ignore') {
-            await ignoreFeedItem(env, id);
-            return json({ ok: true });
+          const body = (await req.json()) as { id?: number; ids?: number[]; action?: string };
+          const ids = (body.ids ?? (body.id ? [body.id] : [])).filter((n) => Number.isInteger(n));
+          if (!ids.length || !['track', 'ignore'].includes(body.action ?? ''))
+            return json({ error: 'id or ids, and action (track|ignore), required' }, 400);
+          if (ids.length > 200) return json({ error: 'at most 200 items at a time' }, 400);
+
+          if (body.action === 'ignore') {
+            for (const id of ids) await ignoreFeedItem(env, id);
+            return json({ ok: true, ignored: ids.length });
           }
-          const offerId = await trackFeedItem(env, id);
-          if (!offerId) return json({ error: 'no such feed item' }, 404);
-          return json({ ok: true, offer_id: offerId });
+
+          const tracked: { id: number; offer_id: number }[] = [];
+          const missing: number[] = [];
+          for (const id of ids) {
+            const offerId = await trackFeedItem(env, id);
+            if (offerId) tracked.push({ id, offer_id: offerId });
+            else missing.push(id);
+          }
+          if (!tracked.length) return json({ error: 'no such feed item' }, 404);
+          return json({ ok: true, tracked, missing, offer_id: tracked[0].offer_id });
         }
 
         // `pending` offers are included: a tracked feed item lives there until
@@ -759,49 +831,14 @@ export default {
         if (url.pathname === '/api/transactions' && req.method === 'GET') {
           const limit = Math.min(500, parseInt(url.searchParams.get('limit') ?? '25', 10) || 25);
 
-          // Named ranges are resolved here rather than in the browser, so they
-          // follow the app's configured timezone rather than the device's.
-          const range = url.searchParams.get('range') ?? '';
-          const day = (offset: number) =>
-            new Date(Date.parse(today(env) + 'T00:00:00Z') + offset * 86400_000).toISOString().slice(0, 10);
-          let from = url.searchParams.get('from') ?? null;
-          let to = url.searchParams.get('to') ?? null;
-
-          switch (range) {
-            case 'today':
-              from = to = today(env);
-              break;
-            case 'yesterday':
-              from = to = day(-1);
-              break;
-            case '7d':
-              from = day(-6);
-              to = today(env);
-              break;
-            case '30d':
-              from = day(-29);
-              to = today(env);
-              break;
-            case 'month':
-              from = today(env).slice(0, 8) + '01';
-              to = today(env);
-              break;
-            case 'lastmonth': {
-              const [y, m] = today(env).split('-').map(Number);
-              const start = new Date(Date.UTC(y, m - 2, 1));
-              const end = new Date(Date.UTC(y, m - 1, 0));
-              from = start.toISOString().slice(0, 10);
-              to = end.toISOString().slice(0, 10);
-              break;
-            }
-            case 'ytd':
-              from = `${today(env).slice(0, 4)}-01-01`;
-              to = today(env);
-              break;
-            case 'all':
-              from = to = null;
-              break;
-          }
+          // Named ranges are resolved in spend.ts rather than in the browser,
+          // so they follow the app's configured timezone, not the device's.
+          const { from, to, label: rangeLabel } = resolveRange(
+            env,
+            url.searchParams.get('range'),
+            url.searchParams.get('from'),
+            url.searchParams.get('to')
+          );
 
           const where: string[] = [];
           const binds: unknown[] = [];
@@ -841,7 +878,7 @@ export default {
 
           return json({
             transactions: results ?? [],
-            range: { from, to, label: range || 'custom' },
+            range: { from, to, label: rangeLabel },
             total_count: totals?.n ?? 0,
             total_cents: totals?.cents ?? 0,
           });

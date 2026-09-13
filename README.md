@@ -35,7 +35,8 @@ actually get lost, so it gets its own alert.
 listing pages — which opens each promising article, reads past the headline and
 pulls out the issuer's own apply link. Matches arrive in Telegram with Track /
 Ignore buttons and in the Offers tab, where **Scan now** runs the same job on
-demand and a URL box reads any page you paste.
+demand and a URL box reads any page you paste. Everything matched lands in a
+paged list you can filter by state and date and judge in batches.
 
 **Eligibility.** Tracked offers get their T&C turned into typed predicates —
 `{"type":"no_issuer_card_within_months","issuer":"DBS","months":12}` — which a

@@ -483,9 +483,98 @@ db.prepare(
   check('the inbox lists undecided matches', body.items.length === 1, JSON.stringify(body.items?.map((i: any) => i.guid)));
   check('and carries what the reader found', body.items[0].apply_url === 'https://uob.com.sg/apply', JSON.stringify(body.items[0]));
   check('with the excerpt', body.items[0].excerpt === 'Spend S$1,000', JSON.stringify(body.items[0]));
+  check('it reports the counts behind each filter', body.counts.new === 1 && body.counts.ignored === 1, JSON.stringify(body.counts));
 
   const all = (await (await worker.fetch(new Request(`https://x.test/api/feed?state=all&t=${token}`), env)).json()) as any;
   check('state=all includes the decided ones', all.items.length === 2, String(all.items.length));
+  const ignored = (await (await worker.fetch(new Request(`https://x.test/api/feed?state=ignored&t=${token}`), env)).json()) as any;
+  check(
+    'state=ignored shows only those',
+    ignored.items.length === 1 && ignored.items[0].action === 'ignored',
+    JSON.stringify(ignored.items)
+  );
+}
+
+// --- paging and date ranges -------------------------------------------------
+for (let n = 0; n < 25; n++) {
+  const day = String((n % 25) + 1).padStart(2, '0');
+  db.prepare(
+    `INSERT INTO feed_items (guid, feed, title, link, topic, published_at, score)
+     VALUES (?, 'MileLion', ?, ?, 'promo', ?, ?)`
+  ).run(`p${n}`, `Promo ${n}`, `https://blog.test/${n}`, `2026-08-${day}T02:00:00Z`, n % 7);
+}
+db.prepare(
+  `INSERT INTO feed_items (guid, feed, title, link, topic, published_at) VALUES ('sep1','MileLion','This month','https://blog.test/sep','promo','2026-09-05T02:00:00Z')`
+).run();
+{
+  const p1 = (await (await worker.fetch(new Request(`https://x.test/api/feed?per_page=10&t=${token}`), env)).json()) as any;
+  check('a page holds what you asked for', p1.items.length === 10, String(p1.items.length));
+  check('and says how many there are', p1.total === 27, String(p1.total));
+  check('and how many pages that is', p1.pages === 3, String(p1.pages));
+
+  const p3 = (await (await worker.fetch(new Request(`https://x.test/api/feed?per_page=10&page=3&t=${token}`), env)).json()) as any;
+  check('the last page holds the remainder', p3.items.length === 7, String(p3.items.length));
+  const overlap = p1.items.filter((a: any) => p3.items.some((b: any) => b.id === a.id));
+  check('pages do not overlap', overlap.length === 0, JSON.stringify(overlap.map((i: any) => i.id)));
+
+  const beyond = (await (await worker.fetch(new Request(`https://x.test/api/feed?per_page=10&page=99&t=${token}`), env)).json()) as any;
+  check('a page past the end clamps to the last one', beyond.page === 3 && beyond.items.length === 7, JSON.stringify({ page: beyond.page, n: beyond.items.length }));
+
+  const huge = (await (await worker.fetch(new Request(`https://x.test/api/feed?per_page=9999&t=${token}`), env)).json()) as any;
+  check('per_page is capped', huge.per_page === 50, String(huge.per_page));
+}
+{
+  const month = (await (await worker.fetch(new Request(`https://x.test/api/feed?range=month&t=${token}`), env)).json()) as any;
+  check('this month excludes last month', month.total === 1, String(month.total));
+  check('and names the range it used', month.range.label === 'This month', month.range.label);
+  check('with the dates it resolved to', month.range.from === '2026-09-01', String(month.range.from));
+
+  const lastMonth = (await (await worker.fetch(new Request(`https://x.test/api/feed?range=lastmonth&t=${token}`), env)).json()) as any;
+  check('last month has the rest', lastMonth.total === 25, String(lastMonth.total));
+  const everything = (await (await worker.fetch(new Request(`https://x.test/api/feed?range=all&t=${token}`), env)).json()) as any;
+  check('all time has everything', everything.total === 27, String(everything.total));
+}
+
+// --- judging several at once ------------------------------------------------
+{
+  const ids = ((await (await worker.fetch(new Request(`https://x.test/api/feed?per_page=5&t=${token}`), env)).json()) as any).items.map(
+    (i: any) => i.id
+  );
+  const res = await worker.fetch(
+    new Request('https://x.test/api/feed/action', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, action: 'ignore' }),
+    }),
+    env
+  );
+  const body = (await res.json()) as any;
+  check('a batch can be ignored in one request', body.ignored === 5, JSON.stringify(body));
+  const gone = db
+    .prepare(`SELECT COUNT(*) c FROM feed_items WHERE id IN (${ids.join(',')}) AND action = 'ignored'`)
+    .get() as any;
+  check('and every one of them is marked', gone.c === 5, String(gone.c));
+  check('so the inbox shrinks', ((await (await worker.fetch(new Request(`https://x.test/api/feed?t=${token}`), env)).json()) as any).total === 22, '');
+
+  const many = await worker.fetch(
+    new Request('https://x.test/api/feed/action', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: Array.from({ length: 201 }, (_, n) => n + 1), action: 'ignore' }),
+    }),
+    env
+  );
+  check('an unreasonable batch is refused', many.status === 400, String(many.status));
+
+  const empty = await worker.fetch(
+    new Request('https://x.test/api/feed/action', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [], action: 'ignore' }),
+    }),
+    env
+  );
+  check('and so is an empty one', empty.status === 400, String(empty.status));
 }
 
 {

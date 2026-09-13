@@ -299,6 +299,10 @@ const REWARD_FIGURE =
 const RATE_NEWS =
   /\b(transfer bonus|conversion (?:rate|bonus|fee)|points?[- ]to[- ]miles|devalu\w*|revalu\w*|earn rate|mile ?rate|redemption rate|fee (?:increase|hike|change)|(?:raising|hiking|lowering) .{0,20}fee)\b/i;
 
+/** Matched phrases can contain commas ("30,000 bonus miles"), so the stored
+ *  list uses a separator that cannot appear inside one. */
+export const TERM_SEP = ' | ';
+
 export interface Verdict {
   promo: boolean;
   rates: boolean;
@@ -504,7 +508,7 @@ export async function scanFeedsDetailed(env: Env, opts: ScanOptions = {}): Promi
         .bind(
           verdict.promo || verdict.rates ? topic : null,
           verdict.score,
-          verdict.terms.join(', ') || null,
+          verdict.terms.join(TERM_SEP) || null,
           excerpt,
           applyUrl,
           read ? 1 : 0,
@@ -560,7 +564,7 @@ export async function scanUrl(env: Env, rawUrl: string): Promise<ScanResult | nu
       read.title || read.url,
       verdict.promo || verdict.rates ? topic : null,
       verdict.score,
-      verdict.terms.join(', ') || null,
+      verdict.terms.join(TERM_SEP) || null,
       read.excerpt,
       read.apply_url,
       row.id

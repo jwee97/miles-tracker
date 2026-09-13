@@ -513,15 +513,40 @@ export interface ScanSummary {
   pages_fetched: number;
 }
 
-export const fetchFeed = (state: 'new' | 'tracked' | 'all' = 'new') =>
-  get<{ items: FeedItemRow[] }>(`/api/feed?state=${state}`);
+export type FeedState = 'new' | 'tracked' | 'ignored' | 'promo' | 'all';
+export type RangeName = 'today' | 'yesterday' | '7d' | '30d' | 'month' | 'lastmonth' | 'ytd' | 'all';
+
+export interface FeedPage {
+  items: FeedItemRow[];
+  page: number;
+  pages: number;
+  per_page: number;
+  total: number;
+  state: FeedState;
+  range: { from: string | null; to: string | null; label: string };
+  counts: { new: number; tracked: number; ignored: number; all: number };
+}
+
+export const fetchFeed = (opts: { state?: FeedState; range?: RangeName; page?: number; per_page?: number } = {}) => {
+  const q = new URLSearchParams({
+    state: opts.state ?? 'new',
+    range: opts.range ?? 'all',
+    page: String(opts.page ?? 1),
+    per_page: String(opts.per_page ?? 10),
+  });
+  return get<FeedPage>(`/api/feed?${q}`);
+};
 
 /** Runs the same scan the cron runs. `url` parses a single page instead. */
 export const runScan = (body: { deep?: boolean; url?: string; push?: boolean } = {}) =>
   post<ScanSummary>('/api/scan', body);
 
-export const feedAction = (id: number, action: 'track' | 'ignore') =>
-  post<{ ok: true; offer_id?: number }>('/api/feed/action', { id, action });
+/** Track or ignore one item or many — one request either way. */
+export const feedActionMany = (ids: number[], action: 'track' | 'ignore') =>
+  post<{ ok: true; ignored?: number; tracked?: { id: number; offer_id: number }[] }>('/api/feed/action', {
+    ids,
+    action,
+  });
 
 export const fetchFeeds = () => get<{ feeds: FeedRow[] }>('/api/feeds');
 

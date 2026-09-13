@@ -293,3 +293,60 @@ export async function claimAlert(env: Env, key: string): Promise<boolean> {
   const r = await env.DB.prepare(`INSERT OR IGNORE INTO alerts_sent (key) VALUES (?)`).bind(key).run();
   return (r.meta.changes ?? 0) > 0;
 }
+
+/** The named ranges the ledger and the scanner inbox both offer. */
+export const RANGES = ['today', 'yesterday', '7d', '30d', 'month', 'lastmonth', 'ytd', 'all'] as const;
+export type RangeName = (typeof RANGES)[number];
+
+export const RANGE_LABEL: Record<RangeName, string> = {
+  today: 'Today',
+  yesterday: 'Yesterday',
+  '7d': 'Last 7 days',
+  '30d': 'Last 30 days',
+  month: 'This month',
+  lastmonth: 'Last month',
+  ytd: 'Year to date',
+  all: 'All time',
+};
+
+/**
+ * Resolve a named range to dates. Done here rather than in the browser so it
+ * follows the app's configured timezone, not the device's — the two disagree
+ * about what "today" is for eight hours of every day.
+ */
+export function resolveRange(
+  env: Env,
+  range: string | null,
+  from: string | null = null,
+  to: string | null = null
+): { from: string | null; to: string | null; label: string } {
+  const now = today(env);
+  const day = (offset: number) => isoDate(new Date(Date.parse(now + 'T00:00:00Z') + offset * 86400_000));
+
+  switch (range) {
+    case 'today':
+      return { from: now, to: now, label: RANGE_LABEL.today };
+    case 'yesterday':
+      return { from: day(-1), to: day(-1), label: RANGE_LABEL.yesterday };
+    case '7d':
+      return { from: day(-6), to: now, label: RANGE_LABEL['7d'] };
+    case '30d':
+      return { from: day(-29), to: now, label: RANGE_LABEL['30d'] };
+    case 'month':
+      return { from: now.slice(0, 8) + '01', to: now, label: RANGE_LABEL.month };
+    case 'lastmonth': {
+      const [y, m] = now.split('-').map(Number);
+      return {
+        from: isoDate(new Date(Date.UTC(y, m - 2, 1))),
+        to: isoDate(new Date(Date.UTC(y, m - 1, 0))),
+        label: RANGE_LABEL.lastmonth,
+      };
+    }
+    case 'ytd':
+      return { from: `${now.slice(0, 4)}-01-01`, to: now, label: RANGE_LABEL.ytd };
+    case 'all':
+      return { from: null, to: null, label: RANGE_LABEL.all };
+    default:
+      return { from, to, label: from || to ? `${from ?? '…'} to ${to ?? '…'}` : RANGE_LABEL.all };
+  }
+}

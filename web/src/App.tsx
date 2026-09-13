@@ -24,7 +24,7 @@ import {
   fetchFeeds,
   fetchOffers,
   fetchSummary,
-  feedAction,
+  feedActionMany,
   runScan,
   saveExtraction,
   saveFeed,
@@ -35,7 +35,10 @@ import {
   type CardSummary,
   type Eligibility,
   type FeedItemRow,
+  type FeedPage,
   type FeedRow,
+  type FeedState,
+  type RangeName,
   type OfferRow,
   type RuleDecision,
   type RuleRow,
@@ -129,42 +132,27 @@ function Card({ c }: { c: CardSummary }) {
 }
 
 /**
- * The scan the cron runs twice a day, on a button. Matches land here as well as
- * in Telegram, so an offer can be judged and tracked without leaving the app.
+ * The scan the cron runs twice a day, on a button. Matches land in the inbox
+ * below as well as in Telegram.
  */
-function Scanner({ onTracked }: { onTracked: () => void }) {
-  const [items, setItems] = useState<FeedItemRow[] | null>(null);
+function Scanner({ onScanned }: { onScanned: () => void }) {
   const [stats, setStats] = useState<ScanSummary | null>(null);
   const [busy, setBusy] = useState<'' | 'deep' | 'quick' | 'url'>('');
   const [url, setUrl] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
-  function load() {
-    fetchFeed('new')
-      .then((d) => setItems(d.items))
-      .catch((e) => setErr(e.message));
-  }
-  useEffect(load, []);
-
   async function scan(mode: 'deep' | 'quick' | 'url') {
     setBusy(mode);
     setErr(null);
     try {
-      const res = await runScan(mode === 'url' ? { url } : { deep: mode === 'deep' });
-      setStats(res);
+      setStats(await runScan(mode === 'url' ? { url } : { deep: mode === 'deep' }));
       if (mode === 'url') setUrl('');
-      load();
+      onScanned();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setBusy('');
     }
-  }
-
-  async function act(id: number, action: 'track' | 'ignore') {
-    await feedAction(id, action);
-    setItems((prev) => (prev ? prev.filter((i) => i.id !== id) : prev));
-    if (action === 'track') onTracked();
   }
 
   return (
@@ -206,35 +194,246 @@ function Scanner({ onTracked }: { onTracked: () => void }) {
         )}
         {err && <span className="err-text">{err}</span>}
       </div>
+    </section>
+  );
+}
 
-      {items && items.length > 0 && (
-        <ul className="rules">
-          {items.map((i) => (
-            <li key={i.id} className={i.topic === 'promo' ? 'pass' : 'unknown'}>
-              <a className="strong" href={i.link} target="_blank" rel="noreferrer">
-                {i.title || i.link}
-              </a>
-              <p className="sub">
-                {i.feed}
-                {i.deep ? ' · article read' : ' · headline only'}
-                {i.terms ? ` · ${i.terms}` : ''}
-              </p>
-              {i.excerpt && <blockquote>{i.excerpt}</blockquote>}
-              {i.apply_url && i.apply_url !== i.link && (
-                <a className="link" href={i.apply_url} target="_blank" rel="noreferrer">
-                  Offer page
+const STATES: { key: FeedState; label: string; count: (c: FeedPage['counts']) => number | null }[] = [
+  { key: 'new', label: 'Inbox', count: (c) => c.new },
+  { key: 'tracked', label: 'Tracked', count: (c) => c.tracked },
+  { key: 'ignored', label: 'Ignored', count: (c) => c.ignored },
+  { key: 'all', label: 'Everything', count: (c) => c.all },
+];
+
+const RANGES: { key: RangeName; label: string }[] = [
+  { key: 'all', label: 'All time' },
+  { key: 'month', label: 'This month' },
+  { key: 'lastmonth', label: 'Last month' },
+  { key: '7d', label: 'Last 7 days' },
+  { key: '30d', label: 'Last 30 days' },
+  { key: 'ytd', label: 'Year to date' },
+];
+
+/** How strongly the scanner thought this was an offer, in words. */
+function strength(score: number | null) {
+  if (score == null) return null;
+  if (score >= 5) return { label: 'Strong match', cls: 'strong-match' };
+  if (score >= 3) return { label: 'Match', cls: 'fair-match' };
+  return { label: 'Weak match', cls: 'weak-match' };
+}
+
+/** Everything the scanner has seen, a page at a time. */
+function Inbox({ tick, onTracked }: { tick: number; onTracked: () => void }) {
+  const [state, setState] = useState<FeedState>('new');
+  const [range, setRange] = useState<RangeName>('all');
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState<FeedPage | null>(null);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  function load() {
+    fetchFeed({ state, range, page })
+      .then((d) => {
+        setData(d);
+        // The server clamps the page; follow it rather than arguing.
+        if (d.page !== page) setPage(d.page);
+      })
+      .catch((e) => setErr(e.message));
+  }
+  useEffect(load, [state, range, page, tick]);
+  // A filter change starts at the top.
+  useEffect(() => setPage(1), [state, range]);
+  // Selection never outlives the rows it was made on: a tick on page 1 that
+  // survived to page 3 would leave "Ignore 2" acting on items you cannot see.
+  useEffect(() => setPicked(new Set()), [state, range, page]);
+
+  const items = data?.items ?? [];
+  const allPicked = items.length > 0 && items.every((i) => picked.has(i.id));
+
+  function toggle(id: number) {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  async function act(ids: number[], action: 'track' | 'ignore') {
+    if (!ids.length) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await feedActionMany(ids, action);
+      setPicked(new Set());
+      load();
+      if (action === 'track') onTracked();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const first = data ? (data.page - 1) * data.per_page + 1 : 0;
+  const last = data ? Math.min(data.page * data.per_page, data.total) : 0;
+
+  return (
+    <section className="card entry">
+      <header className="inbox-head">
+        <h2>Scanned items</h2>
+        <select className="range-select" value={range} onChange={(e) => setRange(e.target.value as RangeName)}>
+          {RANGES.map((r) => (
+            <option key={r.key} value={r.key}>
+              {r.label}
+            </option>
+          ))}
+        </select>
+      </header>
+
+      <div className="chips">
+        {STATES.map((st) => (
+          <button
+            key={st.key}
+            className={`chip ${state === st.key ? 'on' : ''}`}
+            onClick={() => setState(st.key)}
+          >
+            {st.label}
+            {data ? <span className="chip-n">{st.count(data.counts)}</span> : null}
+          </button>
+        ))}
+      </div>
+
+      {items.length > 0 && (
+        <div className="bulk">
+          <label className="tick">
+            <input
+              type="checkbox"
+              checked={allPicked}
+              onChange={() => setPicked(allPicked ? new Set() : new Set(items.map((i) => i.id)))}
+            />
+            <span>{allPicked ? 'Clear page' : 'Select page'}</span>
+          </label>
+          <span className="sub">
+            {picked.size ? `${picked.size} selected` : `${first}–${last} of ${data?.total ?? 0}`}
+          </span>
+          {picked.size > 0 && (
+            <>
+              <button className="secondary" onClick={() => act([...picked], 'track')} disabled={busy}>
+                Track {picked.size}
+              </button>
+              <button className="secondary danger" onClick={() => act([...picked], 'ignore')} disabled={busy}>
+                Ignore {picked.size}
+              </button>
+            </>
+          )}
+          {err && <span className="err-text">{err}</span>}
+        </div>
+      )}
+
+      <ul className="feed">
+        {items.map((i) => {
+          const s = strength(i.score);
+          return (
+            <li key={i.id} className={`feed-item ${picked.has(i.id) ? 'picked' : ''}`}>
+              <label className="tick">
+                <input type="checkbox" checked={picked.has(i.id)} onChange={() => toggle(i.id)} />
+              </label>
+              <div className="feed-body">
+                <a className="feed-title" href={i.link} target="_blank" rel="noreferrer">
+                  {i.title || i.link}
                 </a>
-              )}
-              <div className="entry-foot">
-                <button onClick={() => act(i.id, 'track')}>Track</button>
-                <button onClick={() => act(i.id, 'ignore')}>Ignore</button>
+                <p className="meta">
+                  <span className="tag">{i.feed}</span>
+                  <span>{(i.published_at ?? i.seen_at).slice(0, 10)}</span>
+                  {s && <span className={s.cls}>{s.label}</span>}
+                  <span>{i.deep ? 'article read' : 'headline only'}</span>
+                  {i.action && <span className={`state ${i.action}`}>{i.action}</span>}
+                  {i.offer_id && <span className="state tracked">offer #{i.offer_id}</span>}
+                </p>
+                {i.excerpt && <p className="excerpt">{i.excerpt}</p>}
+                {i.terms && (
+                  <p className="terms">
+                    {i.terms.split('|').map((t) => (
+                      <span key={t} className="term">
+                        {t.trim()}
+                      </span>
+                    ))}
+                  </p>
+                )}
+                <div className="feed-actions">
+                  {!i.action && (
+                    <>
+                      <button className="secondary" onClick={() => act([i.id], 'track')} disabled={busy}>
+                        Track
+                      </button>
+                      <button className="secondary" onClick={() => act([i.id], 'ignore')} disabled={busy}>
+                        Ignore
+                      </button>
+                    </>
+                  )}
+                  {i.action === 'ignored' && (
+                    <button className="secondary" onClick={() => act([i.id], 'track')} disabled={busy}>
+                      Track after all
+                    </button>
+                  )}
+                  {i.apply_url && i.apply_url !== i.link && (
+                    <a className="link" href={i.apply_url} target="_blank" rel="noreferrer">
+                      Offer page
+                    </a>
+                  )}
+                </div>
               </div>
             </li>
-          ))}
-        </ul>
+          );
+        })}
+      </ul>
+
+      {data && !items.length && (
+        <p className="sub">
+          {state === 'new'
+            ? 'Nothing waiting. New matches appear here and in Telegram.'
+            : 'Nothing in this range. Try a wider one.'}
+        </p>
       )}
-      {items && !items.length && <p className="sub">Nothing waiting. New matches appear here and in Telegram.</p>}
+
+      {data && data.pages > 1 && <Pager page={data.page} pages={data.pages} onGo={setPage} />}
     </section>
+  );
+}
+
+/** Page numbers, windowed so a hundred pages do not wrap the screen. */
+function Pager({ page, pages, onGo }: { page: number; pages: number; onGo: (p: number) => void }) {
+  const slots: (number | '…')[] = [];
+  const push = (n: number | '…') => slots.push(n);
+  const from = Math.max(2, page - 1);
+  const to = Math.min(pages - 1, page + 1);
+  push(1);
+  if (from > 2) push('…');
+  for (let n = from; n <= to; n++) push(n);
+  if (to < pages - 1) push('…');
+  if (pages > 1) push(pages);
+
+  return (
+    <nav className="pager">
+      <button className="secondary" onClick={() => onGo(page - 1)} disabled={page <= 1}>
+        ‹
+      </button>
+      {slots.map((n, idx) =>
+        n === '…' ? (
+          <span key={`gap${idx}`} className="gap">
+            …
+          </span>
+        ) : (
+          <button key={n} className={`secondary page ${n === page ? 'on' : ''}`} onClick={() => onGo(n)}>
+            {n}
+          </button>
+        )
+      )}
+      <button className="secondary" onClick={() => onGo(page + 1)} disabled={page >= pages}>
+        ›
+      </button>
+    </nav>
   );
 }
 
@@ -1170,6 +1369,7 @@ export default function App() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
   const [offerScope, setOfferScope] = useState<'open' | 'all'>('open');
+  const [scanTick, setScanTick] = useState(0);
   const [txns, setTxns] = useState<Txn[]>([]);
   const [recentCount, setRecentCount] = useState(10);
   const [error, setError] = useState<string | null>(null);
@@ -1299,7 +1499,8 @@ export default function App() {
 
       {tab === 'offers' && (
         <>
-          <Scanner onTracked={loadOffers} />
+          <Scanner onScanned={() => setScanTick((t) => t + 1)} />
+          <Inbox tick={scanTick} onTracked={loadOffers} />
           {offers ? (
             offers.length ? (
               offers.map((o) => <Offer key={o.id} o={o} onChange={loadOffers} />)

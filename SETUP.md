@@ -638,10 +638,21 @@ check.
 /addfeed <url>|<label>|page watch a plain HTML listing page
 ```
 
-The Offers tab has the same three buttons, plus an inbox of everything the
-scanner matched but you have not judged yet, with Track and Ignore on each, and
-a **Sources** panel where a source's URL, label and kind can be edited, paused
-or removed without touching the bot.
+The Offers tab has the same three buttons, plus **Scanned items** — everything
+the scanner has matched, ten to a page:
+
+- Filter by **Inbox** (matched, undecided), **Tracked**, **Ignored** or
+  **Everything**; each chip carries its count.
+- Narrow by date: this month, last month, last 7 or 30 days, year to date, all
+  time. Ranges resolve in the app's timezone, not the browser's.
+- Tick several and **Track** or **Ignore** the lot in one request. A selection
+  never survives a page or filter change, so a bulk action always applies to
+  rows you can see.
+- Each row shows its source, date, how strongly it matched, whether the article
+  was opened, the phrases that matched, and the issuer link when one was found.
+
+There is also a **Sources** panel where a source's URL, label and kind can be
+edited, paused or removed without touching the bot.
 
 ### Reviewing an offer
 

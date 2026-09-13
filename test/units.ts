@@ -1,4 +1,4 @@
-import { statementCycle, calendarMonth, calendarQuarter, addMonths, daysBetween, parseDateToken, parseMoney, today } from '../src/spend';
+import { statementCycle, calendarMonth, calendarQuarter, addMonths, daysBetween, parseDateToken, parseMoney, resolveRange, today } from '../src/spend';
 import { evaluateRule } from '../src/eligibility';
 import { parseFeed, isRelevant } from '../src/rss';
 import { formatRate } from '../src/points';
@@ -150,6 +150,26 @@ eq('atom relevant', isRelevant(a[0]), true);
 eq('watched product name matches',
   isRelevant({ guid: 'x', title: 'Changes to the Altitude Visa', link: '', published_at: null, summary: '' },
     ['Altitude Visa']), true);
+
+// --- named date ranges ------------------------------------------------------
+// Shared by the ledger and the scanner inbox, and resolved in the app's
+// timezone: at 03:00 UTC it is already the next day in SGT.
+at('2026-09-13T03:00:00Z');
+eq('today resolves to the local day', resolveRange(env, 'today').from, '2026-09-13');
+eq('yesterday is the local one', resolveRange(env, 'yesterday'), { from: '2026-09-12', to: '2026-09-12', label: 'Yesterday' });
+eq('7d covers a week including today', resolveRange(env, '7d').from, '2026-09-07');
+eq('30d covers thirty days', resolveRange(env, '30d').from, '2026-08-15');
+eq('this month starts on the first', resolveRange(env, 'month'), { from: '2026-09-01', to: '2026-09-13', label: 'This month' });
+eq('last month is the whole of it', resolveRange(env, 'lastmonth'), { from: '2026-08-01', to: '2026-08-31', label: 'Last month' });
+eq('year to date starts in January', resolveRange(env, 'ytd').from, '2026-01-01');
+eq('all time is unbounded', resolveRange(env, 'all'), { from: null, to: null, label: 'All time' });
+eq('an explicit window is kept', resolveRange(env, null, '2026-03-01', '2026-03-31').from, '2026-03-01');
+eq('and described', resolveRange(env, null, '2026-03-01', '2026-03-31').label, '2026-03-01 to 2026-03-31');
+eq('no range at all means all time', resolveRange(env, null).label, 'All time');
+// February, from a 31-day month: the month arithmetic must not overflow.
+at('2026-03-31T03:00:00Z');
+eq('last month from the 31st is February', resolveRange(env, 'lastmonth'), { from: '2026-02-01', to: '2026-02-28', label: 'Last month' });
+Date.now = realNow;
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);
