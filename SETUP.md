@@ -368,6 +368,33 @@ miles refuses to hand you a cashback card, cashback the reverse, and *hit
 minimums* puts a card with an unmet minimum first — which is often worth more
 than a better rate.
 
+## Portfolio check
+
+`/optimise`, and a panel on the Trends tab, replay your own spending through
+the rules engine to find where the same money would earn more:
+
+```
+dining — $400.00/mo on Citi PremierMiles (1.4 mpd)
+       → UOB Lady's (4 mpd) = +$187.20/yr · 12,480 extra miles a year
+```
+
+And allowances going to waste, which is the case for a card whose bonus
+category you choose:
+
+```
+UOB Lady's · dining — 8% used
+$80.00 of a $1,000.00 allowance each month
+You spend $900.00/mo on groceries. Pointing this card's bonus there is
+worth about $324.00 a year.
+```
+
+Three constraints keep the advice honest. It never suggests moving more than
+the target card's cap can hold, and says what limited it. Uncategorised spend
+is excluded, because without a category there is no rate to compare. And the
+figure quoted is the **gain**, not the target card's total — a distinction that
+would otherwise overstate every suggestion by whatever the current card already
+earns.
+
 ## Reward audit
 
 The **Audit** tab answers the question nothing else does: *did the bank

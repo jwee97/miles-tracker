@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchAnalytics, fetchMonths, type Analytics as A } from './api';
+import { fetchAnalytics, fetchMonths, fetchOptimise, type Analytics as A, type Optimisation } from './api';
 import { CumulativeLine, DailyBars, RankedBars, WeekdayBars, money, short, slotMap } from './charts';
 
 function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) {
@@ -17,6 +17,7 @@ export default function Analytics() {
   const [month, setMonth] = useState<string>('');
   const [a, setA] = useState<A | null>(null);
   const [showTable, setShowTable] = useState(false);
+  const [opt, setOpt] = useState<Optimisation | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -26,6 +27,10 @@ export default function Analytics() {
         setMonth((m) => m || d.months[0] || new Date().toISOString().slice(0, 7));
       })
       .catch(() => setMonth(new Date().toISOString().slice(0, 7)));
+  }, []);
+
+  useEffect(() => {
+    fetchOptimise(3).then(setOpt).catch(() => void 0);
   }, []);
 
   useEffect(() => {
@@ -187,6 +192,66 @@ export default function Analytics() {
               </tbody>
             </table>
           </div>
+        </section>
+      )}
+
+      {opt && (opt.reallocations.length > 0 || opt.underused.length > 0) && (
+        <section className="card optimise">
+          <header>
+            <div>
+              <h2>Portfolio check</h2>
+              <p className="sub">
+                Your own spend replayed through the rules, over {opt.months_analysed} month
+                {opt.months_analysed === 1 ? '' : 's'}
+              </p>
+            </div>
+            {opt.total_gain_cents_year > 0 && (
+              <div className="pct-block">
+                <span className="pct ok">${money(opt.total_gain_cents_year)}</span>
+                <span className="pct-sub">a year</span>
+              </div>
+            )}
+          </header>
+
+          {opt.reallocations.length > 0 && (
+            <ul className="ranked">
+              {opt.reallocations.slice(0, 5).map((r, i) => (
+                <li key={i}>
+                  <div className="ranked-head">
+                    <span className="ranked-label">{r.category}</span>
+                    <span className="mono ranked-val ok-text">+${money(r.gain_cents_year)}/yr</span>
+                  </div>
+                  <span className="ranked-sub">
+                    ${money(r.monthly_cents)}/mo on {r.from_card} ({r.from_rate}) → <b>{r.to_card}</b> ({r.to_rate})
+                    {r.gain_miles_year > 0 && <> · {r.gain_miles_year.toLocaleString()} extra miles a year</>}
+                  </span>
+                  {r.capped_by && <p className="pick-split">{r.capped_by}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {opt.underused.map((u, i) => (
+            <div key={i} className="idle">
+              <div className="ranked-head">
+                <span className="ranked-label">{u.card} · {u.category}</span>
+                <span className="mono ranked-val warn-num">{u.utilisation_pct}% used</span>
+              </div>
+              <span className="ranked-sub">
+                ${money(u.typical_used_cents)} of a ${money(u.cap_cents)} allowance each month
+              </span>
+              {u.better_category && (
+                <p className="pick-split">
+                  You spend ${money(u.better_category.monthly_cents)}/mo on <b>{u.better_category.category}</b>.
+                  Pointing this card's bonus there is worth about ${money(u.better_category.gain_cents_year)} a year.
+                </p>
+              )}
+            </div>
+          ))}
+
+          {opt.notes.map((n, i) => (
+            <p key={i} className="sub">{n}</p>
+          ))}
         </section>
       )}
 

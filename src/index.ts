@@ -18,6 +18,7 @@ import { buildAnalytics } from './analytics';
 import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from './settings';
 import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
 import { buildAudit } from './audit';
+import { optimise } from './advice';
 import { executeTransfer, tranchesByExpiry } from './points';
 import type { Env, Offer } from './types';
 
@@ -195,6 +196,11 @@ export default {
             .bind(b.card_id ?? null, code, b.reason ?? null)
             .run();
           return json({ ok: true });
+        }
+
+        if (url.pathname === '/api/optimise') {
+          const m = parseInt(url.searchParams.get('months') ?? '3', 10);
+          return json(await optimise(env, Math.min(12, Math.max(1, m || 3))));
         }
 
         if (url.pathname === '/api/audit') {

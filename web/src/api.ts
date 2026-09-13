@@ -416,6 +416,26 @@ export const fetchAudit = (p: { from?: string; to?: string; card_id?: string } =
 export const recordCredited = (id: number, miles: number | null, cashback: string | null) =>
   post<{ ok: true }>('/api/tx/credited', { id, miles, cashback });
 
+export interface Optimisation {
+  months_analysed: number;
+  reallocations: {
+    category: string; monthly_cents: number;
+    from_card: string; from_rate: string;
+    to_card: string; to_rate: string;
+    movable_cents: number; gain_cents_year: number; gain_miles_year: number;
+    capped_by: string | null;
+  }[];
+  underused: {
+    card: string; category: string; cap_cents: number;
+    typical_used_cents: number; utilisation_pct: number; unused_value_cents_year: number;
+    better_category: { category: string; monthly_cents: number; gain_cents_year: number } | null;
+  }[];
+  total_gain_cents_year: number;
+  notes: string[];
+}
+
+export const fetchOptimise = (months = 3) => get<Optimisation>(`/api/optimise?months=${months}`);
+
 export const fetchExpiry = () => get<{ tranches: Expiry[] }>('/api/expiry');
 export const fetchReview = () => get<{ ready: ReviewRow[]; waiting: ReviewRow[] }>('/api/review');
 export const fetchTransfers = () => get<{ transfers: any[] }>('/api/transfers');

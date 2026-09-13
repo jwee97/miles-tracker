@@ -6,6 +6,7 @@ import { scanFeeds } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
 import { runMigrations, runSeed } from './migrate';
+import { optimise } from './advice';
 import type { Card, Env, Offer } from './types';
 
 const api = (env: Env, method: string) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
@@ -613,6 +614,42 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           `Seed applied (${r.applied} statements).` +
             (r.errors.length ? `\n\nProblems:\n${r.errors.join('\n')}` : '\n/routes and /feeds to see what loaded.')
         );
+      }
+
+      case '/optimise':
+      case '/optimize': {
+        const o = await optimise(env, 3);
+        const lines: string[] = [`*Portfolio check* — ${o.months_analysed} month(s) of history`, ''];
+        if (o.reallocations.length) {
+          lines.push(`*Worth moving* — about $${money(o.total_gain_cents_year)} a year`);
+          for (const r of o.reallocations.slice(0, 5)) {
+            lines.push(
+              `• *${r.category}* — $${money(r.monthly_cents)}/mo on ${r.from_card} (${r.from_rate})\n` +
+                `  → ${r.to_card} (${r.to_rate}) = +$${money(r.gain_cents_year)}/yr` +
+                (r.gain_miles_year ? ` · ${r.gain_miles_year.toLocaleString()} miles` : '') +
+                (r.capped_by ? `\n  _${r.capped_by}_` : '')
+            );
+          }
+          lines.push('');
+        }
+        if (o.underused.length) {
+          lines.push('*Allowances going unused*');
+          for (const u of o.underused.slice(0, 4)) {
+            lines.push(
+              `• *${u.card}* ${u.category} — $${money(u.typical_used_cents)} of $${money(u.cap_cents)} (${u.utilisation_pct}%)` +
+                (u.better_category
+                  ? `\n  _You spend $${money(u.better_category.monthly_cents)}/mo on ${u.better_category.category}. ` +
+                    `Switching this card's category there is worth about $${money(u.better_category.gain_cents_year)}/yr._`
+                  : '')
+            );
+          }
+          lines.push('');
+        }
+        for (const n of o.notes) lines.push(`_${n}_`);
+        if (!o.reallocations.length && !o.underused.length && !o.notes.length) {
+          lines.push('Nothing to suggest yet — log a few months of categorised spend first.');
+        }
+        return send(env, chatId, lines.join('\n'));
       }
 
       case '/rates':

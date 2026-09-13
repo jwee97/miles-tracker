@@ -117,6 +117,7 @@ Tag \`#?\` when you don't know the category yet — better than guessing
 
 *Which card to use*
 /which — best card for each category
+/optimise — where the same spend would earn more
 /which groceries 120 — ranked, with what each would actually return
 /which NTUC 120 — a merchant works too, once you've tagged it
 Tag a merchant once: \`25.40 citirw #groceries NTUC\`
