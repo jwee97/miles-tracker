@@ -21,10 +21,12 @@ import {
   deleteRule,
   fetchExtractPrompt,
   fetchFeed,
+  fetchFeedStorage,
   fetchFeeds,
   fetchOffers,
   fetchSummary,
   feedActionMany,
+  purgeFeed,
   runScan,
   saveExtraction,
   saveFeed,
@@ -37,6 +39,7 @@ import {
   type FeedItemRow,
   type FeedPage,
   type FeedRow,
+  type FeedStorage,
   type FeedState,
   type RangeName,
   type OfferRow,
@@ -398,7 +401,93 @@ function Inbox({ tick, onTracked }: { tick: number; onTracked: () => void }) {
       )}
 
       {data && data.pages > 1 && <Pager page={data.page} pages={data.pages} onGo={setPage} />}
+
+      <Housekeeping onChanged={load} />
     </section>
+  );
+}
+
+const kb = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+/**
+ * Scanned history is the only table that grows without you doing anything.
+ * Compacting keeps each item's id — so it is never shown to you twice — and
+ * drops its bulk. Deleting forgets it, which means a feed that still carries it
+ * will surface it again; that is said plainly rather than discovered later.
+ */
+function Housekeeping({ onChanged }: { onChanged: () => void }) {
+  const [store, setStore] = useState<FeedStorage | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  function load() {
+    fetchFeedStorage()
+      .then(setStore)
+      .catch((e) => setErr((e as Error).message));
+  }
+  useEffect(load, []);
+
+  async function run(mode: 'compact' | 'delete') {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await purgeFeed(
+        mode === 'compact'
+          ? { mode: 'compact', scope: 'decided', older_than_days: store?.retention_days }
+          : { mode: 'delete', scope: 'ignored' }
+      );
+      setStore(r.storage);
+      setMsg(
+        mode === 'compact'
+          ? `Compacted ${r.affected} item(s), freeing ${kb(r.freed_bytes)}.`
+          : `Deleted ${r.affected} ignored item(s), freeing ${kb(r.freed_bytes)}.`
+      );
+      setConfirming(false);
+      onChanged();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!store) return null;
+  return (
+    <div className="keeping">
+      <p className="sub">
+        {store.total.toLocaleString()} item(s) stored · {kb(store.text_bytes)} of text ·{' '}
+        {store.compactable.toLocaleString()} compactable ({kb(store.reclaimable_bytes)})
+      </p>
+      <div className="entry-foot">
+        <button className="secondary" onClick={() => run('compact')} disabled={busy || !store.compactable}>
+          Compact judged items
+        </button>
+        <button className="secondary danger" onClick={() => setConfirming((v) => !v)} disabled={busy || !store.ignored}>
+          Delete {store.ignored} ignored
+        </button>
+        {msg && <span className="sub">{msg}</span>}
+        {err && <span className="err-text">{err}</span>}
+      </div>
+      {confirming && (
+        <div className="warnbox">
+          Deleting forgets these items. Compacting keeps the id, so an item is never shown twice; deleting means any of
+          them still carried by a feed will come back on the next scan and be offered to you again.
+          <div className="entry-foot">
+            <button className="secondary danger" onClick={() => run('delete')} disabled={busy}>
+              Delete anyway
+            </button>
+            <button className="secondary" onClick={() => setConfirming(false)}>
+              Keep them
+            </button>
+          </div>
+        </div>
+      )}
+      <p className="sub">
+        Judged items older than {store.retention_days} days are compacted nightly; change that on the Settings tab.
+      </p>
+    </div>
   );
 }
 
@@ -1369,6 +1458,7 @@ export default function App() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
   const [offerScope, setOfferScope] = useState<'open' | 'all'>('open');
+  const [offersError, setOffersError] = useState<string | null>(null);
   const [scanTick, setScanTick] = useState(0);
   const [txns, setTxns] = useState<Txn[]>([]);
   const [recentCount, setRecentCount] = useState(10);
@@ -1382,9 +1472,13 @@ export default function App() {
   }
 
   function loadOffers() {
+    setOffersError(null);
     fetchOffers(offerScope)
       .then((d) => setOffers(d.offers))
-      .catch(() => void 0);
+      .catch((e) => {
+        setOffers([]);
+        setOffersError((e as Error).message);
+      });
   }
 
   useEffect(() => {
@@ -1501,20 +1595,31 @@ export default function App() {
         <>
           <Scanner onScanned={() => setScanTick((t) => t + 1)} />
           <Inbox tick={scanTick} onTracked={loadOffers} />
+          <div className="section-head">
+            <h2>Tracked offers{offers?.length ? ` (${offers.length})` : ''}</h2>
+            <button className="secondary" onClick={() => setOfferScope((v) => (v === 'open' ? 'all' : 'open'))}>
+              {offerScope === 'open' ? 'Show dismissed' : 'Hide dismissed'}
+            </button>
+          </div>
+          {offersError && (
+            <p className="card err-text">
+              {offersError}{' '}
+              <button className="secondary" onClick={loadOffers}>
+                Try again
+              </button>
+            </p>
+          )}
           {offers ? (
             offers.length ? (
               offers.map((o) => <Offer key={o.id} o={o} onChange={loadOffers} />)
             ) : (
-              <p className="pad sub">No offers yet. Scan above, then Track one to start reading its terms.</p>
+              !offersError && (
+                <p className="pad sub">No offers yet. Scan above, then Track one to start reading its terms.</p>
+              )
             )
           ) : (
             <p className="pad sub">Loading…</p>
           )}
-          <div className="entry-foot">
-            <button className="secondary" onClick={() => setOfferScope((v) => (v === 'open' ? 'all' : 'open'))}>
-              {offerScope === 'open' ? 'Show dismissed too' : 'Hide dismissed'}
-            </button>
-          </div>
           <Sources />
         </>
       )}

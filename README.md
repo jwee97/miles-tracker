@@ -152,6 +152,14 @@ web/                  React + Vite PWA, served by the Worker as assets
 .github/workflows/    CI: typecheck, both test suites, dashboard build
 ```
 
+## Keeping it small
+
+Scanned items are compacted nightly after `FEED_RETENTION_DAYS` (180): the id
+and your decision stay, so nothing is ever shown twice, and the excerpt, terms
+and offer link go. `/prune` reports what the history costs; the Offers tab can
+compact or delete on demand. Transactions are left alone — they are a hundred
+bytes each, and the analytics, audit and eligibility all read the full history.
+
 ## Adding sources
 
 The Offers tab has a **Sources** panel: add one, edit its URL or label, switch

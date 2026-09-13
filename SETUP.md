@@ -654,6 +654,36 @@ the scanner has matched, ten to a page:
 There is also a **Sources** panel where a source's URL, label and kind can be
 edited, paused or removed without touching the bot.
 
+### Keeping the database small
+
+Scanned history is the only table that grows without you doing anything: a
+matched item stores an excerpt, the phrases it matched and the issuer link,
+which is most of its size. Two operations, deliberately named differently:
+
+- **Compact** keeps the row — its id and your decision — and drops the bulk.
+  The item is still recognised on the next scan, so it is never shown to you
+  twice. This runs nightly on judged items older than `FEED_RETENTION_DAYS`
+  (180 by default, editable on the Settings tab), and on demand from the Offers
+  tab or `/prune compact`.
+- **Delete** removes the row, and with it the memory that you saw the item.
+  Anything still carried by a feed will be re-inserted and offered again on the
+  next scan. The app says so before you confirm. `/prune delete` does the same
+  for ignored items.
+
+`/prune` with no argument reports what the history costs and what is
+reclaimable. Settings → **What grows** shows the same figures next to the
+transactions table.
+
+**Transactions are not worth pruning.** A row is a hundred-odd bytes — a date,
+an amount, a merchant string, a category — with no free text to speak of. At a
+few hundred purchases a month that is well under a megabyte a year, against a
+5 GB allowance; the Settings page projects the actual figure from your own
+data, and it is normally in the thousands of years. Summarising old months
+would save nothing measurable and would break the things that read the whole
+history: the trends tab, the reward audit, the portfolio check, and eligibility
+verdicts that turn on when a card was opened or closed. The right answer here
+is to leave them alone.
+
 ### Reviewing an offer
 
 An offer's clauses are evaluated against your card history, but some cannot be:
@@ -692,6 +722,7 @@ so the same article found through two sources is recognised as one item.
 /status                     full digest with utilization bars
 /scan                       force a scan instead of waiting for 06:00
 /offers                     offers, their clauses and rule ids
+/prune                      what the scanned history costs · compact · delete
 /rule <rule id> yes|no|na   answer a clause only you can settle
 25.40 alt lunch             logs spend today
 25.40 alt yesterday lunch   backdate it

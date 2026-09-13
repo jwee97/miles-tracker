@@ -3,7 +3,7 @@ import { buildDigest, checkAlerts } from './digest';
 import { cardRulesPrompt, extractionPrompt, HELP } from './extraction';
 import { decideRule, evaluateOffer } from './eligibility';
 import { OFFER_STATUSES, parseExtraction, saveExtraction, type OfferStatus } from './offers';
-import { ignoreFeedItem, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
+import { feedStorage, ignoreFeedItem, purgeFeedItems, retentionDays, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import type { ScanResult } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
@@ -408,6 +408,43 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           (scan.feeds_failed.length ? `\n⚠️ unreachable: ${scan.feeds_failed.join(', ')}` : '');
         await send(env, chatId, (scan.fresh.length ? `${scan.fresh.length} match(es).` : 'No new promo items.') + `\n${stats}`);
         return;
+      }
+
+      // Housekeeping for the scanner's history — the only table that grows
+      // without you doing anything.
+      case '/prune': {
+        const store = await feedStorage(env);
+        const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`;
+        const arg = args.trim().toLowerCase();
+
+        if (!arg) {
+          return send(
+            env,
+            chatId,
+            `*Scanned history*\n` +
+              `${store.total} item(s) — ${store.undecided} waiting, ${store.tracked} tracked, ${store.ignored} ignored\n` +
+              `Text stored: ${kb(store.text_bytes)}\n` +
+              `Compactable now: ${store.compactable} item(s), about ${kb(store.reclaimable_bytes)}\n\n` +
+              '`/prune compact` — drop the bulk of judged items older than ' +
+              `${store.retention_days} days, keeping the ids so they are never shown again (this runs nightly anyway)\n` +
+              '`/prune delete` — remove ignored items outright. They are then forgotten, so anything still in a feed comes back on the next scan.'
+          );
+        }
+
+        if (arg === 'compact') {
+          const r = await purgeFeedItems(env, { mode: 'compact', scope: 'decided', older_than_days: retentionDays(env) });
+          return send(env, chatId, `Compacted ${r.affected} item(s), freeing about ${kb(r.freed_bytes)}.`);
+        }
+        if (arg === 'delete') {
+          const r = await purgeFeedItems(env, { mode: 'delete', scope: 'ignored' });
+          return send(
+            env,
+            chatId,
+            `Deleted ${r.affected} ignored item(s), freeing about ${kb(r.freed_bytes)}.\n` +
+              'Those are now forgotten — if a feed still carries one, the next scan will show it again.'
+          );
+        }
+        return send(env, chatId, 'Use `/prune`, `/prune compact` or `/prune delete`.');
       }
 
       case '/recent': {

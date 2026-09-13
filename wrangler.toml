@@ -51,6 +51,10 @@ RATE_RECHECK_DAYS = "90"
 # common working figure for KrisFlyer redeemed on premium cabins; use less if
 # you redeem for economy.
 MILE_VALUE_CENTS = "1.5"
+# Keep scanned feed items in full for this many days. After that the nightly
+# job compacts judged ones: the id stays, so an item is never shown to you
+# twice, but its excerpt, matched terms and offer link are dropped. 0 disables.
+FEED_RETENTION_DAYS = "180"
 # What the card recommendation optimises for: miles, cashback, balanced (by
 # dollar value), or minspend (clear an unmet minimum before anything else).
 OBJECTIVE = "balanced"

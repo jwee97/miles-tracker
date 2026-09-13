@@ -2,6 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/migrate';
 import {
   canonicalUrl,
+  feedStorage,
+  purgeFeedItems,
+  retentionDays,
   classify,
   decodeEntities,
   extractLinks,
@@ -294,6 +297,79 @@ await ignoreFeedItem(env, stale.id);
 check(
   'ignoring is recorded',
   (db.prepare(`SELECT action FROM feed_items WHERE id = ?`).get(stale.id) as any)?.action === 'ignored',
+  ''
+);
+
+// --- housekeeping -----------------------------------------------------------
+db.prepare(`DELETE FROM feed_items`).run();
+const stored = (guid: string, action: string | null, date: string) =>
+  db
+    .prepare(
+      `INSERT INTO feed_items (guid, feed, title, link, apply_url, excerpt, terms, topic, action, published_at)
+       VALUES (?, 'MileLion', ?, ?, 'https://uob.com.sg/personal/cards/apply/ladys', ?, 'bonus miles | sign-up', 'promo', ?, ?)`
+    )
+    .run(
+      guid,
+      'A fairly long headline about a credit card sign-up bonus that runs past sixty characters',
+      `https://blog.test/${guid}`,
+      'New-to-bank customers who apply receive 30,000 bonus miles after spending S$1,000 within 60 days.',
+      action,
+      date
+    );
+
+stored('old-ignored', 'ignored', '2025-01-05T00:00:00Z');
+stored('old-tracked', 'tracked', '2025-01-06T00:00:00Z');
+stored('new-ignored', 'ignored', new Date().toISOString());
+stored('undecided', null, '2025-01-07T00:00:00Z');
+
+const store = await feedStorage(env);
+check('counts what is stored', store.total === 4, String(store.total));
+check('split by what you decided', store.ignored === 2 && store.tracked === 1 && store.undecided === 1, JSON.stringify(store));
+check('measures the text it holds', store.text_bytes > 600, String(store.text_bytes));
+check('and what is compactable', store.compactable === 2, String(store.compactable));
+check('which is worth something', store.reclaimable_bytes > 200, String(store.reclaimable_bytes));
+check('the default retention is 180 days', retentionDays(env) === 180, String(retentionDays(env)));
+check('and it is configurable', retentionDays({ ...env, FEED_RETENTION_DAYS: '30' } as any) === 30, '');
+check('a nonsense setting falls back', retentionDays({ ...env, FEED_RETENTION_DAYS: 'soon' } as any) === 180, '');
+
+const compacted = await purgeFeedItems(env, { mode: 'compact', scope: 'decided', older_than_days: 180 });
+check('compacting touches only the old judged ones', compacted.affected === 2, String(compacted.affected));
+check('and frees what it said it would', compacted.freed_bytes > 200, String(compacted.freed_bytes));
+
+const row = db.prepare(`SELECT * FROM feed_items WHERE guid = 'old-ignored'`).get() as any;
+check('the row survives', !!row, '');
+check('so the item is never offered again', row.action === 'ignored', String(row.action));
+check('the excerpt is gone', row.excerpt === null, String(row.excerpt));
+check('the matched terms are gone', row.terms === null, String(row.terms));
+check('the offer link is gone', row.apply_url === null, String(row.apply_url));
+check('the title is trimmed, not emptied', row.title.length === 60, String(row.title?.length));
+const untouched = db.prepare(`SELECT * FROM feed_items WHERE guid = 'undecided'`).get() as any;
+check('an undecided item is left alone', untouched.excerpt !== null, '');
+const recent = db.prepare(`SELECT * FROM feed_items WHERE guid = 'new-ignored'`).get() as any;
+check('and so is a recent one', recent.excerpt !== null, '');
+
+check('compacting twice frees nothing more', (await purgeFeedItems(env, { mode: 'compact', scope: 'decided', older_than_days: 180 })).freed_bytes === 0, '');
+
+const deleted = await purgeFeedItems(env, { mode: 'delete', scope: 'ignored' });
+check('deleting removes every ignored item', deleted.affected === 2, String(deleted.affected));
+check('leaving the tracked one', !!db.prepare(`SELECT 1 FROM feed_items WHERE guid = 'old-tracked'`).get(), '');
+check('and the undecided one', !!db.prepare(`SELECT 1 FROM feed_items WHERE guid = 'undecided'`).get(), '');
+
+// The trade-off deleting makes: the memory goes with the row.
+// The rss feed is already registered above; only the page and dead sources
+// are paused, so this pass reads one source.
+db.prepare(`UPDATE feeds SET active = 0 WHERE url <> 'https://feeds.test/rss'`).run();
+db.prepare(`DELETE FROM feed_items`).run();
+const firstPass = await scanFeedsDetailed(env, { deep: false });
+const ids = firstPass.fresh.map((f) => f.id);
+await purgeFeedItems(env, { mode: 'compact', scope: 'decided', older_than_days: 0, ids });
+db.prepare(`UPDATE feed_items SET action = 'ignored'`).run();
+await purgeFeedItems(env, { mode: 'compact', scope: 'ignored', older_than_days: 0 });
+check('a compacted item is not re-notified', (await scanFeedsDetailed(env, { deep: false })).fresh.length === 0, '');
+await purgeFeedItems(env, { mode: 'delete', scope: 'ignored' });
+check(
+  'but a deleted one comes back, as documented',
+  (await scanFeedsDetailed(env, { deep: false })).fresh.length > 0,
   ''
 );
 

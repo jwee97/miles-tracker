@@ -26,7 +26,13 @@ async function get<T>(path: string): Promise<T> {
     clearToken();
     throw new Error('Link expired — send /app to the bot for a new one.');
   }
-  if (!res.ok) throw new Error(`Request failed (${res.status})`);
+  if (!res.ok) {
+    // The Worker explains itself on failure — "the database is behind the
+    // deployed code, send /migrate" — and throwing the status alone threw that
+    // away, leaving a screen stuck on "Loading…" with no way to find out why.
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `Request failed (${res.status})`);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -347,6 +353,11 @@ export interface SettingRow {
 }
 
 export interface Usage {
+  storage: {
+    feed_items: { rows: number; text_bytes: number; reclaimable_bytes: number; compactable: number; retention_days: number };
+    transactions: { rows: number; text_bytes: number; bytes_per_row: number; oldest: string | null };
+    transactions_years_to_1pct: number | null;
+  };
   db: {
     size_bytes: number | null;
     size_source: string;
@@ -540,6 +551,26 @@ export const fetchFeed = (opts: { state?: FeedState; range?: RangeName; page?: n
 /** Runs the same scan the cron runs. `url` parses a single page instead. */
 export const runScan = (body: { deep?: boolean; url?: string; push?: boolean } = {}) =>
   post<ScanSummary>('/api/scan', body);
+
+export interface FeedStorage {
+  total: number;
+  undecided: number;
+  tracked: number;
+  ignored: number;
+  text_bytes: number;
+  reclaimable_bytes: number;
+  compactable: number;
+  retention_days: number;
+}
+
+export const fetchFeedStorage = () => get<FeedStorage>('/api/feed/storage');
+
+/** `compact` keeps the row and drops its bulk; `delete` forgets it entirely. */
+export const purgeFeed = (body: {
+  mode: 'compact' | 'delete';
+  scope: 'ignored' | 'decided';
+  older_than_days?: number;
+}) => post<{ mode: string; affected: number; freed_bytes: number; storage: FeedStorage }>('/api/feed/purge', body);
 
 /** Track or ignore one item or many — one request either way. */
 export const feedActionMany = (ids: number[], action: 'track' | 'ignore') =>

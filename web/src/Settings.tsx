@@ -73,7 +73,9 @@ export default function Settings() {
 
   useEffect(() => {
     fetchSettings().then((d) => setRows(d.settings)).catch((e) => setMsg({ kind: 'err', text: e.message }));
-    fetchUsage().then(setUsage).catch(() => void 0);
+    fetchUsage()
+      .then(setUsage)
+      .catch((e) => setMsg({ kind: 'err', text: (e as Error).message }));
   }, []);
 
   async function save(key: string, value: string | null) {
@@ -152,6 +154,8 @@ export default function Settings() {
             </div>
           </section>
 
+          <StorageNotes usage={usage} />
+
           <section className="card">
             <header>
               <div>
@@ -184,5 +188,47 @@ export default function Settings() {
         </>
       )}
     </>
+  );
+}
+
+/**
+ * Which tables actually grow, and how fast. The honest answer to "should I
+ * delete old transactions" is no — this shows why, in this database's own
+ * numbers rather than as an assertion.
+ */
+function StorageNotes({ usage }: { usage: Usage }) {
+  const { feed_items: feed, transactions: tx, transactions_years_to_1pct: years } = usage.storage;
+  return (
+    <section className="card">
+      <header>
+        <div>
+          <h2>What grows</h2>
+          <p className="sub">Only two tables grow on their own, and not at the same rate</p>
+        </div>
+      </header>
+      <ul className="notes">
+        <li>
+          <strong>Scanned items</strong> — {feed.rows.toLocaleString()} rows, {bytes(feed.text_bytes)} of text. Each
+          carries an excerpt and the phrases it matched, which is most of its size. Judged items older than{' '}
+          {feed.retention_days} days are compacted nightly; {feed.compactable.toLocaleString()} are due now, worth about{' '}
+          {bytes(feed.reclaimable_bytes)}. The Offers tab can do it on demand.
+        </li>
+        <li>
+          <strong>Transactions</strong> — {tx.rows.toLocaleString()} rows at about {tx.bytes_per_row} bytes each,{' '}
+          {bytes(tx.text_bytes)} in total{tx.oldest ? `, back to ${tx.oldest}` : ''}.
+          {years != null && years > 0 ? (
+            <>
+              {' '}
+              At the rate you are logging, transactions would need{' '}
+              <strong>{years < 1000 ? Math.round(years).toLocaleString() : '1,000+'} years</strong> to reach 1% of the
+              5 GB allowance. Deleting or summarising old ones would save nothing worth having and would break the
+              trends, the reward audit and the portfolio check, all of which read the full history.
+            </>
+          ) : (
+            ' Too few rows yet to project a growth rate, but a transaction is a hundred-odd bytes — the history is not what fills a database.'
+          )}
+        </li>
+      </ul>
+    </section>
   );
 }

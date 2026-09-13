@@ -173,6 +173,7 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /feeds — list sources
 /addfeed <url>|<label>|<rss|page>
 
+/prune — what the scanned history costs, and clean it up
 /app — open the dashboard
 /migrate — bring the database up to date after a deploy
 /seed — load the default feeds and transfer routes`;

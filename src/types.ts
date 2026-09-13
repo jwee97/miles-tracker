@@ -11,6 +11,8 @@ export interface Env {
   RATE_RECHECK_DAYS: string;
   MILE_VALUE_CENTS: string;
   OBJECTIVE: string;
+  /** Keep scanned items in full for this many days; compact them after. */
+  FEED_RETENTION_DAYS: string;
 }
 
 export interface Card {

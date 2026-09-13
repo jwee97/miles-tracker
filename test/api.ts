@@ -719,5 +719,37 @@ db.prepare(`INSERT INTO offers (id,status,source_url,source_title) VALUES (50,'p
   check('removing it twice is a 404', (await authed('/api/feeds/delete', { url: 'https://example.com/rss' })).status === 404, '');
 }
 
+// --- housekeeping over the API ----------------------------------------------
+{
+  const store = (await (await authed('/api/feed/storage')).json()) as any;
+  check('storage is reported', typeof store.text_bytes === 'number' && store.total > 0, JSON.stringify(store).slice(0, 120));
+  check('with the retention window in force', store.retention_days === 180, String(store.retention_days));
+
+  const bad = await authed('/api/feed/purge', { mode: 'vapourise', scope: 'ignored' });
+  check('an unknown mode is refused', bad.status === 400, String(bad.status));
+  const badScope = await authed('/api/feed/purge', { mode: 'delete', scope: 'everything' });
+  check('and an unknown scope', badScope.status === 400, String(badScope.status));
+
+  const before = (db.prepare(`SELECT COUNT(*) c FROM feed_items`).get() as any).c;
+  const res = await authed('/api/feed/purge', { mode: 'delete', scope: 'ignored' });
+  const body = (await res.json()) as any;
+  check('ignored items can be deleted from the app', res.status === 200 && body.affected > 0, JSON.stringify(body).slice(0, 120));
+  const after = (db.prepare(`SELECT COUNT(*) c FROM feed_items`).get() as any).c;
+  check('and the rows are actually gone', after === before - body.affected, `${before} -> ${after}`);
+  check('the response carries fresh storage figures', body.storage.ignored === 0, JSON.stringify(body.storage));
+}
+
+// --- usage explains where the space goes ------------------------------------
+{
+  const usage = (await (await authed('/api/usage')).json()) as any;
+  check('usage breaks storage down by table', !!usage.storage?.feed_items && !!usage.storage?.transactions, JSON.stringify(usage.storage ?? {}).slice(0, 120));
+  check('with a per-transaction size', usage.storage.transactions.bytes_per_row > 0, String(usage.storage.transactions.bytes_per_row));
+  check(
+    'and a projection rather than a guess',
+    usage.storage.transactions_years_to_1pct === null || usage.storage.transactions_years_to_1pct > 0,
+    String(usage.storage.transactions_years_to_1pct)
+  );
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

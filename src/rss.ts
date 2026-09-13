@@ -608,3 +608,141 @@ export async function trackFeedItem(env: Env, id: number): Promise<number | null
 export async function ignoreFeedItem(env: Env, id: number): Promise<void> {
   await env.DB.prepare(`UPDATE feed_items SET action = 'ignored' WHERE id = ?`).bind(id).run();
 }
+
+// --- housekeeping ----------------------------------------------------------
+
+export interface FeedStorage {
+  total: number;
+  undecided: number;
+  tracked: number;
+  ignored: number;
+  /** Bytes of text actually stored in feed_items — the part that grows. */
+  text_bytes: number;
+  /** What compacting every decided item older than the retention window frees. */
+  reclaimable_bytes: number;
+  compactable: number;
+  retention_days: number;
+}
+
+const TEXT_BYTES = `SUM(
+  LENGTH(COALESCE(guid,'')) + LENGTH(COALESCE(feed,'')) + LENGTH(COALESCE(title,'')) +
+  LENGTH(COALESCE(link,'')) + LENGTH(COALESCE(apply_url,'')) + LENGTH(COALESCE(excerpt,'')) +
+  LENGTH(COALESCE(terms,''))
+)`;
+
+/** What the scanner's history costs, and what could be given back. */
+export async function feedStorage(env: Env): Promise<FeedStorage> {
+  const days = retentionDays(env);
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN action IS NULL THEN 1 ELSE 0 END) AS undecided,
+            SUM(CASE WHEN action = 'tracked' THEN 1 ELSE 0 END) AS tracked,
+            SUM(CASE WHEN action = 'ignored' THEN 1 ELSE 0 END) AS ignored,
+            ${TEXT_BYTES} AS text_bytes
+     FROM feed_items`
+  ).first<any>();
+
+  // Compacting keeps guid, feed and a short title; everything else goes.
+  const spare = await env.DB.prepare(
+    `SELECT COUNT(*) AS n,
+            SUM(LENGTH(COALESCE(excerpt,'')) + LENGTH(COALESCE(terms,'')) + LENGTH(COALESCE(apply_url,''))
+                + MAX(LENGTH(COALESCE(title,'')) - 60, 0)) AS bytes
+     FROM feed_items
+     WHERE action IS NOT NULL
+       AND DATE(COALESCE(published_at, seen_at)) < DATE('now', ?)
+       AND (excerpt IS NOT NULL OR terms IS NOT NULL OR apply_url IS NOT NULL OR LENGTH(COALESCE(title,'')) > 60)`
+  )
+    .bind(`-${days} days`)
+    .first<any>();
+
+  return {
+    total: row?.total ?? 0,
+    undecided: row?.undecided ?? 0,
+    tracked: row?.tracked ?? 0,
+    ignored: row?.ignored ?? 0,
+    text_bytes: row?.text_bytes ?? 0,
+    reclaimable_bytes: spare?.bytes ?? 0,
+    compactable: spare?.n ?? 0,
+    retention_days: days,
+  };
+}
+
+export function retentionDays(env: Env): number {
+  const n = parseInt(env.FEED_RETENTION_DAYS ?? '', 10);
+  return Number.isFinite(n) && n >= 0 ? n : 180;
+}
+
+export interface PurgeOptions {
+  /** `compact` keeps the row and drops its bulk; `delete` removes it outright. */
+  mode: 'compact' | 'delete';
+  /** Which rows: judged items, ignored ones only, or specific ids. */
+  scope: 'ignored' | 'decided';
+  older_than_days?: number;
+  ids?: number[];
+}
+
+export interface PurgeResult {
+  mode: 'compact' | 'delete';
+  affected: number;
+  bytes_before: number;
+  bytes_after: number;
+  freed_bytes: number;
+}
+
+/**
+ * Compacting strips the bulk — excerpt, matched terms, the issuer link and a
+ * long title — but keeps guid and action, so a compacted item is still
+ * recognised on the next scan and never shown again.
+ *
+ * Deleting removes the row entirely, which also removes that memory: anything
+ * still present in a feed will be re-inserted and re-notified. That is the
+ * trade, and the caller is told about it rather than finding out later.
+ */
+export async function purgeFeedItems(env: Env, opts: PurgeOptions): Promise<PurgeResult> {
+  const where: string[] = [];
+  const binds: unknown[] = [];
+
+  if (opts.ids?.length) {
+    where.push(`id IN (${opts.ids.map(() => '?').join(',')})`);
+    binds.push(...opts.ids);
+  }
+  where.push(opts.scope === 'ignored' ? `action = 'ignored'` : `action IS NOT NULL`);
+  if (opts.older_than_days && opts.older_than_days > 0) {
+    where.push(`DATE(COALESCE(published_at, seen_at)) < DATE('now', ?)`);
+    binds.push(`-${Math.round(opts.older_than_days)} days`);
+  }
+  const clause = `WHERE ${where.join(' AND ')}`;
+
+  const before = await env.DB.prepare(`SELECT COUNT(*) AS n, ${TEXT_BYTES} AS bytes FROM feed_items ${clause}`)
+    .bind(...binds)
+    .first<any>();
+  const bytesBefore = before?.bytes ?? 0;
+
+  let affected = 0;
+  if (opts.mode === 'delete') {
+    const res = await env.DB.prepare(`DELETE FROM feed_items ${clause}`).bind(...binds).run();
+    affected = res.meta.changes ?? 0;
+    return { mode: 'delete', affected, bytes_before: bytesBefore, bytes_after: 0, freed_bytes: bytesBefore };
+  }
+
+  const res = await env.DB.prepare(
+    `UPDATE feed_items
+        SET excerpt = NULL, terms = NULL, apply_url = NULL, title = SUBSTR(COALESCE(title,''), 1, 60)
+      ${clause}`
+  )
+    .bind(...binds)
+    .run();
+  affected = res.meta.changes ?? 0;
+
+  const after = await env.DB.prepare(`SELECT ${TEXT_BYTES} AS bytes FROM feed_items ${clause}`)
+    .bind(...binds)
+    .first<any>();
+  const bytesAfter = after?.bytes ?? 0;
+  return {
+    mode: 'compact',
+    affected,
+    bytes_before: bytesBefore,
+    bytes_after: bytesAfter,
+    freed_bytes: Math.max(0, bytesBefore - bytesAfter),
+  };
+}

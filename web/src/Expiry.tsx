@@ -13,12 +13,21 @@ function urgency(days: number | null): { cls: string; label: string } {
 export default function ExpiryTab() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [transfers, setTransfers] = useState<any[]>([]);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchExpiry().then((d) => setRows(d.tranches)).catch(() => setRows([]));
+    // An empty list and a failed request look identical on screen unless the
+    // error is kept; "no balances" is a very different message from "broken".
+    fetchExpiry()
+      .then((d) => setRows(d.tranches))
+      .catch((e) => {
+        setRows([]);
+        setErr((e as Error).message);
+      });
     fetchTransfers().then((d) => setTransfers(d.transfers)).catch(() => void 0);
   }, []);
 
+  if (err) return <p className="pad error">{err}</p>;
   if (!rows) return <p className="pad sub">Loading…</p>;
   if (!rows.length)
     return (

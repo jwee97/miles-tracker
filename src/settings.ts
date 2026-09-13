@@ -1,3 +1,5 @@
+import { feedStorage } from './rss';
+import { today } from './spend';
 import type { Env } from './types';
 
 /**
@@ -46,6 +48,13 @@ export const EDITABLE = [
     label: 'Posting lag',
     unit: 'days',
     help: 'Unconfirmed spend this close to a window’s end is reported as at risk of posting into the next one.',
+    kind: 'number' as const,
+  },
+  {
+    key: 'FEED_RETENTION_DAYS',
+    label: 'Keep scanned items in full',
+    unit: 'days',
+    help: 'After this, a judged item is compacted each night: its excerpt, matched terms and offer link are dropped, keeping the id that stops it being shown to you again. 0 disables the nightly compaction.',
     kind: 'number' as const,
   },
   {
@@ -130,6 +139,13 @@ export interface Usage {
     rows: { table: string; count: number }[];
     total_rows: number;
   };
+  storage: {
+    /** Text bytes per table, for the two that actually grow. */
+    feed_items: { rows: number; text_bytes: number; reclaimable_bytes: number; compactable: number; retention_days: number };
+    transactions: { rows: number; text_bytes: number; bytes_per_row: number; oldest: string | null };
+    /** Years of transactions at the current rate before 1% of the allowance. */
+    transactions_years_to_1pct: number | null;
+  };
   free_tier: { label: string; limit: string; note: string }[];
   worker: { available: boolean; note: string; requests_today?: number; cpu_ms_median?: number };
 }
@@ -190,7 +206,45 @@ export async function readUsage(env: Env): Promise<Usage> {
     source = 'estimated';
   }
 
+  // Where the space actually goes. Only two tables grow without bound, and
+  // they grow at wildly different rates, so both are measured rather than
+  // guessed at: a scanned article carries an excerpt, a transaction does not.
+  const feed = await feedStorage(env);
+  const tx = await env.DB.prepare(
+    `SELECT COUNT(*) AS n,
+            SUM(LENGTH(COALESCE(merchant,'')) + LENGTH(COALESCE(category,'')) + LENGTH(COALESCE(category_source,''))
+                + LENGTH(COALESCE(occurred_at,'')) + LENGTH(COALESCE(posted_at,'')) + LENGTH(COALESCE(mcc,''))
+                + LENGTH(COALESCE(channel,'')) + LENGTH(COALESCE(reward_note,'')) + LENGTH(COALESCE(source,''))
+                + 40) AS bytes,
+            MIN(COALESCE(posted_at, occurred_at)) AS oldest
+     FROM transactions`
+  ).first<any>();
+
+  const txRows = tx?.n ?? 0;
+  const txBytes = tx?.bytes ?? 0;
+  const perRow = txRows ? Math.round(txBytes / txRows) : 0;
+
+  // How long before transactions alone reach 1% of the 5 GB allowance, at the
+  // rate this database is actually filling up.
+  let yearsTo1pct: number | null = null;
+  if (txRows > 20 && tx?.oldest && perRow > 0) {
+    const days = Math.max(1, (Date.parse(today(env)) - Date.parse(tx.oldest)) / 86_400_000);
+    const perYear = (txRows / days) * 365 * perRow;
+    if (perYear > 0) yearsTo1pct = (D1_LIMIT * 0.01) / perYear;
+  }
+
   return {
+    storage: {
+      feed_items: {
+        rows: feed.total,
+        text_bytes: feed.text_bytes,
+        reclaimable_bytes: feed.reclaimable_bytes,
+        compactable: feed.compactable,
+        retention_days: feed.retention_days,
+      },
+      transactions: { rows: txRows, text_bytes: txBytes, bytes_per_row: perRow, oldest: tx?.oldest ?? null },
+      transactions_years_to_1pct: yearsTo1pct,
+    },
     db: {
       size_bytes: sizeBytes,
       size_source: source,

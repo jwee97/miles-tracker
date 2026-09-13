@@ -63,14 +63,19 @@ function Row({ r, onSaved }: { r: AuditRow; onSaved: () => void }) {
 
 export default function Audit() {
   const [report, setReport] = useState<AuditReport | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
   function load() {
-    fetchAudit(from && to ? { from, to } : {}).then(setReport).catch(() => void 0);
+    setErr(null);
+    fetchAudit(from && to ? { from, to } : {})
+      .then(setReport)
+      .catch((e) => setErr((e as Error).message));
   }
   useEffect(load, [from, to]);
 
+  if (err) return <p className="pad error">{err}</p>;
   if (!report) return <p className="pad sub">Loading…</p>;
   const t = report.totals;
 

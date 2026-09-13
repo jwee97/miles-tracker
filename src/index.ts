@@ -5,7 +5,7 @@ import { extractionPrompt } from './extraction';
 import { OFFER_STATUSES, parseExtraction, saveExtraction, type OfferStatus } from './offers';
 import { canonicalUrl } from './rss';
 import { handleUpdate, pushFeedItem, pushFeedMatches, send } from './telegram';
-import { ignoreFeedItem, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
+import { feedStorage, ignoreFeedItem, purgeFeedItems, retentionDays, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import {
   activeCards,
   addMonths,
@@ -671,6 +671,36 @@ export default {
           return json({ ok: true });
         }
 
+        // What the scanner's history costs, and what can be given back.
+        if (url.pathname === '/api/feed/storage') {
+          return json(await feedStorage(env));
+        }
+
+        // Two different things, deliberately named differently: compacting
+        // keeps the row (so the item is never shown to you twice) and drops its
+        // bulk; deleting forgets it, and a feed that still carries it will
+        // surface it again on the next scan.
+        if (url.pathname === '/api/feed/purge' && req.method === 'POST') {
+          const body = (await req.json()) as {
+            mode?: string;
+            scope?: string;
+            older_than_days?: number;
+            ids?: number[];
+          };
+          if (!['compact', 'delete'].includes(body.mode ?? ''))
+            return json({ error: "mode must be 'compact' or 'delete'" }, 400);
+          if (!['ignored', 'decided'].includes(body.scope ?? ''))
+            return json({ error: "scope must be 'ignored' or 'decided'" }, 400);
+
+          const result = await purgeFeedItems(env, {
+            mode: body.mode as 'compact' | 'delete',
+            scope: body.scope as 'ignored' | 'decided',
+            older_than_days: body.older_than_days,
+            ids: body.ids,
+          });
+          return json({ ...result, storage: await feedStorage(env) });
+        }
+
         // --- sources the scanner reads -------------------------------------
         if (url.pathname === '/api/feeds') {
           const { results } = await env.DB.prepare(
@@ -944,6 +974,13 @@ export default {
           await pushFeedMatches(env, env.OWNER_CHAT_ID);
           const review = await ratesReview(env, { quiet: true });
           if (review) await send(env, env.OWNER_CHAT_ID, review);
+
+          // Scanned history is the only table that grows on its own. Judged
+          // items older than the retention window keep their id — so they are
+          // never shown twice — and lose their bulk. Silent by design: it is
+          // housekeeping, not news.
+          const days = retentionDays(env);
+          if (days > 0) await purgeFeedItems(env, { mode: 'compact', scope: 'decided', older_than_days: days });
         } else {
           await send(env, env.OWNER_CHAT_ID, await buildDigest(env));
           for (const alert of await checkAlerts(env)) await send(env, env.OWNER_CHAT_ID, alert);
