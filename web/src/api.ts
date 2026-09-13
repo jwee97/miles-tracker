@@ -333,6 +333,89 @@ export const saveSetting = (key: string, value: string | null) =>
   post<{ ok: true; settings: SettingRow[] }>('/api/settings', { key, value });
 export const fetchUsage = () => get<Usage>('/api/usage');
 
+export interface RuleStep { check: string; pass: boolean | null; detail: string }
+
+export interface Evaluation {
+  card: { id: number; product: string; nickname: string };
+  rule: { category: string; mpd: number; reward_type: string } | null;
+  excluded: boolean;
+  exclusion_reason: string | null;
+  reward_type: 'miles' | 'cashback';
+  bonus_rate: number;
+  base_rate: number;
+  cap_cents: number | null;
+  cap_used_cents: number;
+  headroom_cents: number | null;
+  bonus_portion_cents: number;
+  base_portion_cents: number;
+  miles: number;
+  cashback_cents: number;
+  value_cents: number;
+  effective_rate: number;
+  min_spend_short_cents: number;
+  min_spend_days_left: number | null;
+  trace: RuleStep[];
+}
+
+export interface MerchantGuess {
+  query: string;
+  merchant: string | null;
+  mcc: string | null;
+  description: string | null;
+  category: string | null;
+  channel: string | null;
+  confidence: 'confirmed' | 'guess' | 'unknown';
+  source: string | null;
+  alternatives: { merchant: string; mcc: string; description: string | null }[];
+}
+
+export interface Recommendation {
+  purchase: { amount_cents: number | null; mcc?: string | null; category?: string | null; channel?: string | null };
+  merchant: MerchantGuess | null;
+  objective: string;
+  picks: Evaluation[];
+  split_advice: { bonus_cents: number; remainder_cents: number; use: string; earns: string } | null;
+}
+
+export const fetchRecommend = (p: { merchant?: string; amount?: string; mcc?: string; category?: string; channel?: string; objective?: string }) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) if (v) q.set(k, v);
+  return get<Recommendation>(`/api/recommend?${q}`);
+};
+
+export const confirmMcc = (merchant: string, mcc: string, channel?: string) =>
+  post<{ ok: true; merchant: MerchantGuess }>('/api/mcc/merchant', { merchant, mcc, channel, confirmed: true });
+
+export interface AuditRow {
+  id: number; occurred_at: string; posted_at: string | null; merchant: string | null;
+  category: string | null; mcc: string | null; amount_cents: number; card: string;
+  expected_miles: number; expected_cashback_cents: number;
+  actual_miles: number | null; actual_cashback_cents: number | null;
+  shortfall_miles: number; shortfall_cents: number;
+  status: 'matched' | 'short' | 'over' | 'unrecorded'; reason: string | null;
+}
+
+export interface AuditReport {
+  period: { start: string; end: string; label: string };
+  totals: {
+    expected_miles: number; actual_miles: number;
+    expected_cashback_cents: number; actual_cashback_cents: number;
+    shortfall_miles: number; shortfall_cents: number;
+    checked: number; unrecorded: number;
+  };
+  rows: AuditRow[];
+  findings: string[];
+}
+
+export const fetchAudit = (p: { from?: string; to?: string; card_id?: string } = {}) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) if (v) q.set(k, v);
+  return get<AuditReport>(`/api/audit?${q}`);
+};
+
+export const recordCredited = (id: number, miles: number | null, cashback: string | null) =>
+  post<{ ok: true }>('/api/tx/credited', { id, miles, cashback });
+
 export const fetchExpiry = () => get<{ tranches: Expiry[] }>('/api/expiry');
 export const fetchReview = () => get<{ ready: ReviewRow[]; waiting: ReviewRow[] }>('/api/review');
 export const fetchTransfers = () => get<{ transfers: any[] }>('/api/transfers');

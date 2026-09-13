@@ -21,6 +21,13 @@ export const EDITABLE = [
     kind: 'number' as const,
   },
   {
+    key: 'OBJECTIVE',
+    label: 'Optimise for',
+    unit: 'miles · cashback · balanced · minspend',
+    help: 'What the card recommendation ranks by. balanced compares everything in dollars; minspend puts a card with an unmet minimum first, which can be worth more than a better rate.',
+    kind: 'text' as const,
+  },
+  {
     key: 'UTIL_THRESHOLDS',
     label: 'Utilization alerts',
     unit: 'percent, comma separated',
@@ -95,6 +102,9 @@ export async function writeSetting(env: Env, key: string, value: string | null):
   }
   if (key === 'UTIL_THRESHOLDS' && !/^\s*\d{1,3}(\s*,\s*\d{1,3})*\s*$/.test(value)) {
     return { ok: false, error: 'Thresholds must be whole percentages, comma separated' };
+  }
+  if (key === 'OBJECTIVE' && !['miles', 'cashback', 'balanced', 'minspend'].includes(value.trim())) {
+    return { ok: false, error: 'Objective must be miles, cashback, balanced or minspend' };
   }
   if (key === 'TZ_OFFSET_MINUTES' && Math.abs(Number(value)) > 900) {
     return { ok: false, error: 'Offset must be within ±900 minutes' };

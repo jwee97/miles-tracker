@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import Advisor from './Advisor';
+import Audit from './Audit';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
 import ExpiryTab from './Expiry';
@@ -675,7 +677,7 @@ function PointsTab() {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<'cards' | 'ledger' | 'trends' | 'points' | 'expiry' | 'offers' | 'settings'>('cards');
+  const [tab, setTab] = useState<'use' | 'cards' | 'ledger' | 'trends' | 'audit' | 'points' | 'expiry' | 'offers' | 'settings'>('use');
   const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
@@ -722,11 +724,14 @@ export default function App() {
     refresh();
   }
 
-  if (error) return <main className="pad"><p className="error">{error}</p></main>;
+  if (error && tab !== 'use') return <main className="pad"><p className="error">{error}</p></main>;
 
   return (
     <main>
       <nav className="tabs">
+        <button className={tab === 'use' ? 'on' : ''} onClick={() => setTab('use')}>
+          Use
+        </button>
         <button className={tab === 'cards' ? 'on' : ''} onClick={() => setTab('cards')}>
           Cards
         </button>
@@ -735,6 +740,9 @@ export default function App() {
         </button>
         <button className={tab === 'trends' ? 'on' : ''} onClick={() => setTab('trends')}>
           Trends
+        </button>
+        <button className={tab === 'audit' ? 'on' : ''} onClick={() => setTab('audit')}>
+          Audit
         </button>
         <button className={tab === 'points' ? 'on' : ''} onClick={() => setTab('points')}>
           Points
@@ -778,7 +786,11 @@ export default function App() {
           <p className="pad sub">Loading…</p>
         ))}
 
+      {tab === 'use' && <Advisor />}
+
       {tab === 'ledger' && <Ledger />}
+
+      {tab === 'audit' && <Audit />}
 
       {tab === 'trends' && <Analytics />}
 

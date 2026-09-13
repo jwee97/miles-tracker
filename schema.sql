@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS transactions (
   category     TEXT,                             -- matches earn_rules.category
   category_source TEXT,                          -- manual | learned | null
   needs_review INTEGER NOT NULL DEFAULT 0,       -- category unconfirmed
+  mcc          TEXT,                             -- merchant category code, if known
+  channel      TEXT,                             -- online | offline | contactless
+  expected_miles INTEGER,                        -- what the engine predicted
+  expected_cashback_cents INTEGER,
+  actual_miles INTEGER,                          -- what the bank actually credited
+  actual_cashback_cents INTEGER,
+  reward_note  TEXT,
   source       TEXT    NOT NULL DEFAULT 'manual',-- manual | sms | import
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -107,6 +114,36 @@ CREATE TABLE IF NOT EXISTS alerts_sent (
   sent_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS mcc_codes (
+  code        TEXT PRIMARY KEY,          -- '5812'
+  description TEXT NOT NULL,             -- 'Eating places and restaurants'
+  category    TEXT NOT NULL              -- maps to earn_rules.category
+);
+
+-- Which MCC a merchant is likely to present. Likely, not certain: the code is
+-- set by the acquirer, varies by outlet and changes without notice, so every
+-- row carries where it came from and how much to trust it.
+CREATE TABLE IF NOT EXISTS merchant_mcc (
+  merchant   TEXT PRIMARY KEY,           -- lowercased
+  mcc        TEXT NOT NULL,
+  channel    TEXT,                       -- online | offline | contactless | null
+  source     TEXT NOT NULL DEFAULT 'seed', -- seed | user | statement
+  confidence TEXT NOT NULL DEFAULT 'guess', -- guess | confirmed
+  note       TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- MCCs that earn nothing. card_id null means it applies to every card.
+CREATE TABLE IF NOT EXISTS exclusions (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id INTEGER REFERENCES cards(id) ON DELETE CASCADE,
+  mcc     TEXT NOT NULL,
+  reason  TEXT,
+  source  TEXT NOT NULL DEFAULT 'seed',
+  active  INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS excl_card ON exclusions(card_id, active);
+
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
 
 -- Executed point transfers, so a balance reflects what actually moved.
@@ -183,6 +220,10 @@ CREATE TABLE IF NOT EXISTS earn_rules (
   category    TEXT    NOT NULL,
   mpd         REAL    NOT NULL,                -- miles per dollar, or percent if cashback
   reward_type TEXT    NOT NULL DEFAULT 'miles', -- miles | cashback
+  mcc_include TEXT,                             -- CSV of MCCs, null = any
+  mcc_exclude TEXT,                             -- CSV of MCCs that never match
+  channel     TEXT,                             -- online | offline | contactless | null = any
+  min_txn_cents INTEGER,                        -- rule needs a transaction this large
   program_key TEXT    REFERENCES programs(key),
   cap_cents   INTEGER,                         -- bonus rate applies below this
   cap_group   TEXT,                            -- rules sharing one cap

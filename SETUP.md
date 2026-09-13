@@ -330,6 +330,64 @@ when you change.
 
 ## Which card to use
 
+The **Use** tab is the front door: type a merchant, optionally an amount, and
+it ranks your cards for that purchase.
+
+```
+Din Tai Fung
+Likely MCC 5812 — Eating places and restaurants   [guess]
+
+🥇 UOB Lady's            620 mi
+   3.1 mpd · $150.00 bonus allowance left
+   $150.00 at the bonus rate · $50.00 at the base rate
+   Why?
+
+🥈 Citi PremierMiles     280 mi
+   1.4 mpd
+```
+
+Tap **Why?** on any card and it shows the reasoning step by step — exclusions
+checked, which rule matched, how much cap is left, where the purchase was split.
+A number you cannot interrogate is a number you cannot act on.
+
+When the bonus runs out part-way it says what to do with the rest: put the
+first $150 on one card and the remaining $50 on another that beats its base
+rate.
+
+**MCC handling.** A merchant's code is set by the acquirer, differs between
+outlets of one brand and changes without notice, so every lookup says whether
+it is a *guess* or *confirmed*. Read the real code off a posted transaction,
+enter it once, and it is used everywhere after that.
+
+**Exclusions** are MCCs that earn nothing — insurance, tax, government,
+education, quasi-cash and the rest are seeded as a starting point, globally and
+per card. Check your own terms: exclusion lists differ by card and change.
+
+**Objectives** change the ranking: balanced compares everything in dollars,
+miles refuses to hand you a cashback card, cashback the reverse, and *hit
+minimums* puts a card with an unmet minimum first — which is often worth more
+than a better rate.
+
+## Reward audit
+
+The **Audit** tab answers the question nothing else does: *did the bank
+actually pay what the rules said?* Every transaction records what the engine
+expected at the time; type in what was credited and the audit reconciles them.
+
+```
+Reward audit · 2026-08-01 → 2026-08-31
+460 short
+
+⚠ $115.00 at Agoda — expected 460 miles, received 0
+  No bonus credited. MCC 4722 may be excluded on this card, or the cap
+  was already used.
+```
+
+Expected figures are recorded at entry rather than recomputed later, because a
+cap means the rate that applied then is not the rate that applies now.
+
+## Which card to use (category form)
+
 ```
 /which                    the best card for every category
 /which groceries 120      ranked, with what each actually returns

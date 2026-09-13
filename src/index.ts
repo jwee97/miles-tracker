@@ -16,6 +16,8 @@ import {
 import { balances, categoryForMerchant, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
 import { buildAnalytics } from './analytics';
 import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from './settings';
+import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
+import { buildAudit } from './audit';
 import { executeTransfer, tranchesByExpiry } from './points';
 import type { Env, Offer } from './types';
 
@@ -115,6 +117,108 @@ export default {
               percent: totalLimit ? (totalBal / totalLimit) * 100 : 0,
             },
           });
+        }
+
+        // The heart of it: merchant in, ranked cards out, with the reasoning.
+        if (url.pathname === '/api/recommend') {
+          const q = url.searchParams.get('merchant') ?? '';
+          const amt = url.searchParams.get('amount');
+          const cents = amt ? parseMoney(amt) : null;
+          const objective = (url.searchParams.get('objective') ?? '') as Objective;
+          const r = await recommend(
+            env,
+            {
+              amount_cents: cents,
+              mcc: url.searchParams.get('mcc'),
+              category: url.searchParams.get('category'),
+              channel: (url.searchParams.get('channel') as Channel) || null,
+            },
+            {
+              merchantQuery: q || undefined,
+              objective: ['miles', 'cashback', 'balanced', 'minspend'].includes(objective) ? objective : undefined,
+            }
+          );
+          return json(r);
+        }
+
+        if (url.pathname === '/api/mcc') {
+          const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+          if (url.searchParams.get('merchant')) {
+            return json(await lookupMerchant(env, url.searchParams.get('merchant')!));
+          }
+          const { results } = await env.DB.prepare(
+            `SELECT code, description, category FROM mcc_codes
+             WHERE ? = '' OR code LIKE ? OR LOWER(description) LIKE ? OR category LIKE ?
+             ORDER BY code LIMIT 100`
+          )
+            .bind(q, `${q}%`, `%${q}%`, `%${q}%`)
+            .all<any>();
+          return json({ codes: results ?? [] });
+        }
+
+        // Confirming a code from a posted transaction beats any guess.
+        if (url.pathname === '/api/mcc/merchant' && req.method === 'POST') {
+          const b = (await req.json()) as { merchant?: string; mcc?: string; channel?: string; confirmed?: boolean };
+          const m = String(b.merchant ?? '').trim().toLowerCase();
+          const code = String(b.mcc ?? '').trim();
+          if (!m || !/^\d{4}$/.test(code)) return json({ error: 'merchant and a four-digit mcc are required' }, 400);
+          await env.DB.prepare(
+            `INSERT INTO merchant_mcc (merchant, mcc, channel, source, confidence, updated_at)
+             VALUES (?, ?, ?, 'user', ?, datetime('now'))
+             ON CONFLICT(merchant) DO UPDATE SET mcc = excluded.mcc, channel = excluded.channel,
+               source = 'user', confidence = excluded.confidence, updated_at = datetime('now')`
+          )
+            .bind(m, code, b.channel ?? null, b.confirmed === false ? 'guess' : 'confirmed')
+            .run();
+          return json({ ok: true, merchant: await lookupMerchant(env, m) });
+        }
+
+        if (url.pathname === '/api/exclusions') {
+          const { results } = await env.DB.prepare(
+            `SELECT e.*, c.description, c.category, cards.product FROM exclusions e
+             LEFT JOIN mcc_codes c ON c.code = e.mcc
+             LEFT JOIN cards ON cards.id = e.card_id
+             WHERE e.active = 1 ORDER BY e.card_id IS NOT NULL, e.mcc`
+          ).all<any>();
+          return json({ exclusions: results ?? [] });
+        }
+
+        if (url.pathname === '/api/exclusions' && req.method === 'POST') {
+          const b = (await req.json()) as { mcc?: string; card_id?: number | null; reason?: string; remove?: number };
+          if (b.remove) {
+            await env.DB.prepare(`UPDATE exclusions SET active = 0 WHERE id = ?`).bind(b.remove).run();
+            return json({ ok: true });
+          }
+          const code = String(b.mcc ?? '').trim();
+          if (!/^\d{4}$/.test(code)) return json({ error: 'a four-digit mcc is required' }, 400);
+          await env.DB.prepare(`INSERT INTO exclusions (card_id, mcc, reason, source) VALUES (?, ?, ?, 'user')`)
+            .bind(b.card_id ?? null, code, b.reason ?? null)
+            .run();
+          return json({ ok: true });
+        }
+
+        if (url.pathname === '/api/audit') {
+          return json(
+            await buildAudit(env, {
+              cardId: url.searchParams.get('card_id') ? Number(url.searchParams.get('card_id')) : undefined,
+              from: url.searchParams.get('from') ?? undefined,
+              to: url.searchParams.get('to') ?? undefined,
+            })
+          );
+        }
+
+        // Recording what the bank actually credited.
+        if (url.pathname === '/api/tx/credited' && req.method === 'POST') {
+          const b = (await req.json()) as { id?: number; miles?: number | null; cashback?: string | null };
+          const id = Number(b.id);
+          if (!id) return json({ error: 'id is required' }, 400);
+          const cash = b.cashback === null || b.cashback === undefined ? null : parseMoney(String(b.cashback));
+          await env.DB.prepare(
+            `UPDATE transactions SET actual_miles = ?, actual_cashback_cents = ? WHERE id = ?`
+          )
+            .bind(b.miles === null || b.miles === undefined ? null : Math.round(Number(b.miles)), cash, id)
+            .run();
+          return json({ ok: true });
         }
 
         if (url.pathname === '/api/settings' && req.method === 'GET') {
@@ -408,11 +512,31 @@ export default {
             if (category) source = 'learned';
           }
 
+          // Resolve the merchant code and record what the rules say this should
+          // earn, so the audit later has a prediction to reconcile against.
+          const guess = note ? await lookupMerchant(env, note) : null;
+          const mcc = (body as any).mcc ?? guess?.mcc ?? null;
+          const channel = ((body as any).channel as Channel) ?? guess?.channel ?? null;
+          if (!category && guess?.category) {
+            category = guess.category;
+            source = 'learned';
+          }
+          const expected = await evaluate(env, card as any, {
+            amount_cents: cents,
+            mcc,
+            category,
+            channel,
+          });
+
           const ins = await env.DB.prepare(
-            `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category, category_source, needs_review, source)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual')`
+            `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category,
+               category_source, needs_review, mcc, channel, expected_miles, expected_cashback_cents, source)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`
           )
-            .bind(card.id, cents, date, posted, note, category, source, category ? 0 : 1)
+            .bind(
+              card.id, cents, date, posted, note, category, source, category ? 0 : 1,
+              mcc, channel, expected.miles, expected.cashback_cents
+            )
             .run();
 
           const alerts = await checkAlerts(env, card);
@@ -426,6 +550,11 @@ export default {
             category,
             category_source: source,
             needs_review: category ? 0 : 1,
+            mcc,
+            channel,
+            expected_miles: expected.miles,
+            expected_cashback_cents: expected.cashback_cents,
+            trace: expected.trace,
             alerts: alerts.length,
           });
         }
@@ -495,6 +624,8 @@ export default {
           const { results } = await env.DB.prepare(
             `SELECT t.id, t.card_id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant,
                     t.category, t.category_source, t.needs_review, t.source,
+                    t.mcc, t.channel, t.expected_miles, t.expected_cashback_cents,
+                    t.actual_miles, t.actual_cashback_cents,
                     c.nickname, c.product
              FROM transactions t JOIN cards c ON c.id = t.card_id
              ${clause}

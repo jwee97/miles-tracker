@@ -10,6 +10,7 @@ export interface Env {
   POSTING_LAG_DAYS: string;
   RATE_RECHECK_DAYS: string;
   MILE_VALUE_CENTS: string;
+  OBJECTIVE: string;
 }
 
 export interface Card {
