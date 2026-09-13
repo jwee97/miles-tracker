@@ -1,7 +1,8 @@
 import { mintToken } from './auth';
 import { buildDigest, checkAlerts } from './digest';
 import { cardRulesPrompt, extractionPrompt, HELP } from './extraction';
-import { evaluateOffer } from './eligibility';
+import { decideRule, evaluateOffer } from './eligibility';
+import { OFFER_STATUSES, parseExtraction, saveExtraction, type OfferStatus } from './offers';
 import { ignoreFeedItem, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import type { ScanResult } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
@@ -59,6 +60,13 @@ async function answerCallback(env: Env, id: string, text: string) {
     body: JSON.stringify({ callback_query_id: id, text }),
   });
 }
+
+const ruleIcon = (r: { verdict: string; decision: string | null }) =>
+  (r.verdict === 'pass' ? '·' : r.verdict === 'fail' ? '✗' : '?') + (r.decision ? '✎' : '');
+
+const decisionText = (r: { decision: string | null; note: string | null; reason: string }) =>
+  `${r.decision === 'na' ? 'Does not apply' : r.decision === 'pass' ? 'You confirmed this' : 'You said you do not meet this'}` +
+  `${r.note ? ` — ${r.note}` : ''}`;
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
@@ -238,21 +246,35 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         return send(env, chatId, `Requirement #${parseInt(args, 10)} removed.`);
 
       case '/offers': {
+        // `pending` is included: a tracked feed item sits there until it is
+        // extracted, and leaving it out made it look like nothing happened.
+        const wanted: OfferStatus[] =
+          args.trim().toLowerCase() === 'all'
+            ? [...OFFER_STATUSES]
+            : ['pending', 'tracked', 'applied'];
         const { results } = await env.DB.prepare(
-          `SELECT * FROM offers WHERE status IN ('tracked','applied') ORDER BY created_at DESC LIMIT 20`
-        ).all<Offer>();
-        if (!results?.length) return send(env, chatId, 'No tracked offers yet.');
+          `SELECT * FROM offers WHERE status IN (${wanted.map(() => '?').join(',')})
+           ORDER BY created_at DESC LIMIT 20`
+        )
+          .bind(...wanted)
+          .all<Offer>();
+        if (!results?.length) return send(env, chatId, 'No offers yet. `/scan` looks for some.');
         const out: string[] = [];
         for (const o of results) {
           const e = await evaluateOffer(env, o.id);
           const icon = e.verdict === 'eligible' ? '✅' : e.verdict === 'not_eligible' ? '❌' : '🟡';
+          const state = o.status === 'pending' ? ' _(not extracted)_' : o.status === 'dismissed' ? ' _(dismissed)_' : '';
           out.push(
-            `${icon} *#${o.id} ${o.issuer ?? '?'} ${o.product ?? o.source_title ?? ''}*` +
+            `${icon} *#${o.id} ${o.issuer ?? '?'} ${o.product ?? o.source_title ?? ''}*${state}` +
               (o.bonus_miles ? `\n  ${o.bonus_miles.toLocaleString()} miles` : '') +
               (o.min_spend_cents ? ` for $${money(o.min_spend_cents)} in ${o.spend_window_days ?? '?'}d` : '') +
               (o.valid_until ? `\n  expires ${o.valid_until}` : '') +
               (e.rules.length
-                ? '\n' + e.rules.map((r) => `  ${r.verdict === 'pass' ? '·' : r.verdict === 'fail' ? '✗' : '?'} ${r.reason}`).join('\n')
+                ? '\n' +
+                  e.rules
+                    .map((r) => `  ${ruleIcon(r)} #${r.id} ${r.decision ? decisionText(r) : r.reason}`)
+                    .join('\n') +
+                  (e.open_questions ? `\n  _${e.open_questions} need you: /rule <id> yes|no|na_` : '')
                 : '\n  _no rules extracted yet — /extract ' + o.id + '_') +
               (o.source_url ? `\n  ${o.source_url}` : '')
           );
@@ -275,44 +297,57 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const m = args.match(/^(\d+)\s+([\s\S]+)$/);
         if (!m) return send(env, chatId, 'Format: `/save <offer id> {json}`');
         const id = parseInt(m[1], 10);
-        const json = m[2].replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
         let data: any;
         try {
-          data = JSON.parse(json);
+          data = parseExtraction(m[2]);
         } catch (e) {
           return send(env, chatId, `Could not parse that JSON: ${(e as Error).message}`);
         }
-        await env.DB.prepare(
-          `UPDATE offers SET issuer=?, product=?, product_key=?, bonus_miles=?, bonus_note=?,
-             min_spend_cents=?, spend_window_days=?, valid_from=?, valid_until=?,
-             status='tracked', extracted_at=datetime('now') WHERE id = ?`
-        )
-          .bind(
-            data.issuer ?? null,
-            data.product ?? null,
-            data.product_key ?? (data.issuer && data.product ? slug(`${data.issuer}_${data.product}`) : null),
-            data.bonus_miles ?? null,
-            data.bonus_note ?? null,
-            data.min_spend != null ? Math.round(data.min_spend * 100) : null,
-            data.spend_window_days ?? null,
-            data.valid_from ?? null,
-            data.valid_until ?? null,
-            id
-          )
-          .run();
-        await env.DB.prepare(`DELETE FROM offer_rules WHERE offer_id = ?`).bind(id).run();
-        for (const r of data.rules ?? []) {
-          await env.DB.prepare(`INSERT INTO offer_rules (offer_id, predicate, quote) VALUES (?, ?, ?)`)
-            .bind(id, JSON.stringify(r.predicate ?? r), r.quote ?? null)
-            .run();
+        let saved;
+        try {
+          saved = await saveExtraction(env, id, data);
+        } catch (e) {
+          return send(env, chatId, (e as Error).message);
         }
-        const e = await evaluateOffer(env, id);
+        const e = saved.eligibility;
         const icon = e.verdict === 'eligible' ? '✅ Eligible' : e.verdict === 'not_eligible' ? '❌ Not eligible' : '🟡 Needs review';
         return send(
           env,
           chatId,
-          `Saved offer #${id} with ${(data.rules ?? []).length} rule(s).\n\n*${icon}*\n` +
-            e.rules.map((r) => `${r.verdict === 'pass' ? '·' : r.verdict === 'fail' ? '✗' : '?'} ${r.reason}`).join('\n')
+          `Saved offer #${id} with ${saved.rules_saved} rule(s)` +
+            (saved.decisions_kept ? `, keeping ${saved.decisions_kept} of your answers` : '') +
+            `.\n\n*${icon}*\n` +
+            e.rules.map((r, i) => `${ruleIcon(r)} #${r.id} ${r.reason}`).join('\n') +
+            (e.open_questions
+              ? `\n\n${e.open_questions} clause(s) need you: \`/rule <id> yes|no|na [note]\`, or review them in the app.`
+              : '')
+        );
+      }
+
+      // Answer a clause the card history cannot settle — income, a card closed
+      // before you started tracking, anything the extractor flagged for a human.
+      case '/rule': {
+        const m = args.match(/^(\d+)\s+(yes|no|na|clear)\s*([\s\S]*)$/i);
+        if (!m)
+          return send(
+            env,
+            chatId,
+            'Format: `/rule <rule id> yes|no|na [note]`\n' +
+              '`yes` you meet it · `no` you do not · `na` it does not apply · `clear` undo.\n' +
+              'Rule ids are shown by `/offers`.'
+          );
+        const ruleId = parseInt(m[1], 10);
+        const word = m[2].toLowerCase();
+        const decision = word === 'yes' ? 'pass' : word === 'no' ? 'fail' : word === 'na' ? 'na' : null;
+        const offerId = await decideRule(env, ruleId, decision, m[3].trim() || null);
+        if (!offerId) return send(env, chatId, `No rule #${ruleId}.`);
+        const e = await evaluateOffer(env, offerId);
+        const icon = e.verdict === 'eligible' ? '✅ Eligible' : e.verdict === 'not_eligible' ? '❌ Not eligible' : '🟡 Needs review';
+        return send(
+          env,
+          chatId,
+          `Offer #${offerId} — *${icon}*\n` +
+            e.rules.map((r) => `${ruleIcon(r)} #${r.id} ${r.decision ? decisionText(r) : r.reason}`).join('\n')
         );
       }
 
@@ -320,6 +355,13 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const id = parseInt(args, 10);
         await env.DB.prepare(`UPDATE offers SET status='applied' WHERE id = ?`).bind(id).run();
         return send(env, chatId, `Offer #${id} marked applied. Once approved, add the card with /newcard and its sign-up minimum with /req.`);
+      }
+
+      case '/dismiss': {
+        const id = parseInt(args, 10);
+        if (!id) return send(env, chatId, 'Format: `/dismiss <offer id>`');
+        await env.DB.prepare(`UPDATE offers SET status='dismissed' WHERE id = ?`).bind(id).run();
+        return send(env, chatId, `Offer #${id} dismissed. It stays on record; the app can bring it back.`);
       }
 
       case '/feeds': {

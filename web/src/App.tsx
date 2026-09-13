@@ -16,17 +16,29 @@ import {
   fetchWhich,
   bootstrapToken,
   deleteTransaction,
+  decideRule,
+  deleteFeed,
+  deleteRule,
+  fetchExtractPrompt,
   fetchFeed,
+  fetchFeeds,
   fetchOffers,
   fetchSummary,
   feedAction,
   runScan,
+  saveExtraction,
+  saveFeed,
+  setOfferStatus,
   fetchTransactions,
   markPosted,
   money,
   type CardSummary,
+  type Eligibility,
   type FeedItemRow,
+  type FeedRow,
   type OfferRow,
+  type RuleDecision,
+  type RuleRow,
   type ScanSummary,
   type Progress,
   type Summary,
@@ -166,7 +178,7 @@ function Scanner({ onTracked }: { onTracked: () => void }) {
         <button onClick={() => scan('deep')} disabled={!!busy}>
           {busy === 'deep' ? 'Scanning…' : 'Scan now'}
         </button>
-        <button onClick={() => scan('quick')} disabled={!!busy}>
+        <button className="secondary" onClick={() => scan('quick')} disabled={!!busy}>
           {busy === 'quick' ? 'Scanning…' : 'Quick scan'}
         </button>
       </div>
@@ -226,39 +238,400 @@ function Scanner({ onTracked }: { onTracked: () => void }) {
   );
 }
 
-function Offer({ o }: { o: OfferRow }) {
-  const v = o.eligibility.verdict;
-  const label = v === 'eligible' ? 'Eligible' : v === 'not_eligible' ? 'Not eligible' : 'Needs review';
+const VERDICT_LABEL = {
+  eligible: 'Eligible',
+  not_eligible: 'Not eligible',
+  needs_review: 'Needs review',
+} as const;
+
+const DECISION_TEXT: Record<RuleDecision, string> = {
+  pass: 'You confirmed this',
+  fail: 'You said you do not meet this',
+  na: 'Does not apply to you',
+};
+
+/** One clause, with the answer only you can give. */
+function Rule({ r, onChange }: { r: RuleRow; onChange: (e: Eligibility) => void }) {
+  const [note, setNote] = useState(r.note ?? '');
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function decide(decision: RuleDecision | null) {
+    setBusy(true);
+    setErr(null);
+    try {
+      onChange((await decideRule(r.id, decision, decision ? note || null : null)).eligibility);
+      setEditing(false);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    try {
+      onChange((await deleteRule(r.id)).eligibility);
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(false);
+    }
+  }
+
   return (
-    <section className="card">
+    <li className={r.verdict}>
+      <span>{r.decision ? DECISION_TEXT[r.decision] : r.reason}</span>
+      {/* Every verdict stays traceable to the sentence it came from. */}
+      {r.quote && <blockquote>{r.quote}</blockquote>}
+      {r.decision && (
+        <p className="sub">
+          Your answer{r.decided_at ? ` on ${r.decided_at}` : ''}
+          {r.note ? ` — ${r.note}` : ''}
+          {/* An override is never silent: the computed verdict stays visible. */}
+          {r.overridden ? ` · overrides the data, which says: ${r.reason}` : ''}
+        </p>
+      )}
+      {editing && (
+        <input
+          className="rule-note"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Why? e.g. closed this card in 2023, before I started tracking"
+        />
+      )}
+      <div className="entry-foot rule-actions">
+        <button onClick={() => decide('pass')} disabled={busy || r.decision === 'pass'}>
+          I meet this
+        </button>
+        <button onClick={() => decide('fail')} disabled={busy || r.decision === 'fail'}>
+          I do not
+        </button>
+        <button onClick={() => decide('na')} disabled={busy || r.decision === 'na'}>
+          N/A
+        </button>
+        {r.decision && (
+          <button onClick={() => decide(null)} disabled={busy}>
+            Clear
+          </button>
+        )}
+        <button onClick={() => setEditing((v) => !v)} disabled={busy}>
+          {editing ? 'Hide note' : 'Note'}
+        </button>
+        <button className="danger" onClick={remove} disabled={busy}>
+          Remove clause
+        </button>
+        {err && <span className="err-text">{err}</span>}
+      </div>
+    </li>
+  );
+}
+
+/** The T&C extraction flow, without leaving the app: copy prompt, paste reply. */
+function Extract({ id, onSaved }: { id: number; onSaved: (e: Eligibility) => void }) {
+  const [prompt, setPrompt] = useState<string | null>(null);
+  const [paste, setPaste] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function loadPrompt() {
+    setErr(null);
+    try {
+      const d = await fetchExtractPrompt(id);
+      setPrompt(d.prompt);
+      try {
+        await navigator.clipboard.writeText(d.prompt);
+        setMsg('Prompt copied. Paste it into Claude with the T&C text.');
+      } catch {
+        // Clipboard needs a secure context and permission; the textarea below
+        // is the fallback, so this is not worth surfacing as an error.
+        setMsg('Select the text below and copy it into Claude with the T&C.');
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await saveExtraction(id, paste);
+      setPaste('');
+      setPrompt(null);
+      setMsg(
+        `Saved ${res.rules_saved} clause(s)` +
+          (res.decisions_kept ? `, keeping ${res.decisions_kept} of your answers` : '') +
+          '.'
+      );
+      onSaved(res.eligibility);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="extract">
+      <p className="sub">
+        The terms have not been read yet. Copy the prompt, paste it into Claude with the offer's T&amp;C, then paste the
+        JSON it returns back here.
+      </p>
+      <div className="entry-foot">
+        <button onClick={loadPrompt}>Copy the prompt</button>
+      </div>
+      {prompt && <textarea className="prompt" readOnly rows={6} value={prompt} onFocus={(e) => e.target.select()} />}
+      <textarea
+        className="prompt"
+        rows={4}
+        value={paste}
+        onChange={(e) => setPaste(e.target.value)}
+        placeholder="Paste Claude's JSON reply here"
+      />
+      <div className="entry-foot">
+        <button onClick={save} disabled={busy || !paste.trim()}>
+          {busy ? 'Saving…' : 'Save the terms'}
+        </button>
+        {msg && <span className="sub">{msg}</span>}
+        {err && <span className="err-text">{err}</span>}
+      </div>
+    </div>
+  );
+}
+
+function Offer({ o, onChange }: { o: OfferRow; onChange: () => void }) {
+  const [elig, setElig] = useState<Eligibility>(o.eligibility);
+  const [status, setStatus] = useState(o.status);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => setElig(o.eligibility), [o.eligibility]);
+
+  function update(e: Eligibility) {
+    setElig(e);
+    onChange();
+  }
+
+  async function move(next: OfferRow['status']) {
+    setErr(null);
+    try {
+      await setOfferStatus(o.id, next);
+      setStatus(next);
+      onChange();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  const v = elig.verdict;
+  return (
+    <section className={`card offer ${status === 'dismissed' ? 'dim' : ''}`}>
       <header>
         <div>
-          <h2>{o.product ?? o.source_title ?? 'Untitled offer'}</h2>
-          <p className="sub">{o.issuer}</p>
+          <h2>
+            #{o.id} {o.product ?? o.source_title ?? 'Untitled offer'}
+          </h2>
+          <p className="sub">
+            {o.issuer ?? 'Issuer unknown'}
+            {status !== 'tracked' ? ` · ${status}` : ''}
+          </p>
         </div>
-        <div className={`badge ${v}`}>{label}</div>
+        <div className={`badge ${v}`}>{VERDICT_LABEL[v]}</div>
       </header>
       <p className="sub">
-        {o.bonus_miles ? `${o.bonus_miles.toLocaleString()} miles` : 'Bonus not extracted'}
+        {o.bonus_miles ? `${o.bonus_miles.toLocaleString()} miles` : o.bonus_note ?? 'Bonus not extracted'}
         {o.min_spend_cents ? ` for $${money(o.min_spend_cents)} in ${o.spend_window_days ?? '?'}d` : ''}
         {o.valid_until ? ` · expires ${o.valid_until}` : ''}
       </p>
-      <ul className="rules">
-        {o.eligibility.rules.map((r, i) => (
-          <li key={i} className={r.verdict}>
-            <span>{r.reason}</span>
-            {/* Every verdict stays traceable to the sentence it came from. */}
-            {r.quote && <blockquote>{r.quote}</blockquote>}
-          </li>
-        ))}
-        {!o.eligibility.rules.length && <li className="unknown">No rules extracted yet — run /extract in the bot.</li>}
-      </ul>
-      {o.source_url && (
-        <a className="link" href={o.source_url} target="_blank" rel="noreferrer">
-          Source
-        </a>
+
+      {elig.open_questions > 0 && (
+        <p className="cap">
+          {elig.open_questions} clause{elig.open_questions === 1 ? '' : 's'} the card history cannot settle — answer
+          below.
+        </p>
       )}
+
+      <ul className="rules">
+        {elig.rules.map((r) => (
+          <Rule key={r.id} r={r} onChange={update} />
+        ))}
+      </ul>
+
+      {!elig.rules.length && <Extract id={o.id} onSaved={update} />}
+
+      <div className="entry-foot">
+        {status !== 'applied' && <button onClick={() => move('applied')}>Mark applied</button>}
+        {status !== 'dismissed' && (
+          <button className="danger" onClick={() => move('dismissed')}>
+            Dismiss
+          </button>
+        )}
+        {status !== 'tracked' && <button onClick={() => move('tracked')}>Back to tracked</button>}
+        {!!elig.rules.length && <Reextract id={o.id} onSaved={update} />}
+        {o.source_url && (
+          <a className="link" href={o.source_url} target="_blank" rel="noreferrer">
+            Source
+          </a>
+        )}
+        {err && <span className="err-text">{err}</span>}
+      </div>
     </section>
+  );
+}
+
+/** Re-run the extraction on an offer that already has clauses. */
+function Reextract({ id, onSaved }: { id: number; onSaved: (e: Eligibility) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen((v) => !v)}>{open ? 'Close' : 'Re-read the terms'}</button>
+      {open && (
+        <div className="extract-wide">
+          <Extract id={id} onSaved={onSaved} />
+        </div>
+      )}
+    </>
+  );
+}
+
+/** The sources the scanner reads, editable here rather than only via the bot. */
+function Sources() {
+  const [feeds, setFeeds] = useState<FeedRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ url: '', label: '', kind: '' });
+  const [busy, setBusy] = useState(false);
+
+  function load() {
+    fetchFeeds()
+      .then((d) => setFeeds(d.feeds))
+      .catch((e) => setErr(e.message));
+  }
+  useEffect(load, []);
+
+  async function add() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await saveFeed({ url: draft.url, label: draft.label, kind: draft.kind || null, active: true });
+      setDraft({ url: '', label: '', kind: '' });
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card entry">
+      <h2>Sources</h2>
+      <p className="sub">
+        Where the scan looks. <strong>rss</strong> is a feed, <strong>page</strong> is an ordinary listing page whose
+        headline links get harvested, blank detects from the response.
+      </p>
+      {feeds?.map((f) => (
+        <SourceRow key={f.url} f={f} onSaved={load} />
+      ))}
+      {feeds && !feeds.length && <p className="sub">No sources. Add one below, or send /seed to the bot.</p>}
+
+      <div className="entry-grid">
+        <label className="f f-note">
+          <span>New source URL</span>
+          <input
+            value={draft.url}
+            onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+            placeholder="https://milelion.com/feed/"
+            inputMode="url"
+          />
+        </label>
+        <label className="f">
+          <span>Label</span>
+          <input value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} placeholder="MileLion" />
+        </label>
+        <label className="f">
+          <span>Kind</span>
+          <select value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}>
+            <option value="">detect</option>
+            <option value="rss">rss</option>
+            <option value="page">page</option>
+          </select>
+        </label>
+      </div>
+      <div className="entry-foot">
+        <button onClick={add} disabled={busy || !/^https?:\/\//i.test(draft.url)}>
+          Add source
+        </button>
+        {err && <span className="err-text">{err}</span>}
+      </div>
+    </section>
+  );
+}
+
+function SourceRow({ f, onSaved }: { f: FeedRow; onSaved: () => void }) {
+  const [url, setUrl] = useState(f.url);
+  const [label, setLabel] = useState(f.label);
+  const [kind, setKind] = useState(f.kind ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const dirty = url !== f.url || label !== f.label || (kind || null) !== f.kind;
+
+  async function run(fn: () => Promise<unknown>) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+      onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={`source ${f.active ? '' : 'dim'}`}>
+      <div className="entry-grid">
+        <label className="f f-note">
+          <span>URL</span>
+          <input value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" />
+        </label>
+        <label className="f">
+          <span>Label</span>
+          <input value={label} onChange={(e) => setLabel(e.target.value)} />
+        </label>
+        <label className="f">
+          <span>Kind</span>
+          <select value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="">detect</option>
+            <option value="rss">rss</option>
+            <option value="page">page</option>
+          </select>
+        </label>
+      </div>
+      <div className="entry-foot">
+        <button
+          onClick={() => run(() => saveFeed({ url, label, kind: kind || null, active: !!f.active, old_url: f.url }))}
+          disabled={busy || !dirty}
+        >
+          {dirty ? 'Save' : 'Saved'}
+        </button>
+        <button
+          onClick={() => run(() => saveFeed({ url: f.url, label: f.label, kind: f.kind, active: !f.active }))}
+          disabled={busy}
+        >
+          {f.active ? 'Pause' : 'Resume'}
+        </button>
+        <button className="danger" onClick={() => run(() => deleteFeed(f.url))} disabled={busy}>
+          Remove
+        </button>
+        <span className="sub">
+          {f.items} item{f.items === 1 ? '' : 's'}
+          {f.last_seen ? ` · last ${f.last_seen.slice(0, 10)}` : ' · never read'}
+        </span>
+        {err && <span className="err-text">{err}</span>}
+      </div>
+    </div>
   );
 }
 
@@ -796,6 +1169,7 @@ export default function App() {
   const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
+  const [offerScope, setOfferScope] = useState<'open' | 'all'>('open');
   const [txns, setTxns] = useState<Txn[]>([]);
   const [recentCount, setRecentCount] = useState(10);
   const [error, setError] = useState<string | null>(null);
@@ -806,6 +1180,17 @@ export default function App() {
       .then((d) => setTxns(d.transactions))
       .catch(() => void 0);
   }
+
+  function loadOffers() {
+    fetchOffers(offerScope)
+      .then((d) => setOffers(d.offers))
+      .catch(() => void 0);
+  }
+
+  useEffect(() => {
+    if (!bootstrapToken()) return;
+    loadOffers();
+  }, [offerScope]);
 
   // Refetch when the row count changes, without re-running the whole load.
   useEffect(() => {
@@ -821,9 +1206,6 @@ export default function App() {
       return;
     }
     refresh();
-    fetchOffers()
-      .then((d) => setOffers(d.offers))
-      .catch(() => void 0);
     fetchCategories()
       .then((d) => setCategories(d.categories))
       .catch(() => void 0);
@@ -917,16 +1299,22 @@ export default function App() {
 
       {tab === 'offers' && (
         <>
-          <Scanner onTracked={() => fetchOffers().then((d) => setOffers(d.offers)).catch(() => void 0)} />
+          <Scanner onTracked={loadOffers} />
           {offers ? (
             offers.length ? (
-              offers.map((o) => <Offer key={o.id} o={o} />)
+              offers.map((o) => <Offer key={o.id} o={o} onChange={loadOffers} />)
             ) : (
-              <p className="pad sub">No tracked offers yet. Track one above, then run /extract in the bot.</p>
+              <p className="pad sub">No offers yet. Scan above, then Track one to start reading its terms.</p>
             )
           ) : (
             <p className="pad sub">Loading…</p>
           )}
+          <div className="entry-foot">
+            <button className="secondary" onClick={() => setOfferScope((v) => (v === 'open' ? 'all' : 'open'))}>
+              {offerScope === 'open' ? 'Show dismissed too' : 'Hide dismissed'}
+            </button>
+          </div>
+          <Sources />
         </>
       )}
     </main>

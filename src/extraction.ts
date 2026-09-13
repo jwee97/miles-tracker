@@ -161,9 +161,12 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /delreq <id>
 
 *Offers*
+/offers — tracked offers and their clauses (/offers all includes dismissed)
 /extract <offer id> — get the prompt to paste into Claude
 /save <offer id> {json} — store what Claude returned
+/rule <rule id> yes|no|na [note] — answer a clause only you can settle
 /apply <offer id> — mark as applied
+/dismiss <offer id> — set it aside
 /scan — check every source now (opens articles)
 /scan quick — headlines only, no page fetches
 /scan <url> — read one promo page on demand

@@ -71,9 +71,22 @@ export type Predicate =
 
 export type RuleVerdict = 'pass' | 'fail' | 'unknown';
 
+/** What you decided about a clause the data cannot settle. `na` means it does
+ *  not apply to you; it counts as a pass but is never displayed as one. */
+export type RuleDecision = 'pass' | 'fail' | 'na';
+
 export interface RuleResult {
+  id: number;
+  /** The verdict in force: your decision when there is one, else the computed one. */
   verdict: RuleVerdict;
+  /** What your card history alone says, always kept so an override is visible. */
+  computed: RuleVerdict;
   reason: string;
+  decision: RuleDecision | null;
+  decided_at: string | null;
+  note: string | null;
+  /** Your decision contradicts a verdict the data was sure about. */
+  overridden: boolean;
   predicate: Predicate;
   quote: string | null;
 }
@@ -81,4 +94,7 @@ export interface RuleResult {
 export interface EligibilityResult {
   verdict: 'eligible' | 'not_eligible' | 'needs_review';
   rules: RuleResult[];
+  /** Clauses still waiting on you. */
+  open_questions: number;
+  decided_by_you: number;
 }

@@ -1,5 +1,5 @@
 import { addMonths, today } from './spend';
-import type { Card, EligibilityResult, Env, Predicate, RuleResult } from './types';
+import type { Card, EligibilityResult, Env, Predicate, RuleDecision, RuleResult, RuleVerdict } from './types';
 
 /**
  * Deterministic evaluator. Claude's job (done by hand, in the Pro app) is only to
@@ -76,10 +76,17 @@ export function evaluateRule(pred: Predicate, cards: Card[], env: Env): { verdic
 
 export async function evaluateOffer(env: Env, offerId: number): Promise<EligibilityResult> {
   const { results: rows } = await env.DB.prepare(
-    `SELECT predicate, quote FROM offer_rules WHERE offer_id = ?`
+    `SELECT id, predicate, quote, decision, decided_at, note FROM offer_rules WHERE offer_id = ? ORDER BY id`
   )
     .bind(offerId)
-    .all<{ predicate: string; quote: string | null }>();
+    .all<{
+      id: number;
+      predicate: string;
+      quote: string | null;
+      decision: RuleDecision | null;
+      decided_at: string | null;
+      note: string | null;
+    }>();
 
   // All cards, including closed ones — history is exactly what eligibility turns on.
   const { results: cards } = await env.DB.prepare(`SELECT * FROM cards`).all<Card>();
@@ -91,8 +98,26 @@ export async function evaluateOffer(env: Env, offerId: number): Promise<Eligibil
     } catch {
       pred = { type: 'manual_review', note: 'Malformed predicate JSON.' };
     }
-    const { verdict, reason } = evaluateRule(pred, cards ?? [], env);
-    return { verdict, reason, predicate: pred, quote: r.quote };
+    const { verdict: computed, reason } = evaluateRule(pred, cards ?? [], env);
+
+    // Your answer wins, because you can see things the card table cannot — an
+    // income figure, a card closed before you started tracking. It is recorded
+    // as yours, with the computed verdict kept beside it.
+    const decided: RuleVerdict | null =
+      r.decision === 'fail' ? 'fail' : r.decision === 'pass' || r.decision === 'na' ? 'pass' : null;
+
+    return {
+      id: r.id,
+      verdict: decided ?? computed,
+      computed,
+      reason,
+      decision: r.decision ?? null,
+      decided_at: r.decided_at ?? null,
+      note: r.note ?? null,
+      overridden: decided != null && computed !== 'unknown' && decided !== computed,
+      predicate: pred,
+      quote: r.quote,
+    };
   });
 
   const verdict = rules.some((r) => r.verdict === 'fail')
@@ -101,5 +126,30 @@ export async function evaluateOffer(env: Env, offerId: number): Promise<Eligibil
       ? 'needs_review'
       : 'eligible';
 
-  return { verdict, rules };
+  return {
+    verdict,
+    rules,
+    open_questions: rules.filter((r) => r.verdict === 'unknown').length,
+    decided_by_you: rules.filter((r) => r.decision != null).length,
+  };
+}
+
+/** Record (or with `null`, withdraw) your answer to one clause. */
+export async function decideRule(
+  env: Env,
+  ruleId: number,
+  decision: RuleDecision | null,
+  note?: string | null
+): Promise<number | null> {
+  const row = await env.DB.prepare(`SELECT offer_id FROM offer_rules WHERE id = ?`)
+    .bind(ruleId)
+    .first<{ offer_id: number }>();
+  if (!row) return null;
+
+  await env.DB.prepare(
+    `UPDATE offer_rules SET decision = ?, decided_at = ?, note = ? WHERE id = ?`
+  )
+    .bind(decision, decision ? today(env) : null, note ?? null, ruleId)
+    .run();
+  return row.offer_id;
 }

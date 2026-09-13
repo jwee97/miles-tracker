@@ -82,10 +82,13 @@ CREATE TABLE IF NOT EXISTS offers (
 -- Eligibility clauses as typed predicates, one row per clause, each keeping the
 -- exact sentence it came from so a verdict is always traceable to the T&C.
 CREATE TABLE IF NOT EXISTS offer_rules (
-  id        INTEGER PRIMARY KEY AUTOINCREMENT,
-  offer_id  INTEGER NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
-  predicate TEXT    NOT NULL,                    -- JSON
-  quote     TEXT
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  offer_id   INTEGER NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
+  predicate  TEXT    NOT NULL,                   -- JSON
+  quote      TEXT,
+  decision   TEXT,                               -- NULL | pass | fail | na, set by you
+  decided_at TEXT,
+  note       TEXT                                -- why you decided that
 );
 CREATE INDEX IF NOT EXISTS rules_offer ON offer_rules(offer_id);
 

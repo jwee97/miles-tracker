@@ -639,7 +639,33 @@ check.
 ```
 
 The Offers tab has the same three buttons, plus an inbox of everything the
-scanner matched but you have not judged yet, with Track and Ignore on each.
+scanner matched but you have not judged yet, with Track and Ignore on each, and
+a **Sources** panel where a source's URL, label and kind can be edited, paused
+or removed without touching the bot.
+
+### Reviewing an offer
+
+An offer's clauses are evaluated against your card history, but some cannot be:
+an income floor, a card you closed before you started tracking, a clause the
+extractor flagged for a human. Those show as *needs review* and wait for you.
+
+In the app, each clause carries **I meet this · I do not · N/A · Note**. In the
+bot it is `/rule <rule id> yes|no|na [note]`; rule ids are printed by `/offers`.
+
+- Your answer sets the verdict; the computed one stays beside it, and a
+  disagreement is labelled as an override rather than quietly replacing it.
+- Answers are stored with the date and your note.
+- **N/A** counts as satisfied but is never displayed as a pass.
+- Re-reading a T&C (`/save`, or *Re-read the terms*) keeps the answers to
+  clauses that came back identical and drops the ones that changed — a changed
+  clause is a new question.
+- A clause the extractor got wrong can be removed outright.
+
+An offer that has not been extracted yet shows the paste-into-Claude flow in
+place: **Copy the prompt**, then a box for the JSON that comes back. Nothing
+about that flow needs the bot any more, though `/extract` and `/save` still
+work. `Mark applied`, `Dismiss` and `Back to tracked` set the offer's status;
+dismissed offers are hidden until you ask for them.
 
 **What "opening articles" means.** A feed summary is often one truncated
 sentence, which is not enough to tell a sign-up offer from a hotel review. A
@@ -654,6 +680,8 @@ so the same article found through two sources is recognised as one item.
 ```
 /status                     full digest with utilization bars
 /scan                       force a scan instead of waiting for 06:00
+/offers                     offers, their clauses and rule ids
+/rule <rule id> yes|no|na   answer a clause only you can settle
 25.40 alt lunch             logs spend today
 25.40 alt yesterday lunch   backdate it
 25.40 alt 5/9 lunch         day/month, or 2026-09-05, or -3 for 3 days ago
@@ -731,7 +759,8 @@ script for real (non-navigation) callers like Telegram, `curl` and the PWA's own
 
 **`/scan` returns nothing.** Either there's genuinely nothing new — items are
 shown once and remembered in `feed_items` — or a seeded feed URL is stale. Check
-`/feeds` and replace dead ones with `/addfeed <url>|<label>`.
+`/feeds`, or the Sources panel in the Offers tab, and fix or replace dead ones
+there.
 
 **Nothing arrives in the morning.** Cron triggers only run on deployed Workers,
 never under `wrangler dev`. Confirm they're listed under Settings → Triggers,

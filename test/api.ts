@@ -518,5 +518,117 @@ db.prepare(
   check('an unknown action is refused', res.status === 400, String(res.status));
 }
 
+// --- reviewing an offer from the app ---------------------------------------
+const authed = (path: string, body?: unknown) =>
+  worker.fetch(
+    body === undefined
+      ? new Request(`https://x.test${path}${path.includes('?') ? '&' : '?'}t=${token}`)
+      : new Request(`https://x.test${path}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+    env
+  );
+
+db.prepare(`INSERT INTO offers (id,status,source_url,source_title) VALUES (50,'pending','https://uob.com.sg/apply','UOB offer')`).run();
+{
+  const body = (await (await authed('/api/offers')).json()) as any;
+  check('pending offers reach the app', body.offers.some((o: any) => o.id === 50), JSON.stringify(body.offers?.map((o: any) => o.id)));
+  const pending = body.offers.find((o: any) => o.id === 50);
+  check('with no clauses yet', pending.eligibility.rules.length === 0, JSON.stringify(pending.eligibility));
+  check('and a needs_review verdict', pending.eligibility.verdict === 'needs_review', pending.eligibility.verdict);
+}
+{
+  const body = (await (await authed('/api/offer/prompt?id=50')).json()) as any;
+  check('the extraction prompt is available in the app', /Return ONLY a JSON object/.test(body.prompt ?? ''), JSON.stringify(body).slice(0, 80));
+  check('and names the offer', /\/save 50/.test(body.prompt ?? ''), '');
+  check('a missing offer has no prompt', (await authed('/api/offer/prompt?id=9999')).status === 404, '');
+}
+{
+  const res = await authed('/api/offer/extract', {
+    id: 50,
+    json: '```json\n{"issuer":"UOB","product":"Lady\'s","min_spend":1000,"rules":[{"predicate":{"type":"min_income","amount_cents":3000000,"period":"year"},"quote":"income of S$30,000"}]}\n```',
+  });
+  const body = (await res.json()) as any;
+  check('pasting Claude\'s reply saves the terms', res.status === 200 && body.rules_saved === 1, JSON.stringify(body));
+  check('the offer becomes tracked', (db.prepare(`SELECT status FROM offers WHERE id = 50`).get() as any).status === 'tracked', '');
+  check('and the clause needs you', body.eligibility.open_questions === 1, JSON.stringify(body.eligibility));
+
+  const bad = await authed('/api/offer/extract', { id: 50, json: 'not json' });
+  check('bad JSON is refused with a reason', bad.status === 400 && /valid JSON/.test(((await bad.json()) as any).error), '');
+}
+{
+  const ruleId = (db.prepare(`SELECT id FROM offer_rules WHERE offer_id = 50`).get() as any).id;
+  const res = await authed('/api/offer/rule', { rule_id: ruleId, decision: 'pass', note: 'Salary clears it' });
+  const body = (await res.json()) as any;
+  check('ticking a clause clears the offer', body.eligibility.verdict === 'eligible', JSON.stringify(body.eligibility));
+  check('and records it as your answer', body.eligibility.rules[0].decision === 'pass', '');
+  check('with the note', body.eligibility.rules[0].note === 'Salary clears it', '');
+
+  const undo = (await (await authed('/api/offer/rule', { rule_id: ruleId, decision: null })).json()) as any;
+  check('and it can be withdrawn', undo.eligibility.verdict === 'needs_review', undo.eligibility.verdict);
+
+  check('a bad decision is refused', (await authed('/api/offer/rule', { rule_id: ruleId, decision: 'maybe' })).status === 400, '');
+  check('an unknown rule is a 404', (await authed('/api/offer/rule', { rule_id: 9999, decision: 'pass' })).status === 404, '');
+
+  const del = await authed('/api/offer/rule/delete', { rule_id: ruleId });
+  check('a mis-extracted clause can be removed', del.status === 200, String(del.status));
+  check('leaving no clauses behind', (db.prepare(`SELECT COUNT(*) c FROM offer_rules WHERE offer_id = 50`).get() as any).c === 0, '');
+}
+{
+  check('an offer can be marked applied', (await authed('/api/offer/status', { id: 50, status: 'applied' })).status === 200, '');
+  check('and dismissed', (await authed('/api/offer/status', { id: 50, status: 'dismissed' })).status === 200, '');
+  const open = (await (await authed('/api/offers')).json()) as any;
+  check('a dismissed offer leaves the default list', !open.offers.some((o: any) => o.id === 50), '');
+  const all = (await (await authed('/api/offers?status=all')).json()) as any;
+  check('but status=all still shows it', all.offers.some((o: any) => o.id === 50), '');
+  check('an invalid status is refused', (await authed('/api/offer/status', { id: 50, status: 'banana' })).status === 400, '');
+  check('an unknown offer is a 404', (await authed('/api/offer/status', { id: 9999, status: 'applied' })).status === 404, '');
+}
+
+// --- editing the sources ----------------------------------------------------
+{
+  const add = await authed('/api/feeds/save', { url: 'https://www.example.com/feed/?utm_source=x', label: 'Example' });
+  const body = (await add.json()) as any;
+  check('a source can be added from the app', add.status === 200, String(add.status));
+  check('and its URL is cleaned on the way in', body.url === 'https://example.com/feed', body.url);
+
+  const listed = (await (await authed('/api/feeds')).json()) as any;
+  const row = listed.feeds.find((f: any) => f.url === 'https://example.com/feed');
+  check('it comes back in the list', !!row, JSON.stringify(listed.feeds));
+  check('with no items read yet', row.items === 0 && row.last_seen === null, JSON.stringify(row));
+
+  check('a junk URL is refused', (await authed('/api/feeds/save', { url: 'nonsense' })).status === 400, '');
+  check('an unknown kind is refused', (await authed('/api/feeds/save', { url: 'https://a.test/f', kind: 'atom' })).status === 400, '');
+}
+{
+  // History follows a rename: feed_items point at the label, not the URL.
+  db.prepare(`INSERT INTO feed_items (guid, feed, title, link) VALUES ('x1','Example','A post','https://example.com/p')`).run();
+  const res = await authed('/api/feeds/save', {
+    old_url: 'https://example.com/feed',
+    url: 'https://example.com/rss',
+    label: 'Example Blog',
+    kind: 'rss',
+    active: true,
+  });
+  check('the URL can be changed', res.status === 200, String(res.status));
+  const row = db.prepare(`SELECT * FROM feeds WHERE url = 'https://example.com/rss'`).get() as any;
+  check('keeping one row, not two', !!row && !db.prepare(`SELECT 1 FROM feeds WHERE url = 'https://example.com/feed'`).get(), '');
+  check('with the new kind', row.kind === 'rss', String(row.kind));
+  const item = db.prepare(`SELECT feed FROM feed_items WHERE guid = 'x1'`).get() as any;
+  check('and what it already scanned follows the rename', item.feed === 'Example Blog', item.feed);
+  check('renaming a source that is gone is a 404', (await authed('/api/feeds/save', { old_url: 'https://nope.test/f', url: 'https://nope.test/g' })).status === 404, '');
+}
+{
+  const paused = await authed('/api/feeds/save', { url: 'https://example.com/rss', label: 'Example Blog', active: false });
+  check('a source can be paused', paused.status === 200, String(paused.status));
+  check('which the scan honours', (db.prepare(`SELECT active FROM feeds WHERE url = 'https://example.com/rss'`).get() as any).active === 0, '');
+
+  check('and removed', (await authed('/api/feeds/delete', { url: 'https://example.com/rss' })).status === 200, '');
+  check('leaving its history behind', !!db.prepare(`SELECT 1 FROM feed_items WHERE guid = 'x1'`).get(), '');
+  check('removing it twice is a 404', (await authed('/api/feeds/delete', { url: 'https://example.com/rss' })).status === 404, '');
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

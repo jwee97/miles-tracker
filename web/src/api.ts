@@ -71,20 +71,51 @@ export interface Summary {
   overall: { balance_cents: number; limit_cents: number; percent: number };
 }
 
+export type RuleDecision = 'pass' | 'fail' | 'na';
+
+export interface RuleRow {
+  id: number;
+  verdict: 'pass' | 'fail' | 'unknown';
+  computed: 'pass' | 'fail' | 'unknown';
+  reason: string;
+  decision: RuleDecision | null;
+  decided_at: string | null;
+  note: string | null;
+  overridden: boolean;
+  quote: string | null;
+  predicate: { type: string } & Record<string, unknown>;
+}
+
+export interface Eligibility {
+  verdict: 'eligible' | 'not_eligible' | 'needs_review';
+  rules: RuleRow[];
+  open_questions: number;
+  decided_by_you: number;
+}
+
 export interface OfferRow {
   id: number;
+  status: 'pending' | 'tracked' | 'applied' | 'dismissed';
   issuer: string | null;
   product: string | null;
   bonus_miles: number | null;
+  bonus_note: string | null;
   min_spend_cents: number | null;
   spend_window_days: number | null;
   valid_until: string | null;
   source_url: string | null;
   source_title: string | null;
-  eligibility: {
-    verdict: 'eligible' | 'not_eligible' | 'needs_review';
-    rules: { verdict: 'pass' | 'fail' | 'unknown'; reason: string; quote: string | null }[];
-  };
+  extracted_at: string | null;
+  eligibility: Eligibility;
+}
+
+export interface FeedRow {
+  url: string;
+  label: string;
+  kind: 'rss' | 'page' | null;
+  active: number;
+  items: number;
+  last_seen: string | null;
 }
 
 export interface Txn {
@@ -453,7 +484,8 @@ export const fetchAnalytics = (month: string) => get<Analytics>(`/api/analytics?
 export const fetchMonths = () => get<{ months: string[] }>('/api/months');
 
 export const fetchSummary = () => get<Summary>('/api/summary');
-export const fetchOffers = () => get<{ offers: OfferRow[] }>('/api/offers');
+export const fetchOffers = (status: 'open' | 'all' = 'open') =>
+  get<{ offers: OfferRow[] }>(`/api/offers?status=${status}`);
 
 /** A headline the scanner has seen, before it is promoted to a tracked offer. */
 export interface FeedItemRow {
@@ -490,6 +522,29 @@ export const runScan = (body: { deep?: boolean; url?: string; push?: boolean } =
 
 export const feedAction = (id: number, action: 'track' | 'ignore') =>
   post<{ ok: true; offer_id?: number }>('/api/feed/action', { id, action });
+
+export const fetchFeeds = () => get<{ feeds: FeedRow[] }>('/api/feeds');
+
+export const saveFeed = (f: { url: string; label: string; kind: string | null; active: boolean; old_url?: string }) =>
+  post<{ ok: true; url: string }>('/api/feeds/save', f);
+
+export const deleteFeed = (url: string) => post<{ ok: true }>('/api/feeds/delete', { url });
+
+/** The prompt to paste into Claude, for the offer whose T&C is not extracted yet. */
+export const fetchExtractPrompt = (id: number) =>
+  get<{ id: number; prompt: string; source_url: string | null }>(`/api/offer/prompt?id=${id}`);
+
+export const saveExtraction = (id: number, json: string) =>
+  post<{ rules_saved: number; decisions_kept: number; eligibility: Eligibility }>('/api/offer/extract', { id, json });
+
+export const decideRule = (rule_id: number, decision: RuleDecision | null, note?: string | null) =>
+  post<{ ok: true; offer_id: number; eligibility: Eligibility }>('/api/offer/rule', { rule_id, decision, note });
+
+export const deleteRule = (rule_id: number) =>
+  post<{ ok: true; offer_id: number; eligibility: Eligibility }>('/api/offer/rule/delete', { rule_id });
+
+export const setOfferStatus = (id: number, status: OfferRow['status']) =>
+  post<{ ok: true }>('/api/offer/status', { id, status });
 
 export const money = (cents: number) =>
   (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

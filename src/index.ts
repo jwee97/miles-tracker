@@ -1,6 +1,9 @@
 import { safeEqual, verifyToken } from './auth';
 import { buildDigest, checkAlerts } from './digest';
-import { evaluateOffer } from './eligibility';
+import { decideRule, evaluateOffer } from './eligibility';
+import { extractionPrompt } from './extraction';
+import { OFFER_STATUSES, parseExtraction, saveExtraction, type OfferStatus } from './offers';
+import { canonicalUrl } from './rss';
 import { handleUpdate, pushFeedItem, pushFeedMatches, send } from './telegram';
 import { ignoreFeedItem, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import {
@@ -518,13 +521,146 @@ export default {
           return json({ ok: true, offer_id: offerId });
         }
 
+        // `pending` offers are included: a tracked feed item lives there until
+        // its T&C is extracted, and hiding it made the Track button look inert.
         if (url.pathname === '/api/offers') {
+          const wanted: OfferStatus[] =
+            url.searchParams.get('status') === 'all' ? [...OFFER_STATUSES] : ['pending', 'tracked', 'applied'];
           const { results } = await env.DB.prepare(
-            `SELECT * FROM offers WHERE status IN ('tracked','applied') ORDER BY created_at DESC LIMIT 50`
-          ).all<Offer>();
+            `SELECT * FROM offers WHERE status IN (${wanted.map(() => '?').join(',')})
+             ORDER BY created_at DESC LIMIT 50`
+          )
+            .bind(...wanted)
+            .all<Offer>();
           const out = [];
           for (const o of results ?? []) out.push({ ...o, eligibility: await evaluateOffer(env, o.id) });
           return json({ offers: out });
+        }
+
+        // The prompt to paste into Claude, so the extraction flow works from
+        // the app as well as the bot.
+        if (url.pathname === '/api/offer/prompt') {
+          const id = parseInt(url.searchParams.get('id') ?? '', 10);
+          const offer = await env.DB.prepare(`SELECT * FROM offers WHERE id = ?`).bind(id).first<Offer>();
+          if (!offer) return json({ error: 'no such offer' }, 404);
+          return json({ id, prompt: extractionPrompt(id, offer.source_url), source_url: offer.source_url });
+        }
+
+        // Paste back what Claude returned.
+        if (url.pathname === '/api/offer/extract' && req.method === 'POST') {
+          const { id, json: raw } = (await req.json()) as { id?: number; json?: string };
+          if (!id || !raw) return json({ error: 'id and json required' }, 400);
+          let data: any;
+          try {
+            data = parseExtraction(raw);
+          } catch (e) {
+            return json({ error: `That is not valid JSON: ${(e as Error).message}` }, 400);
+          }
+          try {
+            return json(await saveExtraction(env, id, data));
+          } catch (e) {
+            return json({ error: (e as Error).message }, 404);
+          }
+        }
+
+        // Answer, or withdraw your answer to, one clause.
+        if (url.pathname === '/api/offer/rule' && req.method === 'POST') {
+          const { rule_id, decision, note } = (await req.json()) as {
+            rule_id?: number;
+            decision?: string | null;
+            note?: string | null;
+          };
+          if (!rule_id) return json({ error: 'rule_id required' }, 400);
+          if (decision != null && !['pass', 'fail', 'na'].includes(decision))
+            return json({ error: 'decision must be pass, fail, na or null' }, 400);
+          const offerId = await decideRule(env, rule_id, (decision ?? null) as any, note ?? null);
+          if (!offerId) return json({ error: 'no such rule' }, 404);
+          return json({ ok: true, offer_id: offerId, eligibility: await evaluateOffer(env, offerId) });
+        }
+
+        // A mis-extracted clause blocks a verdict for ever; let it be removed.
+        if (url.pathname === '/api/offer/rule/delete' && req.method === 'POST') {
+          const { rule_id } = (await req.json()) as { rule_id?: number };
+          if (!rule_id) return json({ error: 'rule_id required' }, 400);
+          const row = await env.DB.prepare(`SELECT offer_id FROM offer_rules WHERE id = ?`)
+            .bind(rule_id)
+            .first<{ offer_id: number }>();
+          if (!row) return json({ error: 'no such rule' }, 404);
+          await env.DB.prepare(`DELETE FROM offer_rules WHERE id = ?`).bind(rule_id).run();
+          return json({ ok: true, offer_id: row.offer_id, eligibility: await evaluateOffer(env, row.offer_id) });
+        }
+
+        if (url.pathname === '/api/offer/status' && req.method === 'POST') {
+          const { id, status } = (await req.json()) as { id?: number; status?: string };
+          if (!id || !OFFER_STATUSES.includes(status as OfferStatus))
+            return json({ error: `status must be one of ${OFFER_STATUSES.join(', ')}` }, 400);
+          const res = await env.DB.prepare(`UPDATE offers SET status = ? WHERE id = ?`).bind(status, id).run();
+          if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such offer' }, 404);
+          return json({ ok: true });
+        }
+
+        // --- sources the scanner reads -------------------------------------
+        if (url.pathname === '/api/feeds') {
+          const { results } = await env.DB.prepare(
+            `SELECT f.url, f.label, f.active, f.kind,
+                    (SELECT COUNT(*) FROM feed_items i WHERE i.feed = f.label) AS items,
+                    (SELECT MAX(seen_at) FROM feed_items i WHERE i.feed = f.label) AS last_seen
+             FROM feeds f ORDER BY f.active DESC, f.label`
+          ).all<any>();
+          return json({ feeds: results ?? [] });
+        }
+
+        if (url.pathname === '/api/feeds/save' && req.method === 'POST') {
+          const body = (await req.json()) as {
+            url?: string;
+            label?: string;
+            kind?: string | null;
+            active?: boolean;
+            old_url?: string;
+          };
+          const clean = canonicalUrl(body.url ?? '');
+          if (!clean) return json({ error: 'a valid http(s) URL is required' }, 400);
+          if (body.kind && !['rss', 'page'].includes(body.kind))
+            return json({ error: "kind must be 'rss', 'page' or empty" }, 400);
+
+          const label = (body.label ?? '').trim() || new URL(clean).hostname;
+          const active = body.active === false ? 0 : 1;
+          // Changing the URL keeps the row: the label is what feed_items point
+          // at, so replacing it would orphan everything already scanned.
+          if (body.old_url && body.old_url !== clean) {
+            const prior = await env.DB.prepare(`SELECT label FROM feeds WHERE url = ?`)
+              .bind(body.old_url)
+              .first<{ label: string }>();
+            if (!prior) return json({ error: 'no such feed' }, 404);
+            await env.DB.prepare(`UPDATE feeds SET url = ?, label = ?, kind = ?, active = ? WHERE url = ?`)
+              .bind(clean, label, body.kind || null, active, body.old_url)
+              .run();
+            if (prior.label !== label)
+              await env.DB.prepare(`UPDATE feed_items SET feed = ? WHERE feed = ?`).bind(label, prior.label).run();
+            return json({ ok: true, url: clean, renamed_from: body.old_url });
+          }
+
+          const existing = await env.DB.prepare(`SELECT label FROM feeds WHERE url = ?`)
+            .bind(clean)
+            .first<{ label: string }>();
+          await env.DB.prepare(
+            `INSERT INTO feeds (url, label, kind, active) VALUES (?, ?, ?, ?)
+             ON CONFLICT(url) DO UPDATE SET label = excluded.label, kind = excluded.kind, active = excluded.active`
+          )
+            .bind(clean, label, body.kind || null, active)
+            .run();
+          if (existing && existing.label !== label)
+            await env.DB.prepare(`UPDATE feed_items SET feed = ? WHERE feed = ?`).bind(label, existing.label).run();
+          return json({ ok: true, url: clean });
+        }
+
+        if (url.pathname === '/api/feeds/delete' && req.method === 'POST') {
+          const { url: target } = (await req.json()) as { url?: string };
+          if (!target) return json({ error: 'url required' }, 400);
+          const res = await env.DB.prepare(`DELETE FROM feeds WHERE url = ?`).bind(target).run();
+          if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such feed' }, 404);
+          // Items already scanned stay: they are history, not configuration.
+          return json({ ok: true });
         }
 
         // The dashboard's entry form and the iOS Shortcut both post here.

@@ -45,6 +45,13 @@ verbatim sentence it came from. Anything the rules can't decide returns
 `needs_review` rather than a guess, because a wrong "eligible" costs a hard
 pull and a 12-month cooldown.
 
+**Review.** The clauses no card table can settle — an income floor, a card you
+closed before you started tracking — are answered by you, in the Offers tab or
+with `/rule <id> yes|no|na`. Your answer sets the verdict and is stored with the
+date and your note; the computed verdict stays visible beside it, so an override
+is never silent. Re-reading a T&C keeps the answers to clauses that did not
+change and drops the ones that did.
+
 ---
 
 ## Setup
@@ -88,11 +95,14 @@ run from the closure date, so this is what keeps future verdicts honest.
 
 ### Working an offer
 
-1. The nightly scan posts a match → tap **Track** → it becomes offer #N.
-2. `/extract N` → the bot sends a prompt with the JSON schema baked in.
+1. A scan posts a match → tap **Track** → it becomes offer #N.
+2. **Copy the prompt** in the Offers tab (or `/extract N` in the bot) — it comes
+   with the JSON schema baked in.
 3. Open the T&C, paste the prompt plus the terms into Claude Pro.
-4. Paste the reply back: `/save N {…}`.
-5. The bot evaluates it against your card history and answers immediately.
+4. Paste the reply into the box under the offer (or `/save N {…}`).
+5. It is evaluated against your card history immediately.
+6. Answer whatever it could not decide: **I meet this / I do not / N/A**, with a
+   note, or `/rule <rule id> yes|no|na`. Then **Mark applied** or **Dismiss**.
 
 About two minutes per offer, a handful of offers a month. There is no way to
 automate step 3 on a Pro subscription — Pro and the API are separate products
@@ -131,8 +141,9 @@ src/index.ts          Worker entry: webhook, JSON API, cron
 src/telegram.ts       bot commands and inline buttons
 src/spend.ts          statement cycles, utilization, requirement progress
 src/digest.ts         the daily report and threshold alerts
-src/rss.ts            feed fetch, parse, keyword gate
-src/eligibility.ts    predicate evaluator — the deterministic half
+src/rss.ts            feed and page fetch, parse, URL cleaning, keyword gate
+src/eligibility.ts    predicate evaluator and your review decisions
+src/offers.ts         saving an extraction without losing your answers
 src/extraction.ts     the prompt handed to you for Claude — the LLM half
 src/auth.ts           HMAC magic-link tokens
 migrations/           ALTER statements for databases created before a change
@@ -141,6 +152,12 @@ web/                  React + Vite PWA, served by the Worker as assets
 ```
 
 ## Adding sources
+
+The Offers tab has a **Sources** panel: add one, edit its URL or label, switch
+between `rss` and `page`, pause it, or remove it. Renaming keeps the items
+already scanned; removing a source leaves its history, which is what stops a
+removed-then-re-added source from re-notifying you about everything.
+
 
 `/addfeed <url>|<label>|<kind>`, or edit `seed.sql`. `kind` is `rss`, `page`, or
 blank to detect from the response. RSS and Atom both work; `page` treats an

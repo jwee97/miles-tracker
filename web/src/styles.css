@@ -406,3 +406,65 @@ tr.dim-row td { opacity: .55; }
 tr.reason-row td { padding-top: 0; border-bottom: 1px solid var(--line); }
 .optimise { border-color: rgba(74,222,128,.3); }
 .idle { padding: 11px 0; border-top: 1px solid var(--line); }
+
+/* ---------- offer review ---------- */
+.offer.dim, .source.dim { opacity: .55; }
+.rules li .entry-foot { margin-top: 8px; gap: 6px; }
+/* Review is a lot of small decisions; the big primary button is the wrong
+   weight for them, so these read as secondary controls. */
+.rule-actions button,
+.source .entry-foot button,
+.offer > .entry-foot button,
+.entry-foot button.secondary {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: #202634;
+  color: var(--text);
+  border: 1px solid #3a4150;
+  border-radius: 7px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.rule-actions button:disabled,
+.source .entry-foot button:disabled,
+.offer > .entry-foot button:disabled { opacity: .45; cursor: default; }
+.rule-actions button.danger,
+.source .entry-foot button.danger,
+.offer > .entry-foot button.danger { color: var(--bad); border-color: rgba(248, 113, 113, .35); }
+.rules li.pass span, .rules li.fail span { display: inline-block; }
+
+.rule-note {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  font: inherit;
+  font-size: 13px;
+  background: #0b0d11;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.rule-note:focus { outline: none; border-color: var(--ok); }
+
+.extract { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.extract-wide { flex-basis: 100%; }
+.prompt {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  background: #0b0d11;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  resize: vertical;
+}
+.prompt:focus { outline: none; border-color: var(--ok); }
+
+.source { padding: 14px 0; border-top: 1px solid var(--line); }
+.source:first-of-type { border-top: none; }
