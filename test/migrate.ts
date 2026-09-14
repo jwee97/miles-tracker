@@ -26,6 +26,8 @@ const tables = (db: DatabaseSync) =>
   (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as { name: string }[]).map((r) => r.name);
 const cols = (db: DatabaseSync, t: string) =>
   (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name);
+const indexes = (db: DatabaseSync) =>
+  (db.prepare(`SELECT name FROM sqlite_master WHERE type='index'`).all() as { name: string }[]).map((r) => r.name);
 
 // --- an empty database gets the whole schema -------------------------------
 {
@@ -85,6 +87,48 @@ const cols = (db: DatabaseSync, t: string) =>
 
   await runSeed(env);
   check('re-seeding does not duplicate', routes() === n1, `got ${routes()}`);
+}
+
+// --- an index over a column added later -------------------------------------
+// The shape that broke a real migration: the database predates both the column
+// and the index that uses it. A fresh database cannot catch this, because its
+// CREATE TABLE already carries the column.
+{
+  const { db, env } = makeEnv();
+  db.prepare(
+    `CREATE TABLE programs (key TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+      unit TEXT NOT NULL DEFAULT 'points', expiry_months INTEGER)`
+  ).run();
+  // The old shape: no source, no period.
+  db.prepare(
+    `CREATE TABLE balance_tranches (id INTEGER PRIMARY KEY AUTOINCREMENT, program_key TEXT NOT NULL,
+      points INTEGER NOT NULL, earned_at TEXT, expires_at TEXT, note TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')))`
+  ).run();
+  db.prepare(`INSERT INTO programs (key,name,kind) VALUES ('krisflyer','KrisFlyer','airline')`).run();
+  db.prepare(`INSERT INTO balance_tranches (program_key, points) VALUES ('krisflyer', 1000)`).run();
+
+  const report = await runMigrations(env);
+  check('the old table gains its columns', cols(db, 'balance_tranches').includes('source'), cols(db, 'balance_tranches').join(','));
+  check('and the period column', cols(db, 'balance_tranches').includes('period'), '');
+  check('the index over them is created too', indexes(db).includes('tranche_auto'), indexes(db).join(','));
+  check('with nothing reported as a problem', report.errors.length === 0, JSON.stringify(report.errors));
+  check('the existing row survives', (db.prepare(`SELECT COUNT(*) c FROM balance_tranches`).get() as any).c === 1, '');
+  check('defaulted to manual', (db.prepare(`SELECT source FROM balance_tranches`).get() as any).source === 'manual', '');
+
+  // The index has to actually hold: one automatic tranche per programme/month.
+  db.prepare(`INSERT INTO balance_tranches (program_key, points, source, period) VALUES ('krisflyer', 5, 'auto', '2026-09')`).run();
+  let clashed = false;
+  try {
+    db.prepare(`INSERT INTO balance_tranches (program_key, points, source, period) VALUES ('krisflyer', 5, 'auto', '2026-09')`).run();
+  } catch {
+    clashed = true;
+  }
+  check('a second automatic tranche for that month is refused', clashed, '');
+
+  const again = await runMigrations(env);
+  check('migrating again is clean', again.errors.length === 0, JSON.stringify(again.errors));
+  check('and reports nothing left to do', again.alreadyCurrent, JSON.stringify(again));
 }
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');

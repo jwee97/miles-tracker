@@ -248,6 +248,14 @@ If you change either scan cron, change `SCAN_CRONS` in `src/index.ts` to match �
 the handler branches on the exact strings to decide which report to send, and a
 cron that is not listed there runs the digest instead.
 
+### If /migrate reports a problem
+
+`/migrate` is idempotent: run it again. It applies the schema in the order an
+existing database needs — tables, then the columns older tables are missing,
+then the indexes — so an index over a newly added column is created on the same
+run that adds the column. Anything it could not apply is listed under
+*Problems*, with the SQLite message, and a later run retries it.
+
 ## Load your cards
 
 ```

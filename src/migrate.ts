@@ -97,8 +97,14 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
   ).all<{ name: string }>();
   for (const t of existing ?? []) before.add(t.name);
 
-  // Every CREATE in schema.sql is IF NOT EXISTS, so this only fills gaps.
-  for (const stmt of statements(schemaSql)) {
+  // Order matters on a database that predates a change. Tables first, then the
+  // columns those tables are missing, and only then the indexes — an index over
+  // a newly added column cannot be created before the column exists, and a
+  // fresh database hides the problem because its CREATE TABLE already has it.
+  const all = statements(schemaSql);
+  const isIndex = (sql: string) => /^\s*CREATE\s+(UNIQUE\s+)?INDEX/i.test(sql);
+
+  for (const stmt of all.filter((s) => !isIndex(s))) {
     try {
       await env.DB.prepare(stmt).run();
     } catch (e) {
@@ -119,6 +125,14 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
       altered.push(`${col.table}.${col.column}`);
     } catch (e) {
       errors.push(`${col.table}.${col.column} — ${(e as Error).message}`);
+    }
+  }
+
+  for (const stmt of all.filter(isIndex)) {
+    try {
+      await env.DB.prepare(stmt).run();
+    } catch (e) {
+      errors.push(`${stmt.slice(0, 60)}… — ${(e as Error).message}`);
     }
   }
 
