@@ -2,7 +2,7 @@ import { safeEqual, verifyToken } from './auth';
 import { buildDigest, checkAlerts } from './digest';
 import { decideRule, evaluateOffer } from './eligibility';
 import { extractionPrompt } from './extraction';
-import { OFFER_STATUSES, parseExtraction, saveExtraction, type OfferStatus } from './offers';
+import { daysUntil, OFFER_STATUSES, offerRetentionDays, parseExtraction, saveExtraction, sweepExpiredOffers, type OfferStatus } from './offers';
 import { canonicalUrl } from './rss';
 import { handleUpdate, pushFeedItem, pushFeedMatches, send } from './telegram';
 import { feedStorage, ignoreFeedItem, purgeFeedItems, retentionDays, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
@@ -24,6 +24,7 @@ import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from '.
 import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
 import { buildAudit } from './audit';
 import { optimise } from './advice';
+import { acceptCredits, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import { executeTransfer, tranchesByExpiry } from './points';
 import type { Env, Offer } from './types';
 
@@ -259,6 +260,58 @@ export default {
              WHERE amount_cents > 0 ORDER BY month DESC LIMIT 24`
           ).all<{ month: string }>();
           return json({ months: (results ?? []).map((r) => r.month) });
+        }
+
+        // --- the points wallet ---------------------------------------------
+        if (url.pathname === '/api/wallet') {
+          return json(await wallet(env));
+        }
+
+        if (url.pathname === '/api/credits') {
+          return json(await pendingCredits(env));
+        }
+
+        // Nothing reaches the wallet without this call: a bank can credit
+        // something other than what the rules predicted, so the prediction
+        // waits to be confirmed.
+        if (url.pathname === '/api/credits/accept' && req.method === 'POST') {
+          const body = (await req.json()) as { ids?: number[]; program_key?: string };
+          let ids = (body.ids ?? []).filter((n) => Number.isInteger(n));
+
+          if (!ids.length && body.program_key) {
+            const pending = await pendingCredits(env);
+            ids = pending.credits.filter((c) => c.program_key === body.program_key).map((c) => c.id);
+          }
+          if (!ids.length) return json({ error: 'ids or program_key required' }, 400);
+          if (ids.length > 500) return json({ error: 'at most 500 at a time' }, 400);
+
+          const res = await acceptCredits(env, ids);
+          return json({ ...res, wallet: await wallet(env) });
+        }
+
+        if (url.pathname === '/api/credits/undo' && req.method === 'POST') {
+          const { id } = (await req.json()) as { id?: number };
+          if (!id) return json({ error: 'id required' }, 400);
+          if (!(await undoCredit(env, id))) return json({ error: 'not credited' }, 404);
+          return json({ ok: true, wallet: await wallet(env) });
+        }
+
+        // Which programme a card earns into. Without it the engine knows what
+        // a purchase earns but not where it goes.
+        if (url.pathname === '/api/card/program' && req.method === 'POST') {
+          const { nickname, program_key } = (await req.json()) as { nickname?: string; program_key?: string | null };
+          const card = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(String(nickname ?? '').trim())
+            .first<{ id: number }>();
+          if (!card) return json({ error: 'no such card' }, 404);
+          if (program_key) {
+            const prog = await env.DB.prepare(`SELECT key FROM programs WHERE key = ?`).bind(program_key).first();
+            if (!prog) return json({ error: 'unknown programme' }, 400);
+          }
+          await env.DB.prepare(`UPDATE cards SET program_key = ? WHERE id = ?`)
+            .bind(program_key || null, card.id)
+            .run();
+          return json({ ok: true });
         }
 
         if (url.pathname === '/api/points') {
@@ -605,8 +658,16 @@ export default {
             .bind(...wanted)
             .all<Offer>();
           const out = [];
-          for (const o of results ?? []) out.push({ ...o, eligibility: await evaluateOffer(env, o.id) });
-          return json({ offers: out });
+          for (const o of results ?? []) {
+            const days = daysUntil(o.valid_until, today(env));
+            out.push({
+              ...o,
+              days_left: days,
+              expired: days !== null && days < 0,
+              eligibility: await evaluateOffer(env, o.id),
+            });
+          }
+          return json({ offers: out, today: today(env), offer_retention_days: offerRetentionDays(env) });
         }
 
         // The prompt to paste into Claude, so the extraction flow works from
@@ -699,6 +760,13 @@ export default {
             ids: body.ids,
           });
           return json({ ...result, storage: await feedStorage(env) });
+        }
+
+        // Offers whose end date has passed are no longer decisions; they are
+        // marked expired and, once old enough, removed.
+        if (url.pathname === '/api/offers/sweep' && req.method === 'POST') {
+          const sweep = await sweepExpiredOffers(env, today(env));
+          return json(sweep);
         }
 
         // --- sources the scanner reads -------------------------------------
@@ -827,14 +895,20 @@ export default {
             channel,
           });
 
+          // Which wallet these points land in, resolved now rather than when
+          // you accept them: changing a card's programme later must not
+          // retroactively move points you already earned.
+          const program = expected.miles > 0 ? await programForCard(env, card.id, expected.rule?.id) : null;
+
           const ins = await env.DB.prepare(
             `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category,
-               category_source, needs_review, mcc, channel, expected_miles, expected_cashback_cents, source)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`
+               category_source, needs_review, mcc, channel, expected_miles, expected_cashback_cents,
+               expected_program, source)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`
           )
             .bind(
               card.id, cents, date, posted, note, category, source, category ? 0 : 1,
-              mcc, channel, expected.miles, expected.cashback_cents
+              mcc, channel, expected.miles, expected.cashback_cents, program
             )
             .run();
 
@@ -853,6 +927,7 @@ export default {
             channel,
             expected_miles: expected.miles,
             expected_cashback_cents: expected.cashback_cents,
+            expected_program: program,
             trace: expected.trace,
             alerts: alerts.length,
           });
@@ -981,6 +1056,9 @@ export default {
           // housekeeping, not news.
           const days = retentionDays(env);
           if (days > 0) await purgeFeedItems(env, { mode: 'compact', scope: 'decided', older_than_days: days });
+
+          // An offer that has ended is not a decision you can still make.
+          await sweepExpiredOffers(env, today(env));
         } else {
           await send(env, env.OWNER_CHAT_ID, await buildDigest(env));
           for (const alert of await checkAlerts(env)) await send(env, env.OWNER_CHAT_ID, alert);

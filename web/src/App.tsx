@@ -19,6 +19,7 @@ import {
   decideRule,
   deleteFeed,
   deleteRule,
+  acceptCredits,
   fetchExtractPrompt,
   fetchFeed,
   fetchFeedStorage,
@@ -30,6 +31,9 @@ import {
   runScan,
   saveExtraction,
   saveFeed,
+  fetchWallet,
+  sweepOffers,
+  undoCredit,
   setOfferStatus,
   fetchTransactions,
   markPosted,
@@ -45,6 +49,7 @@ import {
   type OfferRow,
   type RuleDecision,
   type RuleRow,
+  type Wallet,
   type ScanSummary,
   type Progress,
   type Summary,
@@ -730,7 +735,16 @@ function Offer({ o, onChange }: { o: OfferRow; onChange: () => void }) {
       <p className="sub">
         {o.bonus_miles ? `${o.bonus_miles.toLocaleString()} miles` : o.bonus_note ?? 'Bonus not extracted'}
         {o.min_spend_cents ? ` for $${money(o.min_spend_cents)} in ${o.spend_window_days ?? '?'}d` : ''}
-        {o.valid_until ? ` · expires ${o.valid_until}` : ''}
+      </p>
+      {/* When the offer ends is the thing that decides whether to act today. */}
+      <p className={`deadline ${o.expired ? 'gone' : o.days_left !== null && o.days_left <= 14 ? 'soon' : ''}`}>
+        {o.valid_until === null
+          ? 'No end date extracted — read the terms before counting on it'
+          : o.expired
+            ? `Ended ${o.valid_until}${o.days_left !== null ? ` · ${-o.days_left} days ago` : ''}`
+            : o.days_left === 0
+              ? `Ends today (${o.valid_until})`
+              : `Ends in ${o.days_left} days · ${o.valid_until}`}
       </p>
 
       {elig.open_questions > 0 && (
@@ -1184,6 +1198,198 @@ function WhichCard({ categories }: { categories: string[] }) {
   );
 }
 
+/**
+ * The wallet: everything held, what is waiting to go in, and what it is worth.
+ *
+ * Bank points and airline miles are shown in their own units and, separately,
+ * as the miles they convert to. Adding 50,000 Citi points to 50,000 KrisFlyer
+ * miles and calling it 100,000 would be a lie, so the total is in miles after
+ * conversion, with the raw balances beside it.
+ */
+function WalletPanel({ onChanged }: { onChanged: () => void }) {
+  const [w, setW] = useState<Wallet | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  function load() {
+    fetchWallet()
+      .then(setW)
+      .catch((e) => setErr((e as Error).message));
+  }
+  useEffect(load, []);
+
+  async function accept(body: { ids?: number[]; program_key?: string }) {
+    setBusy(true);
+    setErr(null);
+    try {
+      setW((await acceptCredits(body)).wallet);
+      onChanged();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function undo(id: number) {
+    setBusy(true);
+    try {
+      setW((await undoCredit(id)).wallet);
+      onChanged();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (err) return <p className="pad error">{err}</p>;
+  if (!w) return <p className="pad sub">Loading…</p>;
+
+  const held = w.programs.filter((p) => p.points > 0 || p.pending > 0);
+  const pending = w.pending;
+
+  return (
+    <>
+      <section className="card hero">
+        <span className="stat-label">Wallet</span>
+        <span className="hero-value">{w.totals.miles_equivalent.toLocaleString()} miles</span>
+        <span className="sub">
+          after conversion · about ${money(w.totals.value_cents)} at your mile value
+          {w.totals.pending_points > 0 ? ` · ${w.totals.pending_points.toLocaleString()} waiting to be banked` : ''}
+        </span>
+      </section>
+
+      {pending.total_points > 0 && (
+        <section className="card">
+          <header>
+            <div>
+              <h2>Waiting to be banked</h2>
+              <p className="sub">
+                What your spending should have earned. Accept it to add it to the balance — banks sometimes credit
+                something else, so nothing goes in on its own.
+              </p>
+            </div>
+          </header>
+          {pending.by_program.map((g) => (
+            <div key={g.program_key} className="bal">
+              <div className="pick-head">
+                <span>{g.program_name}</span>
+                <span className="mono">
+                  +{g.points.toLocaleString()} {g.unit}
+                </span>
+              </div>
+              <p className="sub">from {g.count} purchase(s)</p>
+              <div className="entry-foot">
+                <button className="secondary" onClick={() => accept({ program_key: g.program_key })} disabled={busy}>
+                  Accept {g.points.toLocaleString()}
+                </button>
+              </div>
+            </div>
+          ))}
+          <div className="entry-foot">
+            <button onClick={() => accept({ ids: pending.credits.map((c) => c.id) })} disabled={busy}>
+              Accept everything
+            </button>
+            <button className="secondary" onClick={() => setOpen((v) => !v)}>
+              {open ? 'Hide the list' : `Show all ${pending.credits.length}`}
+            </button>
+          </div>
+          {open && (
+            <ul className="txns credits">
+              {pending.credits.map((c) => (
+                <li key={c.id}>
+                  <span className="t-date">{c.date.slice(5)}</span>
+                  <span className="t-card">{c.card}</span>
+                  <span className="t-note">{c.merchant ?? '—'}</span>
+                  <span className="t-amt mono">
+                    +{c.miles.toLocaleString()} {c.unit}
+                  </span>
+                  <button className="secondary" onClick={() => accept({ ids: [c.id] })} disabled={busy}>
+                    Accept
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {pending.unassigned.length > 0 && (
+        <section className="card">
+          <header>
+            <div>
+              <h2>Earning with nowhere to go</h2>
+              <p className="sub">These cards earn, but no programme is set, so the points cannot be banked.</p>
+            </div>
+          </header>
+          <ul className="notes">
+            {pending.unassigned.map((u) => (
+              <li key={u.nickname}>
+                <strong>{u.card}</strong> — {u.miles.toLocaleString()} from {u.count} purchase(s). Set one with{' '}
+                <code>/setprogram {u.nickname} &lt;programme&gt;</code> in the bot.
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <section className="card">
+        <header>
+          <div>
+            <h2>Balances</h2>
+            <p className="sub">Every programme you hold something in</p>
+          </div>
+        </header>
+        {held.map((p) => (
+          <div key={p.program_key} className="bal">
+            <div className="pick-head">
+              <span>{p.name}</span>
+              <span className="mono">
+                {p.points.toLocaleString()} {p.unit}
+              </span>
+            </div>
+            <p className="sub">
+              {p.unit === 'miles'
+                ? `about $${money(p.value_cents ?? 0)}`
+                : p.miles_equivalent !== null
+                  ? `≈ ${p.miles_equivalent.toLocaleString()} miles ${p.rate_note ?? ''} · about $${money(p.value_cents ?? 0)}`
+                  : 'no conversion recorded, so no miles value'}
+              {p.pending ? ` · ${p.pending.toLocaleString()} waiting` : ''}
+            </p>
+            {p.expiring_soon > 0 && (
+              <p className="cap">
+                {p.expiring_soon.toLocaleString()} expiring by {p.next_expiry}
+              </p>
+            )}
+          </div>
+        ))}
+        {!held.length && <p className="sub">Nothing yet. Log some spend, or record a balance below.</p>}
+      </section>
+
+      {w.expiring.length > 0 && (
+        <section className="card">
+          <header>
+            <div>
+              <h2>Expiring within 90 days</h2>
+            </div>
+          </header>
+          <ul className="rules">
+            {w.expiring.map((e, i) => (
+              <li key={i} className={e.days < 30 ? 'fail' : 'unknown'}>
+                <span>
+                  {e.points.toLocaleString()} {e.name} on {e.expires_at} ({e.days}d)
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
+  );
+}
+
 function PointsTab() {
   const todayIso = new Date().toISOString().slice(0, 10);
   const [data, setData] = useState<{ balances: BalanceRow[]; programs: ProgramRow[]; tranches: Tranche[] } | null>(null);
@@ -1255,72 +1461,36 @@ function PointsTab() {
 
   if (!data) return <p className="pad sub">Loading…</p>;
 
-  const held = data.balances.filter((b) => b.total > 0);
   const nameOf = (key: string) => data.programs.find((p) => p.key === key)?.name ?? key;
-  const kindOf = (key: string) => data.programs.find((p) => p.key === key)?.kind;
 
   return (
     <>
+      {/* The dashboard: totals, what is waiting to be banked, and balances. */}
+      <WalletPanel onChanged={load} />
+
       <section className="card">
         <header>
           <div>
-            <h2>Balances</h2>
-            <p className="sub">Everything you hold, across banks and airlines</p>
+            <h2>Batches</h2>
+            <p className="sub">Points expire in batches, so these are the rows you act on</p>
           </div>
         </header>
-
-        {held.length ? (
-          <div className="scroller">
-            <table className="pts">
-              <thead>
-                <tr>
-                  <th>Programme</th>
-                  <th className="num">Balance</th>
-                  <th className="num">Expiring 90d</th>
-                  <th className="num">Next expiry</th>
-                </tr>
-              </thead>
-              <tbody>
-                {held.map((b) => (
-                  <tr key={b.program_key}>
-                    <td>
-                      {b.name}
-                      <span className={`kind ${kindOf(b.program_key)}`}>{kindOf(b.program_key)}</span>
-                    </td>
-                    <td className="num strong">
-                      {b.total.toLocaleString()} <span className="unit">{b.unit}</span>
-                    </td>
-                    <td className={`num ${b.expiring_soon > 0 ? 'warn-num' : 'dim-num'}`}>
-                      {b.expiring_soon > 0 ? b.expiring_soon.toLocaleString() : '—'}
-                    </td>
-                    <td className="num dim-num">{b.next_expiry ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {data.tranches.length ? (
+          <ul className="txns">
+            {data.tranches.map((t) => (
+              <li key={t.id}>
+                <span className="t-card">{nameOf(t.program_key)}</span>
+                <span className="t-note">{t.note ?? ''}</span>
+                <span className="mono t-posted">{t.expires_at ?? 'no expiry'}</span>
+                <span className="mono t-amt">{t.points.toLocaleString()}</span>
+                <button type="button" className="t-del" onClick={() => removeTranche(t.id)} aria-label="Delete batch">
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
         ) : (
-          <p className="sub">Nothing recorded yet. Add a balance below.</p>
-        )}
-
-        {/* Points expire in batches, so the individual rows are what you act on. */}
-        {data.tranches.length > 0 && (
-          <details className="batches">
-            <summary>{data.tranches.length} batch{data.tranches.length === 1 ? '' : 'es'}</summary>
-            <ul className="txns">
-              {data.tranches.map((t) => (
-                <li key={t.id}>
-                  <span className="t-card">{nameOf(t.program_key)}</span>
-                  <span className="t-note">{t.note ?? ''}</span>
-                  <span className="mono t-posted">{t.expires_at ?? 'no expiry'}</span>
-                  <span className="mono t-amt">{t.points.toLocaleString()}</span>
-                  <button type="button" className="t-del" onClick={() => removeTranche(t.id)} aria-label="Delete batch">
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </details>
+          <p className="sub">Nothing recorded yet. Spend on a card, or add a balance below.</p>
         )}
       </section>
 
@@ -1459,6 +1629,7 @@ export default function App() {
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
   const [offerScope, setOfferScope] = useState<'open' | 'all'>('open');
   const [offersError, setOffersError] = useState<string | null>(null);
+  const [sweepMsg, setSweepMsg] = useState<string | null>(null);
   const [scanTick, setScanTick] = useState(0);
   const [txns, setTxns] = useState<Txn[]>([]);
   const [recentCount, setRecentCount] = useState(10);
@@ -1597,10 +1768,27 @@ export default function App() {
           <Inbox tick={scanTick} onTracked={loadOffers} />
           <div className="section-head">
             <h2>Tracked offers{offers?.length ? ` (${offers.length})` : ''}</h2>
-            <button className="secondary" onClick={() => setOfferScope((v) => (v === 'open' ? 'all' : 'open'))}>
-              {offerScope === 'open' ? 'Show dismissed' : 'Hide dismissed'}
-            </button>
+            <div className="entry-foot" style={{ margin: 0 }}>
+              <button
+                className="secondary"
+                onClick={async () => {
+                  const r = await sweepOffers();
+                  setSweepMsg(
+                    `${r.expired} marked expired` +
+                      (r.deleted ? `, ${r.deleted} removed (ended over ${r.retention_days} days ago)` : '') +
+                      '.'
+                  );
+                  loadOffers();
+                }}
+              >
+                Clear ended
+              </button>
+              <button className="secondary" onClick={() => setOfferScope((v) => (v === 'open' ? 'all' : 'open'))}>
+                {offerScope === 'open' ? 'Show all' : 'Hide closed'}
+              </button>
+            </div>
           </div>
+          {sweepMsg && <p className="pad sub">{sweepMsg}</p>}
           {offersError && (
             <p className="card err-text">
               {offersError}{' '}

@@ -654,6 +654,36 @@ the scanner has matched, ten to a page:
 There is also a **Sources** panel where a source's URL, label and kind can be
 edited, paused or removed without touching the bot.
 
+### Points that earn themselves
+
+Logging a purchase — in the app or the bot — evaluates it against the card's
+rules, so the app already knows what it should earn. What it does with that:
+
+1. The earning programme is resolved at that moment, from the matching rule's
+   `program_key`, else the card's. Recording it on the transaction means
+   changing a card's programme later cannot retroactively move points you have
+   already earned.
+2. It joins a queue: **Points → Waiting to be banked**, or `/credit` in the bot.
+3. Accepting it adds the points to your balance. Nothing is added on its own:
+   a bank can credit a different figure, and a wallet that silently disagrees
+   with the statement is worse than no wallet at all.
+
+Accepted points become **one batch per programme per month**, not one per
+purchase — a year of daily coffees would otherwise be 365 rows that expire
+together anyway — with the programme's expiry months applied from the start of
+that month. `/undocredit <id>` takes one back out, subtracting it from the same
+batch.
+
+A card needs a programme for any of this. `/newcard` guesses one from the
+issuer and says which; `/setprogram <card> <programme>` changes it, and the
+wallet's **Earning with nowhere to go** panel names any card that is earning
+without one. Cashback cards earn no points, so they never appear there.
+
+The wallet totals in **miles after conversion**, never by adding units
+together: 50,000 Citi points and 50,000 KrisFlyer miles are not 100,000 of
+anything. Each bank programme is converted at the best route recorded for it,
+labelled with the ratio used and whether that ratio has been verified.
+
 ### Keeping the database small
 
 Scanned history is the only table that grows without you doing anything: a
@@ -708,6 +738,15 @@ about that flow needs the bot any more, though `/extract` and `/save` still
 work. `Mark applied`, `Dismiss` and `Back to tracked` set the offer's status;
 dismissed offers are hidden until you ask for them.
 
+**The scan window.** By default a scan only considers posts published in the
+current calendar month (`SCAN_WINDOW`: `month`, `7d`, `30d`, `ytd`, `all`). A
+blog category page lists years of posts, and an offer from 2024 is noise. Dates
+come from the feed, then the date in the URL (`/2026/09/05/`), then the
+article's own meta tags when it is opened — and are read in your timezone, so a
+post published at 00:30 on the 1st stays inside the month. Anything older is
+recorded once, marked stale, and never read again. Pasting a URL by hand
+ignores the window: asking for a page is deliberate.
+
 **What "opening articles" means.** A feed summary is often one truncated
 sentence, which is not enough to tell a sign-up offer from a hotel review. A
 deep scan fetches the article itself (at most 12 per scan, 10s timeout each,
@@ -723,6 +762,9 @@ so the same article found through two sources is recognised as one item.
 /scan                       force a scan instead of waiting for 06:00
 /offers                     offers, their clauses and rule ids
 /prune                      what the scanned history costs · compact · delete
+/wallet                     everything you hold, and what it is worth
+/credit                     what your spending earned, waiting to be banked
+/setprogram <card> <prog>   where a card's points land
 /rule <rule id> yes|no|na   answer a clause only you can settle
 25.40 alt lunch             logs spend today
 25.40 alt yesterday lunch   backdate it

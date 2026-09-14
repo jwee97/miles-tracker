@@ -751,5 +751,54 @@ db.prepare(`INSERT INTO offers (id,status,source_url,source_title) VALUES (50,'p
   );
 }
 
+// --- earning into the wallet ------------------------------------------------
+db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VALUES ('citi_ty','Citi ThankYou','bank','points',60)`).run();
+db.prepare(`UPDATE cards SET program_key = 'citi_ty' WHERE nickname = 'crw'`).run();
+db.prepare(`INSERT INTO earn_rules (card_id, category, mpd, reward_type) SELECT id, '*', 1.2, 'miles' FROM cards WHERE nickname='crw'`).run();
+{
+  const res = await authed('/api/tx', { nickname: 'crw', amount: '100.00', date: '2026-09-10', note: 'Cold Storage' });
+  const body = (await res.json()) as any;
+  check('adding a transaction records what it earns', body.expected_miles > 0, JSON.stringify(body).slice(0, 140));
+  check('and which programme it lands in', body.expected_program === 'citi_ty', String(body.expected_program));
+
+  const pending = (await (await authed('/api/credits')).json()) as any;
+  check('it shows as waiting to be banked', pending.credits.some((c: any) => c.id === body.id), JSON.stringify(pending.by_program));
+  // This database already holds balances from the earlier tests, so the
+  // assertions are on the change, not the absolute total.
+  const before = ((await (await authed('/api/wallet')).json()) as any).totals.points;
+
+  const accepted = (await (await authed('/api/credits/accept', { ids: [body.id] })).json()) as any;
+  check('accepting banks it', accepted.accepted === 1 && accepted.points === body.expected_miles, JSON.stringify(accepted).slice(0, 120));
+  check('and the wallet grows by exactly that', accepted.wallet.totals.points === before + body.expected_miles, `${before} -> ${accepted.wallet.totals.points}`);
+  check('the queue is empty again', ((await (await authed('/api/credits')).json()) as any).credits.length === 0, '');
+
+  const undone = (await (await authed('/api/credits/undo', { id: body.id })).json()) as any;
+  check('and it can be taken back out', undone.wallet.totals.points === before, `${undone.wallet.totals.points} vs ${before}`);
+  check('undoing it twice is a 404', (await authed('/api/credits/undo', { id: body.id })).status === 404, '');
+  check('accepting nothing is refused', (await authed('/api/credits/accept', { ids: [] })).status === 400, '');
+}
+{
+  check('a card programme can be set from the app', (await authed('/api/card/program', { nickname: 'crw', program_key: 'citi_ty' })).status === 200, '');
+  check('an unknown programme is refused', (await authed('/api/card/program', { nickname: 'crw', program_key: 'nope' })).status === 400, '');
+  check('an unknown card is a 404', (await authed('/api/card/program', { nickname: 'zzz', program_key: 'citi_ty' })).status === 404, '');
+  check('and it can be cleared', (await authed('/api/card/program', { nickname: 'crw', program_key: null })).status === 200, '');
+}
+
+// --- offers that have ended -------------------------------------------------
+db.prepare(`INSERT INTO offers (id,status,issuer,valid_until) VALUES (60,'tracked','UOB','2026-09-01')`).run();
+db.prepare(`INSERT INTO offers (id,status,issuer,valid_until) VALUES (61,'tracked','DBS','2026-12-31')`).run();
+{
+  const body = (await (await authed('/api/offers')).json()) as any;
+  const ended = body.offers.find((o: any) => o.id === 60);
+  const live = body.offers.find((o: any) => o.id === 61);
+  check('an offer says how long is left', live.days_left > 0, String(live.days_left));
+  check('and an ended one says it has ended', ended.expired === true && ended.days_left < 0, JSON.stringify({ e: ended.expired, d: ended.days_left }));
+
+  const sweep = (await (await authed('/api/offers/sweep', {})).json()) as any;
+  check('the sweep marks it expired', sweep.expired === 1, JSON.stringify(sweep));
+  check('leaving the live one alone', (db.prepare(`SELECT status FROM offers WHERE id=61`).get() as any).status === 'tracked', '');
+  check('and it drops out of the default list', !(((await (await authed('/api/offers')).json()) as any).offers.some((o: any) => o.id === 60)), '');
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

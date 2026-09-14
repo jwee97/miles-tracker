@@ -55,6 +55,12 @@ MILE_VALUE_CENTS = "1.5"
 # job compacts judged ones: the id stays, so an item is never shown to you
 # twice, but its excerpt, matched terms and offer link are dropped. 0 disables.
 FEED_RETENTION_DAYS = "180"
+# How far back a scan looks: month (the current calendar month), 7d, 30d, ytd
+# or all. Blog category pages list years of posts; anything older than the
+# window is recorded once so it is never re-read, and never pushed at you.
+SCAN_WINDOW = "month"
+# Delete an offer this many days after its end date passes. 0 keeps them.
+OFFER_RETENTION_DAYS = "90"
 # What the card recommendation optimises for: miles, cashback, balanced (by
 # dollar value), or minspend (clear an unmet minimum before anything else).
 OBJECTIVE = "balanced"

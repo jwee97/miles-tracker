@@ -28,6 +28,20 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: 'offer_rules', column: 'decision', ddl: 'ALTER TABLE offer_rules ADD COLUMN decision TEXT' },
   { table: 'offer_rules', column: 'decided_at', ddl: 'ALTER TABLE offer_rules ADD COLUMN decided_at TEXT' },
   { table: 'offer_rules', column: 'note', ddl: 'ALTER TABLE offer_rules ADD COLUMN note TEXT' },
+  { table: 'cards', column: 'program_key', ddl: 'ALTER TABLE cards ADD COLUMN program_key TEXT' },
+  { table: 'transactions', column: 'expected_program', ddl: 'ALTER TABLE transactions ADD COLUMN expected_program TEXT' },
+  { table: 'transactions', column: 'credited_at', ddl: 'ALTER TABLE transactions ADD COLUMN credited_at TEXT' },
+  {
+    table: 'transactions',
+    column: 'credited_tranche_id',
+    ddl: 'ALTER TABLE transactions ADD COLUMN credited_tranche_id INTEGER',
+  },
+  {
+    table: 'balance_tranches',
+    column: 'source',
+    ddl: "ALTER TABLE balance_tranches ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
+  },
+  { table: 'balance_tranches', column: 'period', ddl: 'ALTER TABLE balance_tranches ADD COLUMN period TEXT' },
   { table: 'transactions', column: 'category_source', ddl: 'ALTER TABLE transactions ADD COLUMN category_source TEXT' },
   {
     table: 'transactions',

@@ -71,5 +71,55 @@ export function parseExtraction(raw: string): any {
   return JSON.parse(text);
 }
 
-export const OFFER_STATUSES = ['pending', 'tracked', 'applied', 'dismissed'] as const;
+export const OFFER_STATUSES = ['pending', 'tracked', 'applied', 'dismissed', 'expired'] as const;
 export type OfferStatus = (typeof OFFER_STATUSES)[number];
+
+/** Days until an offer's end date, negative once it has passed. */
+export function daysUntil(dateIso: string | null, today: string): number | null {
+  if (!dateIso) return null;
+  const t = Date.parse(dateIso + 'T00:00:00Z');
+  if (Number.isNaN(t)) return null;
+  return Math.round((t - Date.parse(today + 'T00:00:00Z')) / 86_400_000);
+}
+
+export interface OfferSweep {
+  expired: number;
+  deleted: number;
+  retention_days: number;
+}
+
+/**
+ * An offer with a past end date is no longer a decision you can make. It is
+ * marked expired rather than deleted on the day, so a bonus you already applied
+ * for keeps its record, and removed once it is old enough to be useless.
+ *
+ * An offer you marked applied is never swept: that one is your own history.
+ */
+export async function sweepExpiredOffers(env: Env, todayIso: string): Promise<OfferSweep> {
+  const marked = await env.DB.prepare(
+    `UPDATE offers SET status = 'expired'
+      WHERE valid_until IS NOT NULL AND valid_until < ?
+        AND status IN ('pending', 'tracked')`
+  )
+    .bind(todayIso)
+    .run();
+
+  const days = offerRetentionDays(env);
+  let deleted = 0;
+  if (days > 0) {
+    const cutoff = new Date(Date.parse(todayIso + 'T00:00:00Z') - days * 86_400_000).toISOString().slice(0, 10);
+    const res = await env.DB.prepare(
+      `DELETE FROM offers WHERE status = 'expired' AND valid_until IS NOT NULL AND valid_until < ?`
+    )
+      .bind(cutoff)
+      .run();
+    deleted = res.meta.changes ?? 0;
+  }
+
+  return { expired: marked.meta.changes ?? 0, deleted, retention_days: days };
+}
+
+export function offerRetentionDays(env: Env): number {
+  const n = parseInt(env.OFFER_RETENTION_DAYS ?? '', 10);
+  return Number.isFinite(n) && n >= 0 ? n : 90;
+}

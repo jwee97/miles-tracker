@@ -10,7 +10,7 @@
     "db:init:local": "wrangler d1 execute miles --local --file=./schema.sql",
     "db:seed": "wrangler d1 execute miles --remote --file=./seed.sql",
     "tail": "wrangler tail",
-    "test": "npm run test:units && npm run test:e2e && npm run test:migrate && npm run test:api && npm run test:analytics && npm run test:patterns && npm run test:rules && npm run test:advice && npm run test:rss && npm run test:review",
+    "test": "npm run test:units && npm run test:e2e && npm run test:migrate && npm run test:api && npm run test:analytics && npm run test:patterns && npm run test:rules && npm run test:advice && npm run test:rss && npm run test:review && npm run test:wallet",
     "test:units": "esbuild test/units.ts --bundle --loader:.sql=text --platform=node --format=esm --outfile=test/.units.mjs && node test/.units.mjs",
     "test:e2e": "esbuild test/e2e.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.e2e.mjs && node test/.e2e.mjs",
     "build": "npm --prefix web ci && npm --prefix web run build",
@@ -22,7 +22,8 @@
     "test:rules": "esbuild test/rules.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.rules.mjs && node test/.rules.mjs",
     "test:advice": "esbuild test/advice.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.advice.mjs && node test/.advice.mjs",
     "test:rss": "esbuild test/rss.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.rss.mjs && node test/.rss.mjs",
-    "test:review": "esbuild test/review.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.review.mjs && node test/.review.mjs"
+    "test:review": "esbuild test/review.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.review.mjs && node test/.review.mjs",
+    "test:wallet": "esbuild test/wallet.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.wallet.mjs && node test/.wallet.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",

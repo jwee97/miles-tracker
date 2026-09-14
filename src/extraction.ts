@@ -160,6 +160,13 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /reqs — list requirements
 /delreq <id>
 
+*Points wallet*
+/wallet — everything you hold, and what it is worth
+/credit — what your spending earned, waiting to be banked
+/credit all — accept it · /credit <programme> for one
+/undocredit <txn id> — take one back out
+/setprogram <card> <programme> — where a card's points land
+
 *Offers*
 /offers — tracked offers and their clauses (/offers all includes dismissed)
 /extract <offer id> — get the prompt to paste into Claude
@@ -174,6 +181,7 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /addfeed <url>|<label>|<rss|page>
 
 /prune — what the scanned history costs, and clean it up
+/prune offers — mark ended offers expired, remove old ones
 /app — open the dashboard
 /migrate — bring the database up to date after a deploy
 /seed — load the default feeds and transfer routes`;

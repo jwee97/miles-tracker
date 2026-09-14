@@ -593,3 +593,9 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
   color: var(--text);
   background: rgba(248, 113, 113, .07);
 }
+
+.deadline { margin: 6px 0 0; font-size: 12px; color: var(--dim); }
+.deadline.soon { color: var(--mid); font-weight: 600; }
+.deadline.gone { color: var(--bad); }
+.txns.credits li { grid-template-columns: 44px 58px 1fr auto auto; }
+.txns.credits button { font-size: 11px; padding: 4px 9px; }

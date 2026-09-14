@@ -51,6 +51,20 @@ export const EDITABLE = [
     kind: 'number' as const,
   },
   {
+    key: 'SCAN_WINDOW',
+    label: 'Scan window',
+    unit: 'month · 7d · 30d · ytd · all',
+    help: 'How far back a scan looks. A blog category page lists years of posts; the default keeps the inbox to this calendar month. Older items are still recorded once, so they are never re-read, but never pushed at you. Pasting a URL ignores this.',
+    kind: 'text' as const,
+  },
+  {
+    key: 'OFFER_RETENTION_DAYS',
+    label: 'Keep expired offers',
+    unit: 'days after they end',
+    help: 'An offer whose end date has passed is marked expired each night, and deleted this long afterwards. 0 keeps expired offers for ever.',
+    kind: 'number' as const,
+  },
+  {
     key: 'FEED_RETENTION_DAYS',
     label: 'Keep scanned items in full',
     unit: 'days',

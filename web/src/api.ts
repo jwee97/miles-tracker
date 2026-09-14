@@ -101,7 +101,9 @@ export interface Eligibility {
 
 export interface OfferRow {
   id: number;
-  status: 'pending' | 'tracked' | 'applied' | 'dismissed';
+  status: 'pending' | 'tracked' | 'applied' | 'dismissed' | 'expired';
+  days_left: number | null;
+  expired: boolean;
   issuer: string | null;
   product: string | null;
   bonus_miles: number | null;
@@ -495,8 +497,64 @@ export const fetchAnalytics = (month: string) => get<Analytics>(`/api/analytics?
 export const fetchMonths = () => get<{ months: string[] }>('/api/months');
 
 export const fetchSummary = () => get<Summary>('/api/summary');
+// --- the points wallet ------------------------------------------------------
+
+export interface WalletProgram {
+  program_key: string;
+  name: string;
+  kind: string;
+  unit: string;
+  points: number;
+  expiring_soon: number;
+  next_expiry: string | null;
+  pending: number;
+  miles_equivalent: number | null;
+  value_cents: number | null;
+  rate_note: string | null;
+}
+
+export interface PendingCredit {
+  id: number;
+  date: string;
+  merchant: string | null;
+  amount_cents: number;
+  card: string;
+  program_key: string;
+  program_name: string;
+  unit: string;
+  miles: number;
+}
+
+export interface PendingSummary {
+  credits: PendingCredit[];
+  by_program: { program_key: string; program_name: string; unit: string; points: number; count: number }[];
+  total_points: number;
+  unassigned: { card: string; nickname: string; miles: number; count: number }[];
+}
+
+export interface Wallet {
+  programs: WalletProgram[];
+  totals: { points: number; miles_equivalent: number; value_cents: number; pending_points: number };
+  pending: PendingSummary;
+  expiring: { program_key: string; name: string; points: number; expires_at: string; days: number }[];
+}
+
+export const fetchWallet = () => get<Wallet>('/api/wallet');
+
+/** Nothing is banked without this: the prediction waits to be confirmed. */
+export const acceptCredits = (body: { ids?: number[]; program_key?: string }) =>
+  post<{ accepted: number; points: number; wallet: Wallet }>('/api/credits/accept', body);
+
+export const undoCredit = (id: number) => post<{ ok: true; wallet: Wallet }>('/api/credits/undo', { id });
+
+export const setCardProgram = (nickname: string, program_key: string | null) =>
+  post<{ ok: true }>('/api/card/program', { nickname, program_key });
+
+export const sweepOffers = () =>
+  post<{ expired: number; deleted: number; retention_days: number }>('/api/offers/sweep', {});
+
 export const fetchOffers = (status: 'open' | 'all' = 'open') =>
-  get<{ offers: OfferRow[] }>(`/api/offers?status=${status}`);
+  get<{ offers: OfferRow[]; today: string; offer_retention_days: number }>(`/api/offers?status=${status}`);
 
 /** A headline the scanner has seen, before it is promoted to a tracked offer. */
 export interface FeedItemRow {

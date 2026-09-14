@@ -2,13 +2,15 @@ import { mintToken } from './auth';
 import { buildDigest, checkAlerts } from './digest';
 import { cardRulesPrompt, extractionPrompt, HELP } from './extraction';
 import { decideRule, evaluateOffer } from './eligibility';
-import { OFFER_STATUSES, parseExtraction, saveExtraction, type OfferStatus } from './offers';
+import { daysUntil, OFFER_STATUSES, parseExtraction, saveExtraction, sweepExpiredOffers, type OfferStatus } from './offers';
 import { feedStorage, ignoreFeedItem, purgeFeedItems, retentionDays, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import type { ScanResult } from './rss';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
 import { runMigrations, runSeed } from './migrate';
 import { optimise } from './advice';
+import { evaluate, lookupMerchant } from './rules';
+import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import type { Card, Env, Offer } from './types';
 
 const api = (env: Env, method: string) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
@@ -148,7 +150,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const lines = results.map(
           (c) =>
             `*${c.nickname}* — ${c.issuer} ${c.product}\n  limit $${money(c.credit_limit_cents)} · closes day ${c.statement_day}` +
-            `\n  opened ${c.opened_at ?? '?'}${c.closed_at ? ` · closed ${c.closed_at}` : ''}`
+            `\n  opened ${c.opened_at ?? '?'}${c.closed_at ? ` · closed ${c.closed_at}` : ''}` +
+            `\n  earns into ${c.program_key ?? '— not set, /setprogram'}`
         );
         return send(env, chatId, lines.join('\n\n'));
       }
@@ -159,9 +162,12 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         if (p.length < 5)
           return send(env, chatId, 'Format:\n`/newcard DBS|Altitude Visa|alt|8000|18|2025-03-04`');
         const [issuer, product, nickname, limit, stmtDay, opened] = p;
+        // A starting guess at where this card's points land, from the issuer.
+        // A cashback card earns none, so nothing is credited either way.
+        const guessed = await guessProgram(env, issuer);
         await env.DB.prepare(
-          `INSERT INTO cards (issuer, product, product_key, nickname, credit_limit_cents, statement_day, opened_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO cards (issuer, product, product_key, nickname, credit_limit_cents, statement_day, opened_at, program_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             issuer,
@@ -170,10 +176,18 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             nickname.toLowerCase(),
             parseMoney(limit) ?? 0,
             parseInt(stmtDay, 10) || 1,
-            opened || null
+            opened || null,
+            guessed
           )
           .run();
-        return send(env, chatId, `Added *${product}* as \`${nickname.toLowerCase()}\`.`);
+        return send(
+          env,
+          chatId,
+          `Added *${product}* as \`${nickname.toLowerCase()}\`.` +
+            (guessed
+              ? `\nPoints will go to \`${guessed}\` — \`/setprogram ${nickname.toLowerCase()} <programme>\` to change it.`
+              : `\nNo programme guessed for ${issuer}. \`/setprogram ${nickname.toLowerCase()} <programme>\` if it earns points.`)
+        );
       }
 
       case '/closecard': {
@@ -268,7 +282,18 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             `${icon} *#${o.id} ${o.issuer ?? '?'} ${o.product ?? o.source_title ?? ''}*${state}` +
               (o.bonus_miles ? `\n  ${o.bonus_miles.toLocaleString()} miles` : '') +
               (o.min_spend_cents ? ` for $${money(o.min_spend_cents)} in ${o.spend_window_days ?? '?'}d` : '') +
-              (o.valid_until ? `\n  expires ${o.valid_until}` : '') +
+              (o.valid_until
+                ? `\n  ${(() => {
+                    const d = daysUntil(o.valid_until, today(env));
+                    return d === null
+                      ? `ends ${o.valid_until}`
+                      : d < 0
+                        ? `ended ${o.valid_until} (${-d}d ago)`
+                        : d === 0
+                          ? `ends today (${o.valid_until})`
+                          : `ends in ${d}d (${o.valid_until})`;
+                  })()}`
+                : '\n  _no end date extracted_') +
               (e.rules.length
                 ? '\n' +
                   e.rules
@@ -412,6 +437,100 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
       // Housekeeping for the scanner's history — the only table that grows
       // without you doing anything.
+      // The wallet half of logging spend: what is earned but not yet banked.
+      case '/credit': {
+        const pending = await pendingCredits(env);
+        const arg = args.trim().toLowerCase();
+
+        if (!arg) {
+          if (!pending.credits.length && !pending.unassigned.length)
+            return send(env, chatId, 'Nothing waiting. Points are added when you accept them here.');
+          const lines = pending.by_program.map(
+            (g) => `*${g.program_name}* — ${g.points.toLocaleString()} ${g.unit} from ${g.count} purchase(s)`
+          );
+          const recent = pending.credits
+            .slice(0, 8)
+            .map((c) => `  #${c.id} ${c.date} ${c.merchant ?? '—'} · ${c.miles.toLocaleString()} ${c.unit}`);
+          const orphan = pending.unassigned.map(
+            (u) =>
+              `⚠️ ${u.card} earned ${u.miles.toLocaleString()} with no programme set — \`/setprogram ${u.nickname} <programme>\``
+          );
+          return send(
+            env,
+            chatId,
+            ['*Waiting to be banked*', ...lines, '', ...recent, ...orphan, '', '`/credit all` · `/credit <programme>`']
+              .filter(Boolean)
+              .join('\n')
+          );
+        }
+
+        const ids =
+          arg === 'all'
+            ? pending.credits.map((c) => c.id)
+            : pending.credits.filter((c) => c.program_key.toLowerCase() === arg).map((c) => c.id);
+        if (!ids.length) return send(env, chatId, arg === 'all' ? 'Nothing waiting.' : `Nothing waiting for \`${arg}\`.`);
+
+        const res = await acceptCredits(env, ids);
+        const w = await wallet(env);
+        return send(
+          env,
+          chatId,
+          `Banked ${res.points.toLocaleString()} from ${res.accepted} purchase(s).\n` +
+            w.programs
+              .filter((p) => p.points > 0)
+              .map((p) => `${p.name}: ${p.points.toLocaleString()} ${p.unit}`)
+              .join('\n') +
+            '\n\n`/undocredit <txn id>` if a bank credits something different.'
+        );
+      }
+
+      case '/undocredit': {
+        const id = parseInt(args, 10);
+        if (!id) return send(env, chatId, 'Format: `/undocredit <transaction id>`');
+        const ok = await undoCredit(env, id);
+        return send(env, chatId, ok ? `Taken back out of the wallet (#${id}).` : `#${id} was not credited.`);
+      }
+
+      case '/setprogram': {
+        const [nick, key] = args.split(/\s+/).map((x) => x?.trim());
+        if (!nick) return send(env, chatId, 'Format: `/setprogram <card> <programme key>` · `/routes` lists programmes.');
+        const card = await cardByNick(env, nick);
+        if (!card) return send(env, chatId, `No card with nickname \`${nick}\`.`);
+        if (key && key !== 'none') {
+          const prog = await env.DB.prepare(`SELECT key, name FROM programs WHERE key = ?`).bind(key).first<any>();
+          if (!prog) return send(env, chatId, `No programme \`${key}\`. \`/routes\` lists them.`);
+        }
+        await env.DB.prepare(`UPDATE cards SET program_key = ? WHERE id = ?`)
+          .bind(key && key !== 'none' ? key : null, card.id)
+          .run();
+        return send(
+          env,
+          chatId,
+          key && key !== 'none'
+            ? `*${card.product}* now earns into \`${key}\`. Past purchases keep the programme they were logged with.`
+            : `*${card.product}* no longer has a programme.`
+        );
+      }
+
+      case '/wallet': {
+        const w = await wallet(env);
+        const lines = w.programs
+          .filter((p) => p.points > 0 || p.pending > 0)
+          .map(
+            (p) =>
+              `*${p.name}* ${p.points.toLocaleString()} ${p.unit}` +
+              (p.miles_equivalent !== null && p.unit !== 'miles' ? ` ≈ ${p.miles_equivalent.toLocaleString()} miles` : '') +
+              (p.pending ? ` · ${p.pending.toLocaleString()} waiting` : '') +
+              (p.expiring_soon ? `\n  ⚠️ ${p.expiring_soon.toLocaleString()} expiring by ${p.next_expiry}` : '')
+          );
+        if (!lines.length) return send(env, chatId, 'Wallet is empty. `/addbal` records a balance; `/credit` banks what you earn.');
+        return send(
+          env,
+          chatId,
+          ['*Wallet*', ...lines, '', `Worth about $${money(w.totals.value_cents)} at your mile value.`].join('\n')
+        );
+      }
+
       case '/prune': {
         const store = await feedStorage(env);
         const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`;
@@ -427,13 +546,23 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
               `Compactable now: ${store.compactable} item(s), about ${kb(store.reclaimable_bytes)}\n\n` +
               '`/prune compact` — drop the bulk of judged items older than ' +
               `${store.retention_days} days, keeping the ids so they are never shown again (this runs nightly anyway)\n` +
-              '`/prune delete` — remove ignored items outright. They are then forgotten, so anything still in a feed comes back on the next scan.'
+              '`/prune delete` — remove ignored items outright. They are then forgotten, so anything still in a feed comes back on the next scan.\n' +
+              '`/prune offers` — mark ended offers expired and remove the old ones.'
           );
         }
 
         if (arg === 'compact') {
           const r = await purgeFeedItems(env, { mode: 'compact', scope: 'decided', older_than_days: retentionDays(env) });
           return send(env, chatId, `Compacted ${r.affected} item(s), freeing about ${kb(r.freed_bytes)}.`);
+        }
+        if (arg === 'offers') {
+          const sweep = await sweepExpiredOffers(env, today(env));
+          return send(
+            env,
+            chatId,
+            `Marked ${sweep.expired} offer(s) expired` +
+              (sweep.deleted ? ` and deleted ${sweep.deleted} that ended over ${sweep.retention_days} days ago.` : '.')
+          );
         }
         if (arg === 'delete') {
           const r = await purgeFeedItems(env, { mode: 'delete', scope: 'ignored' });
@@ -444,7 +573,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
               'Those are now forgotten — if a feed still carries one, the next scan will show it again.'
           );
         }
-        return send(env, chatId, 'Use `/prune`, `/prune compact` or `/prune delete`.');
+        return send(env, chatId, 'Use `/prune`, `/prune compact`, `/prune delete` or `/prune offers`.');
       }
 
       case '/recent': {
@@ -1049,11 +1178,29 @@ async function logSpend(env: Env, chatId: string, input: string) {
     if (resolved) source = 'learned';
   }
 
+  // The same evaluation the dashboard does. Logging through the bot used to
+  // store no prediction at all, which left the reward audit with nothing to
+  // reconcile and the wallet with nothing to credit.
+  const guess = note ? await lookupMerchant(env, note) : null;
+  const mcc = guess?.mcc ?? null;
+  const channel = guess?.channel ?? null;
+  if (!resolved && guess?.category) {
+    resolved = guess.category;
+    source = 'learned';
+    learned = true;
+  }
+  const expected = await evaluate(env, card, { amount_cents: amount, mcc, category: resolved, channel });
+  const program = expected.miles > 0 ? await programForCard(env, card.id, expected.rule?.id) : null;
+
   const ins = await env.DB.prepare(
-    `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, category, category_source, needs_review, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'manual')`
+    `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, category, category_source,
+       needs_review, mcc, channel, expected_miles, expected_cashback_cents, expected_program, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`
   )
-    .bind(card.id, amount, date, note || null, resolved, source, resolved ? 0 : 1)
+    .bind(
+      card.id, amount, date, note || null, resolved, source, resolved ? 0 : 1,
+      mcc, channel, expected.miles, expected.cashback_cents, program
+    )
     .run();
 
   // Immediate feedback: what this swipe did to the limit and to any minimum.
@@ -1064,6 +1211,17 @@ async function logSpend(env: Env, chatId: string, input: string) {
       (resolved ? ` #${resolved}${learned ? ' _(remembered)_' : ''}` : ' _(no category — /review)_') +
       ` (#${ins.meta.last_row_id})`,
   ];
+  // What it earned, and whether that is waiting to go into the wallet.
+  if (expected.miles > 0) {
+    bits.push(
+      `Earns ~${expected.miles.toLocaleString()} ${expected.reward_type === 'miles' ? 'miles' : 'points'}` +
+        (program
+          ? ` → ${program}. \`/credit\` to add it to your balance.`
+          : ` — no programme set for this card, so it cannot be banked. \`/setprogram ${card.nickname} <programme>\``)
+    );
+  } else if (expected.cashback_cents > 0) {
+    bits.push(`Earns ~$${money(expected.cashback_cents)} cashback.`);
+  }
   for (const req of reqs) {
     const p = await requirementProgress(env, card, req);
     if (p.met) {

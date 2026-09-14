@@ -1,3 +1,4 @@
+import { resolveRange, tzOffset } from './spend';
 import type { Env } from './types';
 
 /**
@@ -213,21 +214,80 @@ export function htmlToText(html: string, limit = 40000): string {
     .slice(0, limit);
 }
 
-/** <title>, og:title and the meta description of a page. */
-export function pageMeta(html: string): { title: string; description: string } {
-  const meta = (prop: string) => {
-    const re = new RegExp(
-      `<meta[^>]*(?:property|name)=["']${prop}["'][^>]*content=["']([^"']*)["']|` +
-        `<meta[^>]*content=["']([^"']*)["'][^>]*(?:property|name)=["']${prop}["']`,
-      'i'
-    );
-    const m = html.match(re);
-    return m ? strip(m[1] ?? m[2] ?? '') : '';
-  };
+/** The content of one <meta> tag, by property or name. */
+function metaContent(html: string, prop: string): string {
+  const re = new RegExp(
+    `<meta[^>]*(?:property|name|itemprop)=["']${prop}["'][^>]*content=["']([^"']*)["']|` +
+      `<meta[^>]*content=["']([^"']*)["'][^>]*(?:property|name|itemprop)=["']${prop}["']`,
+    'i'
+  );
+  const m = html.match(re);
+  return m ? strip(m[1] ?? m[2] ?? '') : '';
+}
+
+/** <title>, og:title and the meta description of a page — or any named tag. */
+export function pageMeta(html: string): { title: string; description: string };
+export function pageMeta(html: string, prop: string): string;
+export function pageMeta(html: string, prop?: string): { title: string; description: string } | string {
+  if (prop) return metaContent(html, prop);
   return {
-    title: meta('og:title') || tag(html, 'title'),
-    description: meta('og:description') || meta('description') || meta('twitter:description'),
+    title: metaContent(html, 'og:title') || tag(html, 'title'),
+    description:
+      metaContent(html, 'og:description') || metaContent(html, 'description') || metaContent(html, 'twitter:description'),
   };
+}
+
+/**
+ * When an article was published, from whatever the page will admit to: the
+ * meta tags first, then a <time> element, then the date most blogs put in the
+ * URL. Index pages carry no dates at all, so without this every harvested link
+ * would look undated and slip past the scan window.
+ */
+export function articleDate(html: string, url = '', offsetMinutes = 0): string | null {
+  const metas = [
+    'article:published_time',
+    'article:modified_time',
+    'og:published_time',
+    'datePublished',
+    'publish-date',
+    'date',
+  ];
+  for (const m of metas) {
+    const iso = toIsoDate(pageMeta(html, m), offsetMinutes);
+    if (iso) return iso;
+  }
+
+  const timeTag = html.match(/<time[^>]*datetime=["']([^"']+)["']/i);
+  const fromTime = toIsoDate(timeTag?.[1] ?? '', offsetMinutes);
+  if (fromTime) return fromTime;
+
+  // JSON-LD is common on news sites and cheap to look for.
+  const ld = html.match(/"datePublished"\s*:\s*"([^"]+)"/i);
+  const fromLd = toIsoDate(ld?.[1] ?? '', offsetMinutes);
+  if (fromLd) return fromLd;
+
+  return dateFromUrl(url);
+}
+
+/** The /2026/09/12/ or /2026-09-12- shape most blogs use in their permalinks. */
+export function dateFromUrl(url: string): string | null {
+  const m = url.match(/\/(20\d{2})[/-](0[1-9]|1[0-2])(?:[/-](0[1-9]|[12]\d|3[01]))?(?:[/-]|$)/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3] ?? '01'}`;
+}
+
+/**
+ * A timestamp reduced to the date it falls on *here*. Without the offset, a
+ * post published at 00:30 on the 1st in Singapore is 16:30 on the last of the
+ * previous month in UTC — and a "this month" window would throw it away.
+ */
+function toIsoDate(raw: string, offsetMinutes = 0): string | null {
+  if (!raw) return null;
+  const t = Date.parse(raw);
+  if (Number.isNaN(t)) return null;
+  const iso = new Date(t + offsetMinutes * 60_000).toISOString().slice(0, 10);
+  // A date far in the future is a parse accident, not a publication date.
+  return iso > '2100-01-01' || iso < '1990-01-01' ? null : iso;
 }
 
 export function parseFeed(xml: string): FeedItem[] {
@@ -274,7 +334,7 @@ export function parseIndexPage(html: string, base: string): FeedItem[] {
     if (!/[a-z]/.test(title)) continue;
     if (seen.has(l.url)) continue;
     seen.add(l.url);
-    items.push({ guid: l.url, title, link: l.url, published_at: null, summary: '' });
+    items.push({ guid: l.url, title, link: l.url, published_at: dateFromUrl(l.url), summary: '' });
   }
   return items.slice(0, 60);
 }
@@ -373,11 +433,12 @@ export interface PageRead {
   text: string;
   excerpt: string;
   apply_url: string | null;
+  published_at: string | null;
   links: { url: string; text: string }[];
 }
 
 /** Fetch one page and reduce it to the parts the classifier and the bot use. */
-export async function readPage(rawUrl: string): Promise<PageRead | null> {
+export async function readPage(rawUrl: string, offsetMinutes = 0): Promise<PageRead | null> {
   const url = canonicalUrl(rawUrl);
   if (!url) return null;
   const got = await fetchText(url, 'text/html,application/xhtml+xml');
@@ -392,6 +453,7 @@ export async function readPage(rawUrl: string): Promise<PageRead | null> {
     text,
     excerpt: (meta.description || text.replace(/\n/g, ' ')).slice(0, 400).trim(),
     apply_url: pickApplyUrl(links, url),
+    published_at: articleDate(got.body, url, offsetMinutes),
     links,
   };
 }
@@ -409,6 +471,7 @@ export interface ScanResult {
   excerpt: string | null;
   apply_url: string | null;
   deep: boolean;
+  published_at: string | null;
 }
 
 export interface ScanOptions {
@@ -416,6 +479,9 @@ export interface ScanOptions {
   deep?: boolean;
   /** Hard ceiling on article fetches per scan, so a big feed day stays cheap. */
   budget?: number;
+  /** Ignore anything published before this date. `null` accepts everything;
+   *  omit it to use the configured scan window. */
+  since?: string | null;
 }
 
 export interface ScanSummary {
@@ -424,6 +490,9 @@ export interface ScanSummary {
   feeds_failed: string[];
   items_seen: number;
   pages_fetched: number;
+  /** Items dated before the window — seen once, then left alone. */
+  skipped_old: number;
+  since: string | null;
 }
 
 async function watchTerms(env: Env): Promise<string[]> {
@@ -448,8 +517,19 @@ export async function scanFeedsDetailed(env: Env, opts: ScanOptions = {}): Promi
     kind: string | null;
   }>();
   const watch = await watchTerms(env);
+  // Anything published before this is history: stored so it is judged once and
+  // never re-read, but never pushed at you.
+  const window = opts.since === undefined ? scanWindow(env).from : opts.since;
 
-  const summary: ScanSummary = { fresh: [], feeds_read: 0, feeds_failed: [], items_seen: 0, pages_fetched: 0 };
+  const summary: ScanSummary = {
+    fresh: [],
+    feeds_read: 0,
+    feeds_failed: [],
+    items_seen: 0,
+    pages_fetched: 0,
+    skipped_old: 0,
+    since: window,
+  };
 
   for (const feed of feeds ?? []) {
     const got = await fetchText(feed.url, 'application/rss+xml, application/xml, text/xml, text/html;q=0.8');
@@ -478,6 +558,17 @@ export async function scanFeedsDetailed(env: Env, opts: ScanOptions = {}): Promi
       if ((ins.meta.changes ?? 0) === 0) continue;
       const id = ins.meta.last_row_id as number;
 
+      // A feed gives a date; a harvested link usually carries one in its URL.
+      // When neither does, the article itself is asked below.
+      let published = item.published_at ?? dateFromUrl(link);
+      if (window && published && published.slice(0, 10) < window) {
+        await env.DB.prepare(`UPDATE feed_items SET action = 'stale', published_at = ? WHERE id = ?`)
+          .bind(published, id)
+          .run();
+        summary.skipped_old++;
+        continue;
+      }
+
       const shallow = classify(`${item.title} ${item.summary}`, watch);
       let verdict = shallow;
       let excerpt: string | null = item.summary ? item.summary.slice(0, 400) : null;
@@ -491,19 +582,32 @@ export async function scanFeedsDetailed(env: Env, opts: ScanOptions = {}): Promi
       const worthReading = shallow.promo || shallow.rates || (thin && CONTEXT.test(`${item.title} ${item.summary}`));
 
       if (deep && budget > 0 && worthReading && link) {
-        read = await readPage(link);
+        read = await readPage(link, tzOffset(env));
         if (read) {
           budget--;
           summary.pages_fetched++;
           verdict = classify(`${item.title} ${read.title} ${read.text.slice(0, 12_000)}`, watch);
           excerpt = read.excerpt || excerpt;
           applyUrl = read.apply_url;
+          published = published ?? read.published_at;
+
+          // The page can date itself out of the window even when the link could
+          // not: an undated index link to a two-year-old post.
+          if (window && published && published < window) {
+            await env.DB.prepare(`UPDATE feed_items SET action = 'stale', published_at = ? WHERE id = ?`)
+              .bind(published, id)
+              .run();
+            summary.skipped_old++;
+            continue;
+          }
         }
       }
 
       const topic: 'promo' | 'rates' = verdict.promo ? 'promo' : 'rates';
       await env.DB.prepare(
-        `UPDATE feed_items SET topic = ?, score = ?, terms = ?, excerpt = ?, apply_url = ?, deep = ? WHERE id = ?`
+        `UPDATE feed_items
+            SET topic = ?, score = ?, terms = ?, excerpt = ?, apply_url = ?, deep = ?, published_at = COALESCE(?, published_at)
+          WHERE id = ?`
       )
         .bind(
           verdict.promo || verdict.rates ? topic : null,
@@ -512,6 +616,7 @@ export async function scanFeedsDetailed(env: Env, opts: ScanOptions = {}): Promi
           excerpt,
           applyUrl,
           read ? 1 : 0,
+          published,
           id
         )
         .run();
@@ -531,6 +636,7 @@ export async function scanFeedsDetailed(env: Env, opts: ScanOptions = {}): Promi
         excerpt,
         apply_url: applyUrl,
         deep: !!read,
+        published_at: published,
       });
     }
   }
@@ -540,19 +646,20 @@ export async function scanFeedsDetailed(env: Env, opts: ScanOptions = {}): Promi
 /**
  * Parse one URL on demand — paste a promo page into the bot or the dashboard
  * and get the same judgement a feed item would receive, without waiting for a
- * feed to carry it.
+ * feed to carry it. The scan window does not apply: asking for a page is a
+ * deliberate act, and refusing it because it is old would be surprising.
  */
 export async function scanUrl(env: Env, rawUrl: string): Promise<ScanResult | null> {
-  const read = await readPage(rawUrl);
+  const read = await readPage(rawUrl, tzOffset(env));
   if (!read) return null;
   const watch = await watchTerms(env);
   const verdict = classify(`${read.title} ${read.text.slice(0, 12_000)}`, watch);
   const topic: 'promo' | 'rates' = verdict.promo ? 'promo' : 'rates';
 
   await env.DB.prepare(
-    `INSERT OR IGNORE INTO feed_items (guid, feed, title, link, published_at) VALUES (?, 'manual', ?, ?, NULL)`
+    `INSERT OR IGNORE INTO feed_items (guid, feed, title, link, published_at) VALUES (?, 'manual', ?, ?, ?)`
   )
-    .bind(read.url, read.title || read.url, read.url)
+    .bind(read.url, read.title || read.url, read.url, read.published_at)
     .run();
   const row = await env.DB.prepare(`SELECT id FROM feed_items WHERE guid = ?`).bind(read.url).first<{ id: number }>();
   if (!row) return null;
@@ -582,6 +689,7 @@ export async function scanUrl(env: Env, rawUrl: string): Promise<ScanResult | nu
     excerpt: read.excerpt,
     apply_url: read.apply_url,
     deep: true,
+    published_at: read.published_at,
   };
 }
 
@@ -665,6 +773,16 @@ export async function feedStorage(env: Env): Promise<FeedStorage> {
     compactable: spare?.n ?? 0,
     retention_days: days,
   };
+}
+
+/**
+ * How far back a scan looks. The default is the current calendar month: a blog
+ * category page lists years of posts, and an offer from 2024 is noise, not news.
+ */
+export function scanWindow(env: Env): { from: string | null; label: string } {
+  const raw = (env.SCAN_WINDOW ?? 'month').trim().toLowerCase();
+  const { from, label } = resolveRange(env, raw === '' ? 'month' : raw);
+  return { from, label };
 }
 
 export function retentionDays(env: Env): number {

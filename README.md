@@ -38,6 +38,13 @@ Ignore buttons and in the Offers tab, where **Scan now** runs the same job on
 demand and a URL box reads any page you paste. Everything matched lands in a
 paged list you can filter by state and date and judge in batches.
 
+**The points wallet.** Every purchase is evaluated as it is logged, so the app
+knows what it should earn and which programme it lands in. Those points wait in
+a queue until you accept them — a bank can credit something other than the
+published rate, and a wallet that quietly disagrees with the statement is worse
+than none. Accepting banks them as one batch per programme per month, with the
+programme's own expiry clock applied.
+
 **Eligibility.** Tracked offers get their T&C turned into typed predicates —
 `{"type":"no_issuer_card_within_months","issuer":"DBS","months":12}` — which a
 deterministic evaluator runs against your own card history. The LLM only does
@@ -152,9 +159,18 @@ web/                  React + Vite PWA, served by the Worker as assets
 .github/workflows/    CI: typecheck, both test suites, dashboard build
 ```
 
+## Offers that have ended
+
+Every offer carries its end date. The Offers tab shows days remaining, turns
+the line amber inside two weeks and red once it has passed. Ended offers are
+marked expired each night and deleted `OFFER_RETENTION_DAYS` (90) later —
+except ones you marked applied, which are your own record and are never swept.
+
 ## Keeping it small
 
-Scanned items are compacted nightly after `FEED_RETENTION_DAYS` (180): the id
+Scanning only looks at the current calendar month by default (`SCAN_WINDOW`);
+older posts are recorded once so they are never re-read, and never pushed at
+you. Scanned items are compacted nightly after `FEED_RETENTION_DAYS` (180): the id
 and your decision stay, so nothing is ever shown twice, and the excerpt, terms
 and offer link go. `/prune` reports what the history costs; the Offers tab can
 compact or delete on demand. Transactions are left alone — they are a hundred

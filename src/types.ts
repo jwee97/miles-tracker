@@ -13,6 +13,10 @@ export interface Env {
   OBJECTIVE: string;
   /** Keep scanned items in full for this many days; compact them after. */
   FEED_RETENTION_DAYS: string;
+  /** How far back a scan looks: month (default), 7d, 30d, ytd or all. */
+  SCAN_WINDOW: string;
+  /** Delete offers this long after they expire. 0 keeps them. */
+  OFFER_RETENTION_DAYS: string;
 }
 
 export interface Card {
@@ -26,6 +30,8 @@ export interface Card {
   opened_at: string | null;
   closed_at: string | null;
   signup_bonus_at: string | null;
+  /** Programme this card's points land in; null until you set one. */
+  program_key: string | null;
   base_mpd: number;
 }
 

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS cards (
   closed_at           TEXT,                      -- YYYY-MM-DD, NULL while held
   signup_bonus_at     TEXT,                      -- when a sign-up bonus was received
   base_mpd            REAL    NOT NULL DEFAULT 0,-- miles per dollar, base rate
+  program_key         TEXT    REFERENCES programs(key), -- where this card's points land
   created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS cards_nickname ON cards(nickname);
@@ -36,6 +37,9 @@ CREATE TABLE IF NOT EXISTS transactions (
   actual_miles INTEGER,                          -- what the bank actually credited
   actual_cashback_cents INTEGER,
   reward_note  TEXT,
+  expected_program TEXT,                          -- programme the earn lands in
+  credited_at  TEXT,                              -- when you accepted it into the wallet
+  credited_tranche_id INTEGER,                    -- which balance tranche took it
   source       TEXT    NOT NULL DEFAULT 'manual',-- manual | sms | import
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -196,8 +200,13 @@ CREATE TABLE IF NOT EXISTS balance_tranches (
   earned_at   TEXT,
   expires_at  TEXT,
   note        TEXT,
+  source      TEXT    NOT NULL DEFAULT 'manual', -- manual | auto (from spend)
+  period      TEXT,                              -- YYYY-MM, for the automatic ones
   created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+-- One automatic tranche per programme per month; the accept path relies on it.
+CREATE UNIQUE INDEX IF NOT EXISTS tranche_auto ON balance_tranches (program_key, period)
+  WHERE source = 'auto';
 CREATE INDEX IF NOT EXISTS tranche_prog ON balance_tranches(program_key, expires_at);
 
 -- from_units of the source buys to_units of the target. Transfers move in

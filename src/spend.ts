@@ -10,6 +10,9 @@ export const parseMoney = (s: string): number | null => {
 
 const tz = (env: Env) => parseInt(env.TZ_OFFSET_MINUTES || '0', 10);
 
+/** Minutes east of UTC, for the few callers outside this module that need it. */
+export const tzOffset = (env: Env) => tz(env);
+
 /** "Now" shifted into the user's timezone, so day boundaries match their calendar. */
 export function localNow(env: Env): Date {
   return new Date(Date.now() + tz(env) * 60_000);

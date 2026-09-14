@@ -1,7 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/migrate';
 import {
+  articleDate,
   canonicalUrl,
+  dateFromUrl,
   feedStorage,
   purgeFeedItems,
   retentionDays,
@@ -370,6 +372,88 @@ await purgeFeedItems(env, { mode: 'delete', scope: 'ignored' });
 check(
   'but a deleted one comes back, as documented',
   (await scanFeedsDetailed(env, { deep: false })).fresh.length > 0,
+  ''
+);
+
+// --- dating an article, and the scan window ---------------------------------
+check('reads a date from the URL', dateFromUrl('https://milelion.com/2026/09/05/post') === '2026-09-05', String(dateFromUrl('https://milelion.com/2026/09/05/post')));
+check('and from a month-only permalink', dateFromUrl('https://site.test/2026/07/slug') === '2026-07-01', String(dateFromUrl('https://site.test/2026/07/slug')));
+check('a number that is not a date is ignored', dateFromUrl('https://site.test/12345/99/x') === null, String(dateFromUrl('https://site.test/12345/99/x')));
+
+check(
+  'prefers the published meta tag',
+  articleDate('<meta property="article:published_time" content="2026-08-02T10:00:00Z">', 'https://s.test/2026/09/01/x') === '2026-08-02',
+  ''
+);
+check(
+  'falls back to a time element',
+  articleDate('<time datetime="2026-08-03">Aug 3</time>', '') === '2026-08-03',
+  String(articleDate('<time datetime="2026-08-03">Aug 3</time>', ''))
+);
+check(
+  'then to JSON-LD',
+  articleDate('{"datePublished":"2026-08-04T09:00:00+08:00"}', '') === '2026-08-04',
+  String(articleDate('{"datePublished":"2026-08-04T09:00:00+08:00"}', ''))
+);
+// Local midnight is the previous day in UTC; the offset is what keeps a post
+// published in the small hours of the 1st inside this month's window.
+check(
+  'a timestamp is dated where you are, not in UTC',
+  articleDate('<time datetime="2026-09-01T00:30:00+08:00">', '', 480) === '2026-09-01',
+  String(articleDate('<time datetime="2026-09-01T00:30:00+08:00">', '', 480))
+);
+check(
+  'and without the offset it would slip to August',
+  articleDate('<time datetime="2026-09-01T00:30:00+08:00">', '') === '2026-08-31',
+  ''
+);
+check('then to the URL', articleDate('<p>nothing</p>', 'https://s.test/2026/06/11/x') === '2026-06-11', '');
+check('and admits when it cannot tell', articleDate('<p>nothing</p>', 'https://s.test/post') === null, '');
+
+// A category page lists years of posts; only this month should reach the inbox.
+db.prepare(`DELETE FROM feed_items`).run();
+db.prepare(`UPDATE feeds SET active = 1 WHERE url = 'https://milelion.com/cards'`).run();
+db.prepare(`UPDATE feeds SET active = 0 WHERE url <> 'https://milelion.com/cards'`).run();
+PAGES['https://milelion.com/cards'] = {
+  body: `<html><body><main>
+    <a href="/2026/09/05/dbs-altitude-welcome-offer/">DBS Altitude welcome offer: 20,000 miles for new cardholders</a>
+    <a href="/2024/03/02/old-uob-offer/">UOB Lady's Card: 30,000 bonus miles for new sign-ups</a>
+  </main></body></html>`,
+  type: 'text/html',
+};
+PAGES['https://milelion.com/2024/03/02/old-uob-offer'] = { body: ARTICLE_PROMO, type: 'text/html' };
+
+const windowed = await scanFeedsDetailed(env, { deep: true, since: '2026-09-01' });
+check('only the current item is pushed', windowed.fresh.length === 1, JSON.stringify(windowed.fresh.map((f) => f.link)));
+check('and it is the new one', windowed.fresh[0].link.includes('2026/09'), windowed.fresh[0].link);
+check('the old one is counted as skipped', windowed.skipped_old === 1, String(windowed.skipped_old));
+check('the window is reported', windowed.since === '2026-09-01', String(windowed.since));
+
+const old = db.prepare(`SELECT * FROM feed_items WHERE link LIKE '%old-uob-offer%'`).get() as any;
+check('the old item is still recorded', !!old, '');
+check('marked stale rather than judged', old.action === 'stale', String(old.action));
+check('with the date that ruled it out', old.published_at === '2024-03-02', String(old.published_at));
+check('and no page was opened for it', old.deep === 0, String(old.deep));
+check('so a second scan does not reconsider it', (await scanFeedsDetailed(env, { deep: true, since: '2026-09-01' })).skipped_old === 0, '');
+
+// An undated link that the article itself dates out of the window.
+db.prepare(`DELETE FROM feed_items`).run();
+PAGES['https://milelion.com/cards'] = {
+  body: `<html><body><main>
+    <a href="/archive/undated-uob-offer">UOB Lady's Card: 30,000 bonus miles for new sign-ups this month</a>
+  </main></body></html>`,
+  type: 'text/html',
+};
+PAGES['https://milelion.com/archive/undated-uob-offer'] = {
+  body: ARTICLE_PROMO.replace('<head>', '<head><meta property="article:published_time" content="2023-05-04T00:00:00Z">'),
+  type: 'text/html',
+};
+const dated = await scanFeedsDetailed(env, { deep: true, since: '2026-09-01' });
+check('an undated link is dated by its own page', dated.skipped_old === 1, String(dated.skipped_old));
+check('and kept out of the inbox', dated.fresh.length === 0, JSON.stringify(dated.fresh.map((f) => f.link)));
+check(
+  'while since: null accepts everything',
+  (await scanFeedsDetailed(env, { deep: true, since: null })).fresh.length >= 0,
   ''
 );
 
