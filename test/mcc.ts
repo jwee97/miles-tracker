@@ -53,12 +53,21 @@ sql(`INSERT INTO exclusions (card_id,mcc,reason,source) VALUES (?, '5541', 'UOB 
 sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,merchant,mcc,category) VALUES (?,8000,'2026-09-02','Din Tai Fung','5812','dining')`, lady);
 sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,merchant,mcc,category) VALUES (?,20000,'2026-09-03','IRAS','9311','bills')`, lady);
 
-const m = await mccMatrix(env);
-check('every seeded code is listed', m.rows.length === 225, String(m.rows.length));
+const m = await mccMatrix(env, { per_page: 200, page: 1 });
+const all = await mccMatrix(env, { per_page: 200, page: 2 });
+const row = (code: string) => [...m.rows, ...all.rows].find((r) => r.code === code)!;
+const firstPage = await mccMatrix(env);
+check('a default page holds 50', firstPage.rows.length === 50, String(firstPage.rows.length));
+check('paging reports the page count', firstPage.pages === 7, String(firstPage.pages));
+check('and a later page holds the remainder', (await mccMatrix(env, { page: 7 })).rows.length === 27, '');
+check('the whole generic list is counted', m.total === 327, String(m.total));
+check('individual carriers are hidden by default', m.carriers_hidden === 596, String(m.carriers_hidden));
+check('and can be asked for', (await mccMatrix(env, { carriers: true })).total === 923, String((await mccMatrix(env, { carriers: true })).total));
+
 check('only open cards are columns', m.cards.length === 2, JSON.stringify(m.cards.map((c) => c.nickname)));
 check('a closed card is not', !m.cards.some((c) => c.nickname === 'old'), '');
 
-const dining = m.rows.find((r) => r.code === '5812')!;
+const dining = row('5812');
 const ladyDining = dining.cells.find((c) => c.nickname === 'lady')!;
 check('a bonus category shows as a bonus', ladyDining.state === 'bonus', ladyDining.state);
 check('at its real rate', ladyDining.rate === 4, String(ladyDining.rate));
@@ -68,24 +77,24 @@ check('a card with only a base rate shows base', crwDining.state === 'base', crw
 check('at the base rate', crwDining.rate === 0.4, String(crwDining.rate));
 
 // The MCC list on a rule is honoured, not just the category name.
-const online = m.rows.find((r) => r.code === '5262');
+const online = row('5262');
 if (online) {
   const cell = online.cells.find((c) => c.nickname === 'crw')!;
   check('an MCC list on a rule is matched', cell.state === 'bonus' && cell.rate === 4, JSON.stringify(cell));
 }
-const notListed = m.rows.find((r) => r.code === '5411')!;
+const notListed = row('5411');
 check(
   'a code outside that list falls back to base',
   notListed.cells.find((c) => c.nickname === 'crw')!.state === 'base',
   JSON.stringify(notListed.cells)
 );
 
-const tax = m.rows.find((r) => r.code === '9311')!;
+const tax = row('9311');
 check('a seeded exclusion applies to every card', tax.excluded_everywhere, '');
 check('and every cell says so', tax.cells.every((c) => c.state === 'excluded'), JSON.stringify(tax.cells));
 check('with the reason it was recorded with', /Tax/i.test(tax.exclusion_reason ?? ''), String(tax.exclusion_reason));
 
-const fuel = m.rows.find((r) => r.code === '5541')!;
+const fuel = row('5541');
 check('a card-specific exclusion hits only that card', fuel.cells.find((c) => c.nickname === 'lady')!.state === 'excluded', '');
 check('and leaves the others earning', fuel.cells.find((c) => c.nickname === 'crw')!.state !== 'excluded', JSON.stringify(fuel.cells));
 check('which is not an exclusion everywhere', !fuel.excluded_everywhere, '');

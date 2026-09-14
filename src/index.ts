@@ -160,6 +160,9 @@ export default {
               q: url.searchParams.get('q') ?? undefined,
               filter: url.searchParams.get('filter') ?? undefined,
               category: url.searchParams.get('category') ?? undefined,
+              page: parseInt(url.searchParams.get('page') ?? '1', 10) || 1,
+              per_page: parseInt(url.searchParams.get('per_page') ?? '50', 10) || 50,
+              carriers: url.searchParams.get('carriers') === '1',
             })
           );
         }

@@ -43,6 +43,13 @@ export interface MccMatrix {
   cards: { id: number; nickname: string; product: string; issuer: string; base_mpd: number }[];
   rows: MccRow[];
   categories: string[];
+  page: number;
+  pages: number;
+  per_page: number;
+  /** Rows the filters left, before paging. */
+  total: number;
+  /** Individual airline, hotel and car-rental codes left out of this view. */
+  carriers_hidden: number;
   summary: {
     codes: number;
     excluded_everywhere: number;
@@ -62,6 +69,13 @@ export interface MatrixOptions {
   /** 'excluded' | 'bonus' | 'used' | 'all' */
   filter?: string;
   category?: string;
+  page?: number;
+  per_page?: number;
+  /**
+   * Codes 3000-3999 are individual airlines, hotel chains and car rental
+   * agencies — 596 of them, real but overwhelming. Hidden unless asked for.
+   */
+  carriers?: boolean;
 }
 
 export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<MccMatrix> {
@@ -157,7 +171,13 @@ export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<Mcc
     });
   }
 
+  const isCarrier = (code: string) => {
+    const n = parseInt(code, 10);
+    return n >= 3000 && n <= 3999;
+  };
+
   const filtered = rows.filter((r) => {
+    if (!opts.carriers && isCarrier(r.code)) return false;
     if (opts.category && r.category !== opts.category) return false;
     if (opts.filter === 'excluded' && !r.cells.some((c) => c.state === 'excluded')) return false;
     if (opts.filter === 'bonus' && !r.cells.some((c) => c.state === 'bonus')) return false;
@@ -177,7 +197,16 @@ export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<Mcc
       WHERE COALESCE(t.posted_at, t.occurred_at) >= DATE('now', '-365 days')`
   ).first<{ cents: number }>();
 
+  const perPage = Math.min(Math.max(opts.per_page ?? 50, 10), 200);
+  const pages = Math.max(1, Math.ceil(filtered.length / perPage));
+  const page = Math.min(Math.max(opts.page ?? 1, 1), pages);
+
   return {
+    page,
+    pages,
+    per_page: perPage,
+    total: filtered.length,
+    carriers_hidden: opts.carriers ? 0 : rows.filter((r) => isCarrier(r.code)).length,
     cards: (cards ?? []).map((c) => ({
       id: c.id,
       nickname: c.nickname,
@@ -185,7 +214,7 @@ export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<Mcc
       issuer: c.issuer,
       base_mpd: c.base_mpd,
     })),
-    rows: filtered,
+    rows: filtered.slice((page - 1) * perPage, page * perPage),
     categories: [...new Set(rows.map((r) => r.category))].sort(),
     summary: {
       codes: rows.length,

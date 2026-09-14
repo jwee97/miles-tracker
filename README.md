@@ -38,8 +38,8 @@ Ignore buttons and in the Offers tab, where **Scan now** runs the same job on
 demand and a URL box reads any page you paste. Everything matched lands in a
 paged list you can filter by state and date and judge in batches.
 
-**Merchant codes.** A Codes tab listing every MCC the app knows, as a grid
-against your own cards: which earn nothing, which carry a bonus rate and at
+**Merchant codes.** A Codes tab listing all 923 merchant category codes as a
+grid against your own cards: which earn nothing, which carry a bonus rate and at
 what cap, and which you actually spend on. Every cell is computed with the same
 matching the earn engine uses, so the table cannot drift from what a purchase
 would really earn. Spend on an excluded code is left out of minimum-spend

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { fetchMccMatrix, money, saveExclusion, type CellState, type MccCell, type MccMatrix, type MccRow } from './api';
+import Pager from './Pager';
+import { fetchMccMatrix, money, saveExclusion, type MccCell, type MccMatrix, type MccRow } from './api';
 
 /**
  * The merchant-code table, read across your own cards.
@@ -44,6 +45,11 @@ export default function Mcc() {
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
   const [category, setCategory] = useState('');
+  const [page, setPage] = useState(1);
+  // 596 of the 923 codes are individual airlines and hotel chains. They are
+  // real — a stay often posts as 3509 rather than 7011 — but they would bury
+  // everything else, so they are opt-in.
+  const [carriers, setCarriers] = useState(false);
   const [picked, setPicked] = useState<{ row: MccRow; cell: MccCell } | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -55,11 +61,15 @@ export default function Mcc() {
 
   function load() {
     setErr(null);
-    fetchMccMatrix({ q, filter, category })
-      .then(setData)
+    fetchMccMatrix({ q, filter, category, page, carriers })
+      .then((d) => {
+        setData(d);
+        if (d.page !== page) setPage(d.page);
+      })
       .catch((e) => setErr((e as Error).message));
   }
-  useEffect(load, [q, filter, category]);
+  useEffect(load, [q, filter, category, page, carriers]);
+  useEffect(() => setPage(1), [q, filter, category, carriers]);
 
   if (err) return <p className="pad error">{err}</p>;
   if (!data) return <p className="pad sub">Loading…</p>;
@@ -140,7 +150,17 @@ export default function Mcc() {
               {f.label}
             </button>
           ))}
+          <button className={`chip ${carriers ? 'on' : ''}`} onClick={() => setCarriers((v) => !v)}>
+            {carriers ? 'Hide carriers' : `Airlines & hotels${data.carriers_hidden ? ` (${data.carriers_hidden})` : ''}`}
+          </button>
         </div>
+        <p className="sub">
+          {data.total.toLocaleString()} code{data.total === 1 ? '' : 's'} match
+          {data.pages > 1 ? ` · page ${data.page} of ${data.pages}` : ''}
+          {!carriers && data.carriers_hidden
+            ? ` · ${data.carriers_hidden} individual airline, hotel and car-rental codes hidden`
+            : ''}
+        </p>
 
         <p className="legend" role="note">
           <span className="key excluded">✕</span> earns nothing
@@ -186,6 +206,7 @@ export default function Mcc() {
         {data.cards.length > 2 && (
           <p className="sub">Swipe the table sideways for the rest of your cards. The code column stays put.</p>
         )}
+        {data.pages > 1 && <Pager page={data.page} pages={data.pages} onGo={setPage} />}
         {!data.rows.length && <p className="sub">No codes match. Widen the search or the filter.</p>}
         {!data.cards.length && <p className="sub">No open cards, so there is nothing to compare codes against.</p>}
 

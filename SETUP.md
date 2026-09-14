@@ -679,6 +679,19 @@ description or category; tap a cell for the rule behind it. Every cell is
 computed with the same `ruleMatches` the earn engine uses, so the table cannot
 say one thing while a purchase does another.
 
+**What is seeded.** All 923 codes in ISO 18245, with the descriptions published
+at [check-mcc.sg](https://www.check-mcc.sg/mcc). 596 of them (3000–3999) are
+individual airlines, hotel chains and car-rental agencies — real, since a hotel
+stay often posts as 3509 rather than 7011, but they would bury everything else,
+so they are hidden behind a chip. The remaining 327 are the generic codes you
+meet day to day. The table pages at 50 rows.
+
+The `category` column is **this app's own mapping** onto `earn_rules`, not part
+of the standard. It was derived from the code ranges and descriptions, with the
+previously hand-checked codes kept as they were. If your card's terms group a
+code differently, the category is what the earn engine matches on — correct it
+in `seed.sql` and re-seed, or adjust the rule instead.
+
 **Exclusions are a starting point, not a promise.** The seeded list is what
 Singapore issuers commonly exclude — tax, insurance, top-ups, education,
 utilities at some banks. Your card's terms are what count. When a statement

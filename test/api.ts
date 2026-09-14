@@ -816,6 +816,7 @@ db.prepare(`INSERT INTO exclusions (card_id, mcc, reason, source) VALUES (NULL, 
 {
   const m = (await (await authed('/api/mcc/matrix')).json()) as any;
   check('the code table is served', m.rows.length === 4, String(m.rows?.length));
+  check('with its paging state', m.page === 1 && m.pages === 1 && m.total === 4, JSON.stringify({ p: m.page, n: m.pages, t: m.total }));
   check('with a column per open card', m.cards.length >= 1, JSON.stringify(m.cards?.map((c: any) => c.nickname)));
   check('and a summary', typeof m.summary.excluded_everywhere === 'number', JSON.stringify(m.summary));
   check('saying whether excluded spend counts', m.min_spend_counts_excluded === false, String(m.min_spend_counts_excluded));

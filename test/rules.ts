@@ -47,7 +47,7 @@ sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'*',1.4
 // --- merchant to MCC --------------------------------------------------------
 const dtf = await lookupMerchant(env, 'Din Tai Fung');
 check('finds a seeded merchant', dtf.mcc === '5812', JSON.stringify(dtf));
-check('names the code', dtf.description === 'Eating places and restaurants', String(dtf.description));
+check('names the code', dtf.description === 'Eating Places and Restaurants', String(dtf.description));
 check('maps it to a category', dtf.category === 'dining', String(dtf.category));
 check('and is honest that it is a guess', dtf.confidence === 'guess', dtf.confidence);
 

@@ -693,6 +693,11 @@ export interface MccMatrix {
   cards: { id: number; nickname: string; product: string; issuer: string; base_mpd: number }[];
   rows: MccRow[];
   categories: string[];
+  page: number;
+  pages: number;
+  per_page: number;
+  total: number;
+  carriers_hidden: number;
   summary: {
     codes: number;
     excluded_everywhere: number;
@@ -704,11 +709,15 @@ export interface MccMatrix {
   min_spend_counts_excluded: boolean;
 }
 
-export const fetchMccMatrix = (opts: { q?: string; filter?: string; category?: string } = {}) => {
+export const fetchMccMatrix = (
+  opts: { q?: string; filter?: string; category?: string; page?: number; carriers?: boolean } = {}
+) => {
   const q = new URLSearchParams();
   if (opts.q) q.set('q', opts.q);
   if (opts.filter && opts.filter !== 'all') q.set('filter', opts.filter);
   if (opts.category) q.set('category', opts.category);
+  if (opts.page) q.set('page', String(opts.page));
+  if (opts.carriers) q.set('carriers', '1');
   return get<MccMatrix>(`/api/mcc/matrix${q.toString() ? `?${q}` : ''}`);
 };
 
