@@ -38,6 +38,14 @@ Ignore buttons and in the Offers tab, where **Scan now** runs the same job on
 demand and a URL box reads any page you paste. Everything matched lands in a
 paged list you can filter by state and date and judge in batches.
 
+**Merchant codes.** A Codes tab listing every MCC the app knows, as a grid
+against your own cards: which earn nothing, which carry a bonus rate and at
+what cap, and which you actually spend on. Every cell is computed with the same
+matching the earn engine uses, so the table cannot drift from what a purchase
+would really earn. Spend on an excluded code is left out of minimum-spend
+progress and the amount is reported — most issuers exclude the same codes from
+both, and believing a minimum is met when the bank disagrees costs the bonus.
+
 **The points wallet.** Every purchase is evaluated as it is logged, so the app
 knows what it should earn and which programme it lands in. Those points wait in
 a queue until you accept them — a bank can credit something other than the
@@ -150,6 +158,7 @@ src/telegram.ts       bot commands and inline buttons
 src/spend.ts          statement cycles, utilization, requirement progress
 src/digest.ts         the daily report and threshold alerts
 src/rss.ts            feed and page fetch, parse, URL cleaning, keyword gate
+src/mcc.ts            the code table read across your cards
 src/eligibility.ts    predicate evaluator and your review decisions
 src/offers.ts         saving an extraction without losing your answers
 src/extraction.ts     the prompt handed to you for Claude — the LLM half

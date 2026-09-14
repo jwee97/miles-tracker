@@ -24,6 +24,7 @@ import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from '.
 import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
 import { buildAudit } from './audit';
 import { optimise } from './advice';
+import { mccMatrix } from './mcc';
 import { acceptCredits, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import { executeTransfer, tranchesByExpiry } from './points';
 import type { Env, Offer } from './types';
@@ -92,6 +93,8 @@ export default {
                 met: p.met,
                 confirmed_cents: p.confirmed_cents,
                 at_risk_cents: p.at_risk_cents,
+                excluded_cents: p.excluded_cents,
+                excluded_count: p.excluded_count,
                 met_only_with_at_risk: p.met_only_with_at_risk,
                 txn_count: p.txn_count,
                 txns_required: p.txns_required,
@@ -147,6 +150,54 @@ export default {
             }
           );
           return json(r);
+        }
+
+        // The merchant-code table seen from your own cards: which codes earn
+        // nothing, which earn a bonus, and which you actually spend on.
+        if (url.pathname === '/api/mcc/matrix') {
+          return json(
+            await mccMatrix(env, {
+              q: url.searchParams.get('q') ?? undefined,
+              filter: url.searchParams.get('filter') ?? undefined,
+              category: url.searchParams.get('category') ?? undefined,
+            })
+          );
+        }
+
+        // Adding and removing exclusions from the app, not only the bot.
+        if (url.pathname === '/api/exclusion' && req.method === 'POST') {
+          const b = (await req.json()) as { mcc?: string; nickname?: string | null; reason?: string; active?: boolean };
+          const code = String(b.mcc ?? '').trim();
+          if (!/^\d{4}$/.test(code)) return json({ error: 'a four-digit mcc is required' }, 400);
+
+          let cardId: number | null = null;
+          if (b.nickname) {
+            const card = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+              .bind(b.nickname.trim())
+              .first<{ id: number }>();
+            if (!card) return json({ error: 'no such card' }, 404);
+            cardId = card.id;
+          }
+
+          if (b.active === false) {
+            // `active = 1` in the filter so removing the same one twice is
+            // reported as "nothing to remove" rather than a silent success.
+            const res = await env.DB.prepare(
+              `UPDATE exclusions SET active = 0
+                WHERE mcc = ? AND active = 1 AND ((card_id IS NULL AND ? IS NULL) OR card_id = ?)`
+            )
+              .bind(code, cardId, cardId)
+              .run();
+            if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such exclusion' }, 404);
+            return json({ ok: true, removed: res.meta.changes });
+          }
+
+          await env.DB.prepare(
+            `INSERT INTO exclusions (card_id, mcc, reason, source, active) VALUES (?, ?, ?, 'user', 1)`
+          )
+            .bind(cardId, code, b.reason?.trim() || 'excluded')
+            .run();
+          return json({ ok: true });
         }
 
         if (url.pathname === '/api/mcc') {

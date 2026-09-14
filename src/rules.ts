@@ -165,7 +165,9 @@ async function capSpend(env: Env, card: Card, rule: EarnRule, rules: EarnRule[])
 }
 
 /** Does this rule apply to this purchase, and why or why not. */
-function ruleMatches(rule: EarnRule, p: Purchase, trace: RuleStep[]): boolean {
+/** Whether a rule covers a purchase, with the reasoning appended to `trace`.
+ *  Exported so the MCC table shows the same answer the engine would give. */
+export function ruleMatches(rule: EarnRule, p: Purchase, trace: RuleStep[] = []): boolean {
   const inc = csv(rule.mcc_include);
   const exc = csv(rule.mcc_exclude);
 

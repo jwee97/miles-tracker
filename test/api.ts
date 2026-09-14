@@ -800,5 +800,48 @@ db.prepare(`INSERT INTO offers (id,status,issuer,valid_until) VALUES (61,'tracke
   check('and it drops out of the default list', !(((await (await authed('/api/offers')).json()) as any).offers.some((o: any) => o.id === 60)), '');
 }
 
+// --- the merchant-code table ------------------------------------------------
+// This database is migrated but not seeded, so the codes it compares against
+// are put in here rather than pulled from seed.sql (which would also add feeds
+// and offers the earlier assertions count).
+for (const [code, desc, cat] of [
+  ['5812', 'Eating places and restaurants', 'dining'],
+  ['5411', 'Grocery stores and supermarkets', 'groceries'],
+  ['9311', 'Tax payments', 'government'],
+  ['7995', 'Betting and casino gaming', 'financial'],
+] as const) {
+  db.prepare(`INSERT OR IGNORE INTO mcc_codes (code, description, category) VALUES (?, ?, ?)`).run(code, desc, cat);
+}
+db.prepare(`INSERT INTO exclusions (card_id, mcc, reason, source) VALUES (NULL, '9311', 'Tax is excluded', 'seed')`).run();
+{
+  const m = (await (await authed('/api/mcc/matrix')).json()) as any;
+  check('the code table is served', m.rows.length === 4, String(m.rows?.length));
+  check('with a column per open card', m.cards.length >= 1, JSON.stringify(m.cards?.map((c: any) => c.nickname)));
+  check('and a summary', typeof m.summary.excluded_everywhere === 'number', JSON.stringify(m.summary));
+  check('saying whether excluded spend counts', m.min_spend_counts_excluded === false, String(m.min_spend_counts_excluded));
+
+  const filtered = (await (await authed('/api/mcc/matrix?filter=excluded')).json()) as any;
+  check('the filter narrows the rows', filtered.rows.length < m.rows.length, `${filtered.rows.length} of ${m.rows.length}`);
+  check('but not the summary', filtered.summary.codes === m.summary.codes, '');
+  const searched = (await (await authed('/api/mcc/matrix?q=5812')).json()) as any;
+  check('search finds one code', searched.rows.length === 1 && searched.rows[0].code === '5812', JSON.stringify(searched.rows?.map((r: any) => r.code)));
+}
+{
+  const add = await authed('/api/exclusion', { mcc: '7995', reason: 'gambling earns nothing' });
+  check('an exclusion can be added from the app', add.status === 200, String(add.status));
+  const m = (await (await authed('/api/mcc/matrix?q=7995')).json()) as any;
+  check('and it shows on every card', m.rows[0].cells.every((c: any) => c.state === 'excluded'), JSON.stringify(m.rows[0]?.cells));
+  check('marked as excluded everywhere', m.rows[0].excluded_everywhere === true, '');
+
+  check('a bad code is refused', (await authed('/api/exclusion', { mcc: '79' })).status === 400, '');
+  check('an unknown card is a 404', (await authed('/api/exclusion', { mcc: '7995', nickname: 'zzz' })).status === 404, '');
+
+  const off = await authed('/api/exclusion', { mcc: '7995', active: false });
+  check('and it can be removed', off.status === 200, String(off.status));
+  const after = (await (await authed('/api/mcc/matrix?q=7995')).json()) as any;
+  check('after which it earns again', after.rows[0].cells.every((c: any) => c.state !== 'excluded'), JSON.stringify(after.rows[0]?.cells));
+  check('removing it twice is a 404', (await authed('/api/exclusion', { mcc: '7995', active: false })).status === 404, '');
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

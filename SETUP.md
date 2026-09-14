@@ -662,6 +662,38 @@ the scanner has matched, ten to a page:
 There is also a **Sources** panel where a source's URL, label and kind can be
 edited, paused or removed without touching the bot.
 
+### Merchant codes
+
+The **Codes** tab is the MCC table seen from your own cards — a grid of codes
+against cards, where each cell says what that card does with that code:
+
+| cell | meaning |
+|---|---|
+| `✕` | earns nothing, and does not count toward a minimum |
+| a number on green | a bonus rate; a dot in the corner means it is capped |
+| a number, plain | the card's base rate |
+| `·` | no rule on this card covers the code |
+
+Filter by excluded, bonus, or codes you have actually spent on; search by code,
+description or category; tap a cell for the rule behind it. Every cell is
+computed with the same `ruleMatches` the earn engine uses, so the table cannot
+say one thing while a purchase does another.
+
+**Exclusions are a starting point, not a promise.** The seeded list is what
+Singapore issuers commonly exclude — tax, insurance, top-ups, education,
+utilities at some banks. Your card's terms are what count. When a statement
+shows something earned nothing, record it: the **Add an exclusion** form, or
+`/exclude <mcc> [card] [reason]`. Leaving the card out excludes it everywhere.
+
+**Excluded spend and minimums.** Spend on an excluded code still uses your
+credit limit, so it counts toward utilization — but it is left out of
+minimum-spend progress, and the amount is shown under the meter. Most issuers
+exclude the same codes from both. The asymmetry decides the default: believing
+a minimum is met when the bank disagrees costs the whole bonus, while not
+counting it only means spending a little more than strictly necessary. If your
+card's terms say otherwise, set `MIN_SPEND_COUNTS_EXCLUDED` to `true` on the
+Settings tab.
+
 ### Points that earn themselves
 
 Logging a purchase — in the app or the bot — evaluates it against the card's
@@ -770,6 +802,8 @@ so the same article found through two sources is recognised as one item.
 /scan                       force a scan instead of waiting for 06:00
 /offers                     offers, their clauses and rule ids
 /prune                      what the scanned history costs · compact · delete
+/codes [query]              what each card pays on a merchant code
+/exclude <mcc> [card]       record one that earns nothing
 /wallet                     everything you hold, and what it is worth
 /credit                     what your spending earned, waiting to be banked
 /setprogram <card> <prog>   where a card's points land

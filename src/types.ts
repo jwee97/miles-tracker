@@ -17,6 +17,8 @@ export interface Env {
   SCAN_WINDOW: string;
   /** Delete offers this long after they expire. 0 keeps them. */
   OFFER_RETENTION_DAYS: string;
+  /** 'true' to count spend on excluded codes toward a minimum anyway. */
+  MIN_SPEND_COUNTS_EXCLUDED: string;
 }
 
 export interface Card {

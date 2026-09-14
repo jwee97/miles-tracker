@@ -55,6 +55,10 @@ MILE_VALUE_CENTS = "1.5"
 # job compacts judged ones: the id stays, so an item is never shown to you
 # twice, but its excerpt, matched terms and offer link are dropped. 0 disables.
 FEED_RETENTION_DAYS = "180"
+# Whether spend on an excluded merchant code counts toward a minimum. Most
+# issuers exclude the same codes from both, so the default leaves it out and
+# reports the amount separately.
+MIN_SPEND_COUNTS_EXCLUDED = "false"
 # How far back a scan looks: month (the current calendar month), 7d, 30d, ytd
 # or all. Blog category pages list years of posts; anything older than the
 # window is recorded once so it is never re-read, and never pushed at you.

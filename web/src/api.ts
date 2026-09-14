@@ -49,6 +49,8 @@ export interface Progress {
   met: boolean;
   confirmed_cents: number;
   at_risk_cents: number;
+  excluded_cents: number;
+  excluded_count: number;
   met_only_with_at_risk: boolean;
   txn_count: number;
   txns_required: number;
@@ -659,6 +661,59 @@ export const deleteRule = (rule_id: number) =>
 
 export const setOfferStatus = (id: number, status: OfferRow['status']) =>
   post<{ ok: true }>('/api/offer/status', { id, status });
+
+// --- merchant codes ---------------------------------------------------------
+
+export type CellState = 'excluded' | 'bonus' | 'base' | 'none';
+
+export interface MccCell {
+  card_id: number;
+  nickname: string;
+  state: CellState;
+  rate: number;
+  reward_type: 'miles' | 'cashback';
+  category: string | null;
+  cap_cents: number | null;
+  cap_window: string | null;
+  reason: string | null;
+}
+
+export interface MccRow {
+  code: string;
+  description: string;
+  category: string;
+  excluded_everywhere: boolean;
+  exclusion_reason: string | null;
+  cells: MccCell[];
+  spend_cents: number;
+  txn_count: number;
+}
+
+export interface MccMatrix {
+  cards: { id: number; nickname: string; product: string; issuer: string; base_mpd: number }[];
+  rows: MccRow[];
+  categories: string[];
+  summary: {
+    codes: number;
+    excluded_everywhere: number;
+    excluded_somewhere: number;
+    bonus_codes: number;
+    codes_you_have_used: number;
+    excluded_spend_cents: number;
+  };
+  min_spend_counts_excluded: boolean;
+}
+
+export const fetchMccMatrix = (opts: { q?: string; filter?: string; category?: string } = {}) => {
+  const q = new URLSearchParams();
+  if (opts.q) q.set('q', opts.q);
+  if (opts.filter && opts.filter !== 'all') q.set('filter', opts.filter);
+  if (opts.category) q.set('category', opts.category);
+  return get<MccMatrix>(`/api/mcc/matrix${q.toString() ? `?${q}` : ''}`);
+};
+
+export const saveExclusion = (body: { mcc: string; nickname?: string | null; reason?: string; active?: boolean }) =>
+  post<{ ok: true }>('/api/exclusion', body);
 
 export const money = (cents: number) =>
   (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

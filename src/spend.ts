@@ -141,6 +141,10 @@ export interface Spend {
    */
   at_risk_cents: number;
   at_risk_count: number;
+  /** Spend on a code the card excludes. Part of `total_cents` — it still uses
+   *  the limit — but reported so a minimum can leave it out. */
+  excluded_cents: number;
+  excluded_count: number;
 }
 
 export async function spendIn(
@@ -153,21 +157,30 @@ export async function spendIn(
   // Spend on or after this date, not yet confirmed posted, may slip.
   const riskFrom = isoDate(new Date(Date.parse(end + 'T00:00:00Z') - lag * 86400_000));
 
+  // Spend on an excluded merchant code is counted here — it still uses the
+  // credit limit — but reported separately, because most issuers do not let it
+  // count toward a minimum.
   const row = await env.DB.prepare(
     `SELECT
-       COALESCE(SUM(amount_cents), 0) AS total,
-       COALESCE(SUM(CASE WHEN posted_at IS NULL AND occurred_at >= ? THEN amount_cents ELSE 0 END), 0) AS at_risk,
-       COALESCE(SUM(CASE WHEN posted_at IS NULL AND occurred_at >= ? THEN 1 ELSE 0 END), 0) AS at_risk_n
-     FROM transactions
-     WHERE card_id = ? AND ${EFFECTIVE_DATE} >= ? AND ${EFFECTIVE_DATE} <= ?`
+       COALESCE(SUM(t.amount_cents), 0) AS total,
+       COALESCE(SUM(CASE WHEN t.posted_at IS NULL AND t.occurred_at >= ? THEN t.amount_cents ELSE 0 END), 0) AS at_risk,
+       COALESCE(SUM(CASE WHEN t.posted_at IS NULL AND t.occurred_at >= ? THEN 1 ELSE 0 END), 0) AS at_risk_n,
+       COALESCE(SUM(CASE WHEN x.mcc IS NOT NULL THEN t.amount_cents ELSE 0 END), 0) AS excluded,
+       COALESCE(SUM(CASE WHEN x.mcc IS NOT NULL THEN 1 ELSE 0 END), 0) AS excluded_n
+     FROM transactions t
+     LEFT JOIN exclusions x
+       ON x.mcc = t.mcc AND x.active = 1 AND (x.card_id IS NULL OR x.card_id = t.card_id)
+     WHERE t.card_id = ? AND ${EFFECTIVE_DATE} >= ? AND ${EFFECTIVE_DATE} <= ?`
   )
     .bind(riskFrom, riskFrom, cardId, start, end)
-    .first<{ total: number; at_risk: number; at_risk_n: number }>();
+    .first<{ total: number; at_risk: number; at_risk_n: number; excluded: number; excluded_n: number }>();
 
   return {
     total_cents: row?.total ?? 0,
     at_risk_cents: lag > 0 ? (row?.at_risk ?? 0) : 0,
     at_risk_count: lag > 0 ? (row?.at_risk_n ?? 0) : 0,
+    excluded_cents: row?.excluded ?? 0,
+    excluded_count: row?.excluded_n ?? 0,
   };
 }
 
@@ -219,6 +232,9 @@ export interface Progress {
   confirmed_cents: number;
   at_risk_cents: number;
   at_risk_count: number;
+  /** Spend on an excluded code, left out of the total above. */
+  excluded_cents: number;
+  excluded_count: number;
   /** True when the minimum is only met by counting spend that may yet slip. */
   met_only_with_at_risk: boolean;
   remaining_cents: number;
@@ -242,7 +258,14 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
   else window = { start: req.starts_at ?? card.opened_at ?? today(env), end: req.deadline ?? today(env) };
 
   const spend = await spendIn(env, card.id, window.start, window.end);
-  const spent = spend.total_cents;
+  // Most issuers exclude the same codes from a minimum that they exclude from
+  // earning — tax, insurance, top-ups. Counting them would say a minimum is met
+  // when the bank says it is not, and that costs the bonus; not counting them
+  // only means spending slightly more than strictly necessary. The safer error
+  // is the default, and the amount left out is always reported.
+  const countsExcluded = (env.MIN_SPEND_COUNTS_EXCLUDED ?? '').toLowerCase() === 'true';
+  const excluded = countsExcluded ? 0 : spend.excluded_cents;
+  const spent = spend.total_cents - excluded;
   const confirmed = spent - spend.at_risk_cents;
   const remaining = Math.max(0, req.amount_cents - spent);
   const daysLeft = Math.max(0, daysBetween(today(env), window.end));
@@ -262,6 +285,8 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
     confirmed_cents: confirmed,
     at_risk_cents: spend.at_risk_cents,
     at_risk_count: spend.at_risk_count,
+    excluded_cents: excluded,
+    excluded_count: countsExcluded ? 0 : spend.excluded_count,
     met_only_with_at_risk: remaining === 0 && confirmed < req.amount_cents,
     remaining_cents: remaining,
     days_left: daysLeft,

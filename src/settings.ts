@@ -51,6 +51,13 @@ export const EDITABLE = [
     kind: 'number' as const,
   },
   {
+    key: 'MIN_SPEND_COUNTS_EXCLUDED',
+    label: 'Excluded codes count toward minimums',
+    unit: 'true or false',
+    help: 'Most issuers exclude the same merchant codes from a minimum that they exclude from earning, so the default is false. Counting them risks believing a minimum is met when the bank says otherwise, which costs the bonus; not counting them only means spending slightly more than strictly necessary. Set true only if your card\u2019s terms say so.',
+    kind: 'text' as const,
+  },
+  {
     key: 'SCAN_WINDOW',
     label: 'Scan window',
     unit: 'month · 7d · 30d · ytd · all',

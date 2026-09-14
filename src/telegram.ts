@@ -9,6 +9,7 @@ import { activeCards, daysBetween, money, parseDateToken, parseMoney, requiremen
 import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
 import { runMigrations, runSeed } from './migrate';
 import { optimise } from './advice';
+import { mccMatrix } from './mcc';
 import { evaluate, lookupMerchant } from './rules';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import type { Card, Env, Offer } from './types';
@@ -528,6 +529,57 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           env,
           chatId,
           ['*Wallet*', ...lines, '', `Worth about $${money(w.totals.value_cents)} at your mile value.`].join('\n')
+        );
+      }
+
+      // The code table, from the phone. Same numbers as the Codes tab.
+      case '/codes': {
+        const q = args.trim();
+        const m = await mccMatrix(env, q ? { q } : { filter: 'used' });
+        if (!m.rows.length)
+          return send(env, chatId, q ? `No code matches \`${q}\`.` : 'No spend with a known code yet.');
+
+        const lines = m.rows.slice(0, 12).map((r) => {
+          const cells = r.cells
+            .map((c) =>
+              c.state === 'excluded'
+                ? `${c.nickname}: ✕`
+                : c.state === 'none'
+                  ? `${c.nickname}: —`
+                  : `${c.nickname}: ${c.rate}${c.reward_type === 'cashback' ? '%' : ' mpd'}${c.cap_cents ? '*' : ''}`
+            )
+            .join(' · ');
+          return `*${r.code}* ${r.description}\n  ${cells}`;
+        });
+        const more = m.rows.length > 12 ? `\n\n…and ${m.rows.length - 12} more. Open the Codes tab with /app.` : '';
+        return send(
+          env,
+          chatId,
+          (q ? `*Codes matching "${q}"*\n` : '*Codes you have spent on*\n') +
+            lines.join('\n') +
+            '\n\n✕ earns nothing and does not count toward a minimum · * capped' +
+            more
+        );
+      }
+
+      case '/exclude': {
+        // /exclude 6540 [card] [reason]
+        const parts = args.trim().split(/\s+/);
+        const code = parts[0] ?? '';
+        if (!/^\d{4}$/.test(code))
+          return send(env, chatId, 'Format: `/exclude <mcc> [card] [reason]`\nLeave the card out to exclude it everywhere.');
+        const maybeCard = parts[1] ? await cardByNick(env, parts[1]) : null;
+        const reason = parts.slice(maybeCard ? 2 : 1).join(' ') || 'excluded';
+        await env.DB.prepare(
+          `INSERT INTO exclusions (card_id, mcc, reason, source, active) VALUES (?, ?, ?, 'user', 1)`
+        )
+          .bind(maybeCard?.id ?? null, code, reason)
+          .run();
+        return send(
+          env,
+          chatId,
+          `MCC ${code} now earns nothing on ${maybeCard ? `*${maybeCard.product}*` : 'every card'}` +
+            ' and will not count toward a minimum. It applies from the next purchase you log.'
         );
       }
 

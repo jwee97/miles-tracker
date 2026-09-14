@@ -160,6 +160,11 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /reqs — list requirements
 /delreq <id>
 
+*Merchant codes*
+/codes — codes you have spent on, and what each card pays
+/codes <query> — search by code, description or category
+/exclude <mcc> [card] [reason] — record one that earns nothing
+
 *Points wallet*
 /wallet — everything you hold, and what it is worth
 /credit — what your spending earned, waiting to be banked

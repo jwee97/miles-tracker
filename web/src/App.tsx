@@ -4,6 +4,7 @@ import Audit from './Audit';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
 import ExpiryTab from './Expiry';
+import Mcc from './Mcc';
 import Settings from './Settings';
 import {
   addProgram,
@@ -108,6 +109,14 @@ function RequirementRow({ p }: { p: Progress }) {
       {p.cap_reached && <div className="cap">Bonus cap reached — further spend earns the base rate.</div>}
       {!p.met && p.at_risk_cents > 0 && (
         <div className="risk">⏳ ${money(p.at_risk_cents)} of this may post after {p.window.end}.</div>
+      )}
+      {/* Spend the issuer will not count is the difference between thinking a
+          minimum is met and finding out it was not. */}
+      {p.excluded_cents > 0 && (
+        <div className="risk">
+          ${money(p.excluded_cents)} on {p.excluded_count} excluded purchase{p.excluded_count === 1 ? '' : 's'} is not
+          counted — see the Codes tab.
+        </div>
       )}
     </div>
   );
@@ -1623,7 +1632,9 @@ function PointsTab() {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<'use' | 'cards' | 'ledger' | 'trends' | 'audit' | 'points' | 'expiry' | 'offers' | 'settings'>('use');
+  const [tab, setTab] = useState<
+    'use' | 'cards' | 'ledger' | 'trends' | 'audit' | 'points' | 'expiry' | 'codes' | 'offers' | 'settings'
+  >('use');
   const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
@@ -1712,6 +1723,9 @@ export default function App() {
         <button className={tab === 'expiry' ? 'on' : ''} onClick={() => setTab('expiry')}>
           Expiry
         </button>
+        <button className={tab === 'codes' ? 'on' : ''} onClick={() => setTab('codes')}>
+          Codes
+        </button>
         <button className={tab === 'offers' ? 'on' : ''} onClick={() => setTab('offers')}>
           Offers{offers?.length ? ` (${offers.length})` : ''}
         </button>
@@ -1757,6 +1771,8 @@ export default function App() {
       {tab === 'trends' && <Analytics />}
 
       {tab === 'expiry' && <ExpiryTab />}
+
+      {tab === 'codes' && <Mcc />}
 
       {tab === 'settings' && <Settings />}
 
