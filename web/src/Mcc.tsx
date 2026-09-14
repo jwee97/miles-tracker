@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react';
 import Pager from './Pager';
-import { fetchMccMatrix, money, saveExclusion, type MccCell, type MccMatrix, type MccRow } from './api';
+import {
+  assignMerchantCode,
+  fetchMccMatrix,
+  fetchUnknownMerchants,
+  money,
+  saveExclusion,
+  scanMccDirectory,
+  type MccCell,
+  type MccMatrix,
+  type MccRow,
+  type MccScanResult,
+  type UnknownMerchant,
+} from './api';
 
 /**
  * The merchant-code table, read across your own cards.
@@ -37,6 +49,140 @@ function Cell({ c, onPick }: { c: MccCell; onPick: () => void }) {
         {c.state !== 'excluded' && c.state !== 'none' && c.cap_cents ? <i className="capped" aria-hidden="true" /> : null}
       </button>
     </td>
+  );
+}
+
+/**
+ * Keeping codes current, from both ends: what a published directory says, and
+ * what your own spend still has no code for.
+ *
+ * A code you confirmed from a statement is never overwritten by the directory —
+ * your card, your statement, your answer — and a disagreement is shown rather
+ * than resolved quietly.
+ */
+function MerchantScan() {
+  const [rows, setRows] = useState<UnknownMerchant[] | null>(null);
+  const [scan, setScan] = useState<MccScanResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [msg, setMsg] = useState<string | null>(null);
+
+  function load() {
+    fetchUnknownMerchants()
+      .then((d) => setRows(d.merchants))
+      .catch((e) => setErr((e as Error).message));
+  }
+  useEffect(load, []);
+
+  async function run() {
+    setBusy(true);
+    setErr(null);
+    try {
+      setScan(await scanMccDirectory());
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function assign(m: UnknownMerchant, code: string) {
+    setMsg(null);
+    try {
+      const r = await assignMerchantCode(m.merchant, code);
+      setMsg(
+        `${m.merchant} is ${code}` +
+          (r.updated ? ` · ${r.updated} past purchase${r.updated === 1 ? '' : 's'} updated` : '')
+      );
+      load();
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
+  }
+
+  return (
+    <section className="card entry">
+      <h2>Track merchant codes</h2>
+      <p className="sub">
+        A transaction with no code cannot be matched against a card's MCC rules at all. Scan the public directory for
+        the merchants it lists, and fill the rest in from your statements.
+      </p>
+      <div className="entry-foot">
+        <button onClick={run} disabled={busy}>
+          {busy ? 'Scanning…' : 'Scan the directory'}
+        </button>
+        {scan && (
+          <span className="sub">
+            {scan.fetched} page{scan.fetched === 1 ? '' : 's'} from {scan.source} · {scan.added.length} new ·{' '}
+            {scan.updated.length} corrected · {scan.unchanged} unchanged
+            {scan.failed.length ? ` · ${scan.failed.length} unreadable` : ''}
+          </span>
+        )}
+        {err && <span className="err-text">{err}</span>}
+      </div>
+
+      {scan && scan.conflicts.length > 0 && (
+        <div className="warnbox">
+          The directory disagrees with codes you confirmed yourself. Yours were kept.
+          <ul className="notes">
+            {scan.conflicts.map((c) => (
+              <li key={c.merchant}>
+                <strong>{c.merchant}</strong> — you have {c.yours}, {scan.source} says {c.theirs}.
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {scan && (scan.added.length > 0 || scan.updated.length > 0) && (
+        <ul className="notes">
+          {[...scan.added, ...scan.updated].slice(0, 12).map((a) => (
+            <li key={a.merchant}>
+              <strong>{a.merchant}</strong> → {a.mcc} {a.description ? `· ${a.description}` : ''}{' '}
+              {a.verified ? '· verified' : '· listed, unverified'}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <h2 style={{ marginTop: 18 }}>Spend with no code yet</h2>
+      {rows && rows.length > 0 ? (
+        <ul className="txns codes-unknown">
+          {rows.map((m) => (
+            <li key={m.merchant}>
+              <span className="t-note">{m.merchant}</span>
+              <span className="t-card">
+                {m.txn_count}× · ${money(m.spend_cents)}
+              </span>
+              <input
+                className="t-posted-input"
+                inputMode="numeric"
+                placeholder={m.suggested_mcc ?? 'mcc'}
+                value={draft[m.merchant] ?? ''}
+                onChange={(e) => setDraft({ ...draft, [m.merchant]: e.target.value })}
+              />
+              <button
+                className="secondary"
+                disabled={!/^\d{4}$/.test(draft[m.merchant] ?? m.suggested_mcc ?? '')}
+                onClick={() => assign(m, draft[m.merchant] || m.suggested_mcc || '')}
+              >
+                {draft[m.merchant] ? 'Set' : m.suggested_mcc ? `Use ${m.suggested_mcc}` : 'Set'}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="sub">
+          {rows ? 'Every merchant you have spent at has a code.' : 'Loading…'}
+        </p>
+      )}
+      {msg && <p className="sub">{msg}</p>}
+      <p className="sub">
+        Setting a code also applies it to purchases already logged under that name, which were evaluated without one.
+      </p>
+    </section>
   );
 }
 
@@ -245,6 +391,8 @@ export default function Mcc() {
           </div>
         )}
       </section>
+
+      <MerchantScan />
 
       <section className="card entry">
         <h2>Add an exclusion</h2>

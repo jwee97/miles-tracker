@@ -10,6 +10,7 @@ import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes,
 import { runMigrations, runSeed } from './migrate';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
+import { assignMerchantCode, importMerchantCodes, unknownMerchants } from './mccscan';
 import { evaluate, lookupMerchant } from './rules';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import type { Card, Env, Offer } from './types';
@@ -559,6 +560,62 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             lines.join('\n') +
             '\n\n✕ earns nothing and does not count toward a minimum · * capped' +
             more
+        );
+      }
+
+      // Refresh merchant codes from the public directory, then show what is
+      // still missing from your own spend.
+      case '/mccscan': {
+        await send(env, chatId, 'Reading the merchant directory…');
+        const r = await importMerchantCodes(env);
+        const lines = [...r.added, ...r.updated]
+          .slice(0, 12)
+          .map((a) => `${a.merchant} → ${a.mcc}${a.verified ? ' ✓' : ''}`);
+        const unknown = await unknownMerchants(env, 8);
+        return send(
+          env,
+          chatId,
+          `*${r.source}*\n${r.fetched} page(s) · ${r.added.length} new · ${r.updated.length} corrected · ${r.unchanged} unchanged` +
+            (r.failed.length ? ` · ${r.failed.length} unreadable` : '') +
+            (lines.length ? `\n\n${lines.join('\n')}` : '') +
+            (r.conflicts.length
+              ? `\n\n⚠️ Disagrees with codes you confirmed (yours kept):\n` +
+                r.conflicts.map((c) => `${c.merchant}: you ${c.yours}, they ${c.theirs}`).join('\n')
+              : '') +
+            (unknown.length
+              ? `\n\n*Still no code, by spend*\n` +
+                unknown
+                  .map((u) => `${u.merchant} — ${u.txn_count}× $${money(u.spend_cents)}${u.suggested_mcc ? ` (try ${u.suggested_mcc})` : ''}`)
+                  .join('\n') +
+                '\n`/mcc <merchant> <code>` to set one.'
+              : '\n\nEvery merchant you have spent at has a code.')
+        );
+      }
+
+      case '/mcc': {
+        const [merchant, code] = (() => {
+          const parts = args.trim().split(/\s+/);
+          const last = parts[parts.length - 1];
+          return /^\d{4}$/.test(last ?? '') ? [parts.slice(0, -1).join(' '), last] : [args.trim(), ''];
+        })();
+        if (!merchant) return send(env, chatId, 'Format: `/mcc <merchant> [code]` — with a code it records one.');
+        if (!code) {
+          const guess = await lookupMerchant(env, merchant);
+          return send(
+            env,
+            chatId,
+            guess.confidence === 'unknown'
+              ? `No code recorded for *${merchant}*. \`/mcc ${merchant} 5812\` to set one, or \`/mccscan\`.`
+              : `*${merchant}* → ${guess.mcc} (${guess.description ?? '?'}) · ${guess.confidence}` +
+                  (guess.category ? `\ncategory: ${guess.category}` : '')
+          );
+        }
+        const r = await assignMerchantCode(env, merchant, code);
+        return send(
+          env,
+          chatId,
+          `*${r.merchant}* is now ${code}.` +
+            (r.updated ? ` ${r.updated} past purchase(s) updated.` : '')
         );
       }
 

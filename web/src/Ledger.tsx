@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import Statement from './Statement';
 import {
   addTransaction,
   deleteTransaction,
@@ -177,6 +178,7 @@ export default function Ledger() {
 
   return (
     <>
+      <Statement cards={cards} onImported={load} />
       {err && <p className="pad error">{err}</p>}
 
       {needsReview > 0 && (

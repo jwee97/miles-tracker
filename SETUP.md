@@ -662,6 +662,45 @@ the scanner has matched, ten to a page:
 There is also a **Sources** panel where a source's URL, label and kind can be
 edited, paused or removed without touching the bot.
 
+### Adding a card
+
+The **Cards** tab has *Add a card* and, under each card, its earn rates. A card
+with no rates never wins a recommendation and its rewards cannot be predicted,
+so the two live on one screen.
+
+A rate is more than a number. The form takes the category, the rate (miles per
+dollar or percent cashback), the cap and what it resets on, **the merchant codes
+the rate is restricted to**, codes it never applies to, the channel, and a
+minimum per transaction. The MCC list is what separates "4 mpd online" from
+"4 mpd on 5262, 5964 and 5969" — and the second is what the T&C usually says.
+
+If one cap is shared across several categories, give those rates the same
+**shared cap name**. Getting that wrong is what makes the app think you have
+more bonus headroom than you do.
+
+Closing a card keeps it, with the date: eligibility cooldowns on future offers
+run from it.
+
+### Pasting a statement
+
+**Ledger → Paste a statement.** Copy the transaction rows out of your statement
+and paste them in. It reads:
+
+- `14 SEP  15 SEP  NTUC FAIRPRICE  23.45` — two dates means transaction date
+  then posting date
+- `15/09/2026  GRAB *TRIP  12.30` and `2026-09-16  SHOPEE  1,240.00`
+- `45.00 CR` and `(10.00)` as refunds
+- and skips balances, payments, sub-totals and column headers
+
+A year that is not printed is inferred: December read in January belongs to the
+year before, never to the future. Every row is shown before anything is
+written; rows matching something already logged start unticked, so importing
+the same statement twice does not double your month. Lines it could not read
+are listed with the reason rather than dropped.
+
+Imported rows take the same path a typed one does — categorised, evaluated
+against the card's rules, and queued for the points wallet.
+
 ### Merchant codes
 
 The **Codes** tab is the MCC table seen from your own cards — a grid of codes
@@ -691,6 +730,19 @@ of the standard. It was derived from the code ranges and descriptions, with the
 previously hand-checked codes kept as they were. If your card's terms group a
 code differently, the category is what the earn engine matches on — correct it
 in `seed.sql` and re-seed, or adjust the rule instead.
+
+**Keeping codes current.** Codes tab → *Track merchant codes*, or `/mccscan`.
+It reads the merchant pages published at check-mcc.sg (whose robots.txt allows
+it) and records what they say: about twenty merchants, each with its code and
+whether that directory calls it verified. A code **you** confirmed is never
+overwritten — your statement outranks a directory — and a disagreement is
+listed rather than resolved quietly.
+
+Below it sits the other half: merchants in your own spend that still have no
+code, ordered by how much you have spent there, with what the directory would
+call them. Setting one also applies it to the purchases already logged under
+that name, which were evaluated without a code. `/mcc <merchant> [code]` does
+the same from the bot.
 
 **Exclusions are a starting point, not a promise.** The seeded list is what
 Singapore issuers commonly exclude — tax, insurance, top-ups, education,

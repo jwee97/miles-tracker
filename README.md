@@ -38,6 +38,12 @@ Ignore buttons and in the Offers tab, where **Scan now** runs the same job on
 demand and a URL box reads any page you paste. Everything matched lands in a
 paged list you can filter by state and date and judge in batches.
 
+**Pasting a statement.** Copy the rows out of a statement and the app reads
+them — transaction date, posting date, merchant, amount, refunds included —
+shows every row before writing anything, unticks the ones that look already
+logged, and lists the lines it could not parse with the reason. Imported rows
+go through the same evaluation a typed one does.
+
 **Merchant codes.** A Codes tab listing all 923 merchant category codes as a
 grid against your own cards: which earn nothing, which carry a bonus rate and at
 what cap, and which you actually spend on. Every cell is computed with the same
@@ -159,6 +165,8 @@ src/spend.ts          statement cycles, utilization, requirement progress
 src/digest.ts         the daily report and threshold alerts
 src/rss.ts            feed and page fetch, parse, URL cleaning, keyword gate
 src/mcc.ts            the code table read across your cards
+src/mccscan.ts        importing merchant codes, and the gaps in your own
+src/statement.ts      reading a pasted statement into transactions
 src/eligibility.ts    predicate evaluator and your review decisions
 src/offers.ts         saving an extraction without losing your answers
 src/extraction.ts     the prompt handed to you for Claude — the LLM half

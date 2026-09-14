@@ -4,6 +4,7 @@ import Audit from './Audit';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
 import ExpiryTab from './Expiry';
+import CardSetup from './CardSetup';
 import Mcc from './Mcc';
 import Pager from './Pager';
 import Settings from './Settings';
@@ -1722,7 +1723,7 @@ export default function App() {
               <Card key={c.id} c={c} />
             ))}
             <Recent txns={txns} count={recentCount} setCount={setRecentCount} onDelete={removeTxn} onPosted={confirmPosted} />
-            {!summary.cards.length && <p className="pad sub">No cards yet. Add one with /newcard in the bot.</p>}
+            <CardSetup onChanged={refresh} />
           </>
         ) : (
           <p className="pad sub">Loading…</p>

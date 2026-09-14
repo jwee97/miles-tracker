@@ -844,5 +844,107 @@ db.prepare(`INSERT INTO exclusions (card_id, mcc, reason, source) VALUES (NULL, 
   check('removing it twice is a 404', (await authed('/api/exclusion', { mcc: '7995', active: false })).status === 404, '');
 }
 
+// --- adding a card and its rates from the app -------------------------------
+// The guess only offers a programme the database knows about, so it needs one.
+db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VALUES ('uob_uni','UOB UNI$','bank','UNI$',24)`).run();
+{
+  const res = await authed('/api/card', {
+    issuer: 'UOB',
+    product: "Lady's Card",
+    nickname: 'lady',
+    limit: '8000',
+    statement_day: 15,
+    opened_at: '2026-02-01',
+    base_mpd: '0.4',
+  });
+  const body = (await res.json()) as any;
+  check('a card can be added from the app', res.status === 200, JSON.stringify(body));
+  const row = db.prepare(`SELECT * FROM cards WHERE nickname = 'lady'`).get() as any;
+  check('with its limit in cents', row.credit_limit_cents === 800000, String(row.credit_limit_cents));
+  check('and a product key derived from the name', row.product_key === 'uob_lady_s_card', row.product_key);
+  check('and a programme guessed from the issuer', body.program_key === 'uob_uni', String(body.program_key));
+
+  check('a duplicate nickname is refused', (await authed('/api/card', { issuer: 'X', product: 'Y', nickname: 'lady' })).status === 400, '');
+  check('a nickname with spaces is refused', (await authed('/api/card', { issuer: 'X', product: 'Y', nickname: 'my card' })).status === 400, '');
+  check('a card with no product is refused', (await authed('/api/card', { issuer: 'X', nickname: 'zz' })).status === 400, '');
+}
+{
+  const res = await authed('/api/card/rule', {
+    nickname: 'lady',
+    category: 'dining',
+    rate: '4',
+    reward_type: 'miles',
+    cap: '1000',
+    cap_window: 'calendar_month',
+    mcc_include: '5812, 5814',
+  });
+  check('a rate can be added', res.status === 200, String(res.status));
+  const rule = db.prepare(`SELECT * FROM earn_rules ORDER BY id DESC LIMIT 1`).get() as any;
+  check('with its cap in cents', rule.cap_cents === 100000, String(rule.cap_cents));
+  check('and the MCC list normalised', rule.mcc_include === '5812,5814', String(rule.mcc_include));
+
+  check(
+    'a bad MCC list is refused',
+    (await authed('/api/card/rule', { nickname: 'lady', category: 'dining', rate: '4', mcc_include: 'abc' })).status === 400,
+    ''
+  );
+  check(
+    'an unknown cap window is refused',
+    (await authed('/api/card/rule', { nickname: 'lady', category: 'x', rate: '4', cap_window: 'weekly' })).status === 400,
+    ''
+  );
+  check('a rule for an unknown card is a 404', (await authed('/api/card/rule', { nickname: 'nope', rate: '1' })).status === 404, '');
+
+  const listed = (await (await authed('/api/cards')).json()) as any;
+  const lady = listed.cards.find((c: any) => c.nickname === 'lady');
+  check('the card lists its rules', lady.rules.length === 1, JSON.stringify(lady.rules?.length));
+  check('and the categories come with it', listed.categories.length > 0, String(listed.categories?.length));
+
+  check('a rule can be removed', (await authed('/api/card/rule/delete', { id: rule.id })).status === 200, '');
+  check('after which the card has none', ((await (await authed('/api/cards')).json()) as any).cards.find((c: any) => c.nickname === 'lady').rules.length === 0, '');
+}
+{
+  const res = await authed('/api/card/close', { nickname: 'lady', closed_at: '2026-09-01' });
+  check('a card can be closed', res.status === 200, String(res.status));
+  check('keeping the date eligibility needs', (db.prepare(`SELECT closed_at FROM cards WHERE nickname='lady'`).get() as any).closed_at === '2026-09-01', '');
+  check('and reopened', (await authed('/api/card/close', { nickname: 'lady', closed_at: null })).status === 200, '');
+}
+
+// --- pasting a statement ------------------------------------------------------
+{
+  const text = ['14 SEP  15 SEP  NTUC FAIRPRICE  23.45', '15/09/2026  GRAB *TRIP  12.30', 'GARBAGE LINE  9.99'].join('\n');
+  const res = await authed('/api/statement/parse', { text, nickname: 'crw' });
+  const body = (await res.json()) as any;
+  check('a pasted statement is read', body.rows.length === 2, JSON.stringify(body.rows?.map((r: any) => r.merchant)));
+  check('with a total to check against the bill', body.total_cents === 3575, String(body.total_cents));
+  check('and the line it could not read is reported', body.skipped.length === 1, JSON.stringify(body.skipped));
+  check('nothing is written by parsing', (db.prepare(`SELECT COUNT(*) c FROM transactions WHERE source = 'statement'`).get() as any).c === 0, '');
+
+  const imported = (await (await authed('/api/statement/import', { nickname: 'crw', rows: body.rows })).json()) as any;
+  check('and then imported', imported.imported === 2, JSON.stringify(imported));
+  const rows = db.prepare(`SELECT * FROM transactions WHERE source = 'statement' ORDER BY id`).all() as any[];
+  check('with both dates kept', rows[0].occurred_at === '2026-09-14' && rows[0].posted_at === '2026-09-15', JSON.stringify(rows[0]));
+  check('and marked as coming from a statement', rows.every((r) => r.source === 'statement'), '');
+
+  const again = (await (await authed('/api/statement/parse', { text, nickname: 'crw' })).json()) as any;
+  check('importing the same statement twice is flagged', again.duplicates === 2, String(again.duplicates));
+  check('an empty paste is refused', (await authed('/api/statement/parse', { text: '   ' })).status === 400, '');
+  check('an import for an unknown card is a 404', (await authed('/api/statement/import', { nickname: 'zz', rows: body.rows })).status === 404, '');
+}
+
+// --- merchants with no code ---------------------------------------------------
+{
+  const unknown = (await (await authed('/api/mcc/unknown')).json()) as any;
+  check('merchants with no code are listed', unknown.merchants.length > 0, JSON.stringify(unknown.merchants?.slice(0, 2)));
+  const target = unknown.merchants[0].merchant;
+  const res = await authed('/api/mcc/assign', { merchant: target, mcc: '5411' });
+  const body = (await res.json()) as any;
+  check('a code can be assigned', res.status === 200, JSON.stringify(body));
+  check('and applied to spend already logged', body.updated > 0, String(body.updated));
+  const after = (await (await authed('/api/mcc/unknown')).json()) as any;
+  check('so it leaves the list', !after.merchants.some((m: any) => m.merchant === target), '');
+  check('a bad code is refused', (await authed('/api/mcc/assign', { merchant: 'x', mcc: '12' })).status === 400, '');
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

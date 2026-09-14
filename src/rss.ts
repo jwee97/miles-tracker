@@ -196,14 +196,20 @@ export function pickApplyUrl(links: { url: string; text: string }[], articleUrl?
 const JUNK = /<(script|style|noscript|template|svg|head|nav|footer|form|aside|iframe)\b[\s\S]*?<\/\1>/gi;
 const BLOCK_END = /<\/(p|div|li|h[1-6]|tr|section|article|blockquote)>|<br\s*\/?>/gi;
 
-/** Readable text from an HTML document, preferring the article body when marked. */
-export function htmlToText(html: string, limit = 40000): string {
+/**
+ * Readable text from an HTML document, preferring the article body when marked.
+ * `whole` keeps the entire page instead — a reference page often carries the
+ * fact you want in its header, outside any <article>.
+ */
+export function htmlToText(html: string, limit = 40000, opts: { whole?: boolean } = {}): string {
   let s = html.replace(/<!--[\s\S]*?-->/g, ' ').replace(JUNK, ' ');
 
   // Prefer <article>/<main> when present — it drops menus and related posts.
-  const bodies = [...s.matchAll(/<(article|main)\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((m) => m[2]);
-  const body = bodies.sort((a, b) => b.length - a.length)[0];
-  if (body && body.length > 500) s = body;
+  if (!opts.whole) {
+    const bodies = [...s.matchAll(/<(article|main)\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((m) => m[2]);
+    const body = bodies.sort((a, b) => b.length - a.length)[0];
+    if (body && body.length > 500) s = body;
+  }
 
   s = s.replace(BLOCK_END, '\n');
   s = normalizeText(decodeEntities(s.replace(/<[^>]+>/g, ' ')));

@@ -25,7 +25,9 @@ import { evaluate, lookupMerchant, recommend, type Channel, type Objective } fro
 import { buildAudit } from './audit';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
-import { acceptCredits, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
+import { assignMerchantCode, importMerchantCodes, unknownMerchants } from './mccscan';
+import { markDuplicates, parseStatement, type ParsedRow } from './statement';
+import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import { executeTransfer, tranchesByExpiry } from './points';
 import type { Env, Offer } from './types';
 
@@ -165,6 +167,32 @@ export default {
               carriers: url.searchParams.get('carriers') === '1',
             })
           );
+        }
+
+        // Merchants in your own spend whose code is still unknown — the gaps
+        // that stop the earn engine seeing a card's MCC rules at all.
+        if (url.pathname === '/api/mcc/unknown') {
+          return json({ merchants: await unknownMerchants(env) });
+        }
+
+        // Read a published merchant-code directory and record what it says.
+        if (url.pathname === '/api/mcc/scan' && req.method === 'POST') {
+          const body = (await req.json().catch(() => ({}))) as { budget?: number };
+          return json(await importMerchantCodes(env, { budget: body.budget }));
+        }
+
+        // Record a code for a merchant, and apply it to the spend already
+        // logged under that name.
+        if (url.pathname === '/api/mcc/assign' && req.method === 'POST') {
+          const b = (await req.json()) as { merchant?: string; mcc?: string; channel?: string; backfill?: boolean };
+          const code = String(b.mcc ?? '').trim();
+          if (!b.merchant?.trim() || !/^\d{4}$/.test(code))
+            return json({ error: 'merchant and a four-digit mcc are required' }, 400);
+          const res = await assignMerchantCode(env, b.merchant, code, {
+            channel: b.channel ?? null,
+            backfill: b.backfill,
+          });
+          return json({ ok: true, ...res });
         }
 
         // Adding and removing exclusions from the app, not only the bot.
@@ -348,6 +376,263 @@ export default {
           if (!id) return json({ error: 'id required' }, 400);
           if (!(await undoCredit(env, id))) return json({ error: 'not credited' }, 404);
           return json({ ok: true, wallet: await wallet(env) });
+        }
+
+        // --- pasting a statement -----------------------------------------
+        // Read the rows and hand them back for checking. Nothing is written.
+        if (url.pathname === '/api/statement/parse' && req.method === 'POST') {
+          const b = (await req.json()) as { text?: string; nickname?: string };
+          const text = String(b.text ?? '');
+          if (!text.trim()) return json({ error: 'paste the statement text first' }, 400);
+          if (text.length > 200_000) return json({ error: 'that is too much text for one paste' }, 400);
+
+          const parsed = parseStatement(text, today(env));
+          let rows = parsed.rows;
+
+          const card = b.nickname
+            ? await env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`)
+                .bind(b.nickname.trim())
+                .first<any>()
+            : null;
+          if (b.nickname && !card) return json({ error: 'no such card' }, 404);
+          if (card) rows = await markDuplicates(env, card.id, rows);
+
+          // What the app already knows about each merchant, so the preview
+          // shows what would be recorded rather than only what was pasted.
+          const enriched: ParsedRow[] = [];
+          for (const r of rows) {
+            const guess = await lookupMerchant(env, r.merchant);
+            enriched.push({
+              ...r,
+              mcc: guess?.confidence === 'unknown' ? null : guess?.mcc ?? null,
+              category: (await categoryForMerchant(env, r.merchant)) ?? guess?.category ?? null,
+            });
+          }
+
+          return json({
+            rows: enriched,
+            skipped: parsed.skipped,
+            total_cents: parsed.total_cents,
+            duplicates: enriched.filter((r) => r.duplicate).length,
+          });
+        }
+
+        // Write the rows you kept, through the same path a single entry takes:
+        // evaluated, categorised, and queued for the wallet.
+        if (url.pathname === '/api/statement/import' && req.method === 'POST') {
+          const b = (await req.json()) as { nickname?: string; rows?: ParsedRow[] };
+          const card = await env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(String(b.nickname ?? '').trim())
+            .first<any>();
+          if (!card) return json({ error: 'no such card' }, 404);
+          const rows = (b.rows ?? []).filter((r) => r && r.occurred_at && Number.isFinite(r.amount_cents));
+          if (!rows.length) return json({ error: 'nothing to import' }, 400);
+          if (rows.length > 500) return json({ error: 'at most 500 rows at a time' }, 400);
+
+          let imported = 0;
+          let miles = 0;
+          for (const r of rows) {
+            const merchant = (r.merchant ?? '').trim() || null;
+            let category = r.category ?? (await categoryForMerchant(env, merchant));
+            const guess = merchant ? await lookupMerchant(env, merchant) : null;
+            const mcc = r.mcc ?? (guess?.confidence === 'unknown' ? null : guess?.mcc ?? null);
+            if (!category && guess?.category) category = guess.category;
+
+            // A refund earns nothing; evaluating it would predict miles on a
+            // negative amount.
+            const expected =
+              r.amount_cents > 0
+                ? await evaluate(env, card, { amount_cents: r.amount_cents, mcc, category, channel: null })
+                : null;
+            const program = expected && expected.miles > 0 ? await programForCard(env, card.id, expected.rule?.id) : null;
+
+            await env.DB.prepare(
+              `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category,
+                 category_source, needs_review, mcc, channel, expected_miles, expected_cashback_cents,
+                 expected_program, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'statement')`
+            )
+              .bind(
+                card.id,
+                r.amount_cents,
+                r.occurred_at,
+                r.posted_at ?? null,
+                merchant,
+                category,
+                category ? 'learned' : null,
+                category ? 0 : 1,
+                mcc,
+                expected?.miles ?? 0,
+                expected?.cashback_cents ?? 0,
+                program
+              )
+              .run();
+            imported++;
+            miles += expected?.miles ?? 0;
+          }
+
+          return json({ ok: true, imported, expected_miles: miles });
+        }
+
+        // --- cards and their earn rules, from the app --------------------
+        if (url.pathname === '/api/cards') {
+          const { results: cards } = await env.DB.prepare(
+            `SELECT * FROM cards ORDER BY closed_at IS NOT NULL, issuer, product`
+          ).all<any>();
+          const { results: rules } = await env.DB.prepare(
+            `SELECT * FROM earn_rules WHERE active = 1 ORDER BY card_id, mpd DESC`
+          ).all<any>();
+          const { results: programs } = await env.DB.prepare(
+            `SELECT key, name, kind, unit FROM programs ORDER BY kind, name`
+          ).all<any>();
+          const { results: categories } = await env.DB.prepare(
+            `SELECT DISTINCT category FROM mcc_codes ORDER BY category`
+          ).all<{ category: string }>();
+          return json({
+            cards: (cards ?? []).map((c) => ({ ...c, rules: (rules ?? []).filter((r) => r.card_id === c.id) })),
+            programs: programs ?? [],
+            categories: (categories ?? []).map((c) => c.category),
+          });
+        }
+
+        if (url.pathname === '/api/card' && req.method === 'POST') {
+          const b = (await req.json()) as {
+            issuer?: string;
+            product?: string;
+            nickname?: string;
+            limit?: string | number;
+            statement_day?: number;
+            opened_at?: string;
+            program_key?: string | null;
+            base_mpd?: number | string;
+          };
+          const issuer = (b.issuer ?? '').trim();
+          const product = (b.product ?? '').trim();
+          const nickname = (b.nickname ?? '').trim().toLowerCase();
+          if (!issuer || !product || !nickname) return json({ error: 'issuer, product and nickname are required' }, 400);
+          if (!/^[a-z0-9]{2,16}$/.test(nickname))
+            return json({ error: 'nickname must be 2-16 letters or digits — it is what you type when logging spend' }, 400);
+
+          const exists = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(nickname)
+            .first();
+          if (exists) return json({ error: `the nickname ${nickname} is already taken` }, 400);
+
+          const day = Math.min(Math.max(parseInt(String(b.statement_day ?? 1), 10) || 1, 1), 28);
+          const opened = b.opened_at ? parseDateToken(String(b.opened_at), env) : null;
+          if (b.opened_at && !opened) return json({ error: 'bad opening date' }, 400);
+
+          // A programme is guessed from the issuer so points have somewhere to
+          // go; it is reported back rather than applied silently.
+          const program = b.program_key === undefined ? await guessProgram(env, issuer) : b.program_key || null;
+          const ins = await env.DB.prepare(
+            `INSERT INTO cards (issuer, product, product_key, nickname, credit_limit_cents, statement_day,
+               opened_at, base_mpd, program_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+            .bind(
+              issuer,
+              product,
+              `${issuer}_${product}`.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+              nickname,
+              parseMoney(String(b.limit ?? '0')) ?? 0,
+              day,
+              opened,
+              parseFloat(String(b.base_mpd ?? '0')) || 0,
+              program
+            )
+            .run();
+          return json({ ok: true, id: ins.meta.last_row_id, nickname, program_key: program });
+        }
+
+        if (url.pathname === '/api/card/rule' && req.method === 'POST') {
+          const b = (await req.json()) as {
+            nickname?: string;
+            category?: string;
+            rate?: string | number;
+            reward_type?: string;
+            cap?: string | number | null;
+            cap_window?: string | null;
+            cap_group?: string | null;
+            mcc_include?: string | null;
+            mcc_exclude?: string | null;
+            channel?: string | null;
+            min_txn?: string | number | null;
+            program_key?: string | null;
+            note?: string | null;
+          };
+          const card = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(String(b.nickname ?? '').trim())
+            .first<{ id: number }>();
+          if (!card) return json({ error: 'no such card' }, 404);
+
+          const rate = parseFloat(String(b.rate ?? ''));
+          if (!Number.isFinite(rate) || rate < 0) return json({ error: 'a rate is required' }, 400);
+          const category = (b.category ?? '').trim().toLowerCase() || '*';
+          const rewardType = b.reward_type === 'cashback' ? 'cashback' : 'miles';
+          const window = b.cap_window ?? null;
+          if (window && !['statement_cycle', 'calendar_month', 'calendar_quarter'].includes(window))
+            return json({ error: 'cap window must be statement_cycle, calendar_month or calendar_quarter' }, 400);
+
+          // A list of codes is what makes a rule precise: "4 mpd online" is not
+          // the same thing as "4 mpd on 5262, 5964, 5969".
+          const codes = (v: string | null | undefined) => {
+            const list = (v ?? '')
+              .split(/[,\s]+/)
+              .map((x) => x.trim())
+              .filter(Boolean);
+            return list.length ? list.join(',') : null;
+          };
+          const include = codes(b.mcc_include);
+          const exclude = codes(b.mcc_exclude);
+          for (const list of [include, exclude]) {
+            if (list && !/^(\d{4})(,\d{4})*$/.test(list))
+              return json({ error: 'MCC lists must be four-digit codes, comma separated' }, 400);
+          }
+
+          const ins = await env.DB.prepare(
+            `INSERT INTO earn_rules (card_id, category, mpd, reward_type, mcc_include, mcc_exclude, channel,
+               min_txn_cents, program_key, cap_cents, cap_group, cap_window, note)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+            .bind(
+              card.id,
+              category,
+              rate,
+              rewardType,
+              include,
+              exclude,
+              b.channel || null,
+              b.min_txn ? parseMoney(String(b.min_txn)) : null,
+              b.program_key || null,
+              b.cap ? parseMoney(String(b.cap)) : null,
+              b.cap_group || null,
+              window,
+              b.note?.trim() || null
+            )
+            .run();
+          return json({ ok: true, id: ins.meta.last_row_id });
+        }
+
+        if (url.pathname === '/api/card/rule/delete' && req.method === 'POST') {
+          const { id } = (await req.json()) as { id?: number };
+          if (!id) return json({ error: 'id required' }, 400);
+          const res = await env.DB.prepare(`UPDATE earn_rules SET active = 0 WHERE id = ?`).bind(id).run();
+          if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such rule' }, 404);
+          return json({ ok: true });
+        }
+
+        if (url.pathname === '/api/card/close' && req.method === 'POST') {
+          const { nickname, closed_at } = (await req.json()) as { nickname?: string; closed_at?: string | null };
+          const card = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(String(nickname ?? '').trim())
+            .first<{ id: number }>();
+          if (!card) return json({ error: 'no such card' }, 404);
+          // Closing date drives eligibility cooldowns, so it is kept, not deleted.
+          const date = closed_at === null ? null : parseDateToken(String(closed_at ?? today(env)), env);
+          if (closed_at !== null && !date) return json({ error: 'bad closing date' }, 400);
+          await env.DB.prepare(`UPDATE cards SET closed_at = ? WHERE id = ?`).bind(date, card.id).run();
+          return json({ ok: true, closed_at: date });
         }
 
         // Which programme a card earns into. Without it the engine knows what

@@ -498,6 +498,100 @@ export const runTransfer = (conversion_id: number, points: string) =>
 export const fetchAnalytics = (month: string) => get<Analytics>(`/api/analytics?month=${month}`);
 export const fetchMonths = () => get<{ months: string[] }>('/api/months');
 
+// --- pasting a statement ----------------------------------------------------
+
+export interface ParsedRow {
+  occurred_at: string;
+  posted_at: string | null;
+  merchant: string;
+  amount_cents: number;
+  raw: string;
+  credit: boolean;
+  duplicate?: boolean;
+  mcc?: string | null;
+  category?: string | null;
+}
+
+export interface StatementParse {
+  rows: ParsedRow[];
+  skipped: { raw: string; reason: string }[];
+  total_cents: number;
+  duplicates: number;
+}
+
+export const parseStatement = (text: string, nickname?: string) =>
+  post<StatementParse>('/api/statement/parse', { text, nickname });
+
+export const importStatement = (nickname: string, rows: ParsedRow[]) =>
+  post<{ ok: true; imported: number; expected_miles: number }>('/api/statement/import', { nickname, rows });
+
+// --- cards and their earn rules ---------------------------------------------
+
+export interface EarnRuleRow {
+  id: number;
+  card_id: number;
+  category: string;
+  mpd: number;
+  reward_type: 'miles' | 'cashback';
+  mcc_include: string | null;
+  mcc_exclude: string | null;
+  channel: string | null;
+  min_txn_cents: number | null;
+  program_key: string | null;
+  cap_cents: number | null;
+  cap_group: string | null;
+  cap_window: string | null;
+  note: string | null;
+}
+
+export interface CardRow {
+  id: number;
+  issuer: string;
+  product: string;
+  nickname: string;
+  credit_limit_cents: number;
+  statement_day: number;
+  opened_at: string | null;
+  closed_at: string | null;
+  base_mpd: number;
+  program_key: string | null;
+  rules: EarnRuleRow[];
+}
+
+export const fetchCards = () =>
+  get<{ cards: CardRow[]; programs: ProgramRow[]; categories: string[] }>('/api/cards');
+
+export const addCard = (body: {
+  issuer: string;
+  product: string;
+  nickname: string;
+  limit?: string;
+  statement_day?: number;
+  opened_at?: string;
+  program_key?: string | null;
+  base_mpd?: string;
+}) => post<{ ok: true; id: number; nickname: string; program_key: string | null }>('/api/card', body);
+
+export const addEarnRule = (body: {
+  nickname: string;
+  category: string;
+  rate: string;
+  reward_type: 'miles' | 'cashback';
+  cap?: string;
+  cap_window?: string | null;
+  cap_group?: string | null;
+  mcc_include?: string;
+  mcc_exclude?: string;
+  channel?: string | null;
+  min_txn?: string;
+  note?: string;
+}) => post<{ ok: true; id: number }>('/api/card/rule', body);
+
+export const deleteEarnRule = (id: number) => post<{ ok: true }>('/api/card/rule/delete', { id });
+
+export const closeCard = (nickname: string, closed_at: string | null) =>
+  post<{ ok: true; closed_at: string | null }>('/api/card/close', { nickname, closed_at });
+
 export const fetchSummary = () => get<Summary>('/api/summary');
 // --- the points wallet ------------------------------------------------------
 
@@ -720,6 +814,34 @@ export const fetchMccMatrix = (
   if (opts.carriers) q.set('carriers', '1');
   return get<MccMatrix>(`/api/mcc/matrix${q.toString() ? `?${q}` : ''}`);
 };
+
+export interface UnknownMerchant {
+  merchant: string;
+  txn_count: number;
+  spend_cents: number;
+  last_seen: string;
+  suggested_mcc: string | null;
+  suggested_description: string | null;
+  suggested_source: string | null;
+}
+
+export interface MccScanResult {
+  fetched: number;
+  added: { merchant: string; mcc: string; description: string | null; verified: boolean }[];
+  updated: { merchant: string; mcc: string; description: string | null; verified: boolean }[];
+  unchanged: number;
+  conflicts: { merchant: string; yours: string; theirs: string; url: string }[];
+  failed: string[];
+  source: string;
+}
+
+export const fetchUnknownMerchants = () => get<{ merchants: UnknownMerchant[] }>('/api/mcc/unknown');
+
+/** Read a published merchant-code directory and record what it says. */
+export const scanMccDirectory = () => post<MccScanResult>('/api/mcc/scan', {});
+
+export const assignMerchantCode = (merchant: string, mcc: string, backfill = true) =>
+  post<{ ok: true; merchant: string; updated: number }>('/api/mcc/assign', { merchant, mcc, backfill });
 
 export const saveExclusion = (body: { mcc: string; nickname?: string | null; reason?: string; active?: boolean }) =>
   post<{ ok: true }>('/api/exclusion', body);
