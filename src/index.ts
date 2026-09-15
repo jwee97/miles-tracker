@@ -15,6 +15,7 @@ import {
   parseMoney,
   requirementProgress,
   requirementsFor,
+  standings,
   today,
   utilization,
 } from './spend';
@@ -77,53 +78,65 @@ export default {
       try {
 
         if (url.pathname === '/api/summary') {
-          const cards = await activeCards(env);
-          const out = [];
-          for (const card of cards) {
-            const u = await utilization(env, card);
-            const reqs = await requirementsFor(env, card.id);
-            const progress = [];
-            for (const r of reqs) {
-              const p = await requirementProgress(env, card, r);
-              progress.push({
-                id: r.id,
-                kind: r.kind,
-                amount_cents: r.amount_cents,
-                reward_note: r.reward_note,
-                bonus_cap_cents: r.bonus_cap_cents,
-                spent_cents: p.spent_cents,
-                remaining_cents: p.remaining_cents,
-                days_left: p.days_left,
-                per_day_cents: p.per_day_cents,
-                met: p.met,
-                confirmed_cents: p.confirmed_cents,
-                at_risk_cents: p.at_risk_cents,
-                excluded_cents: p.excluded_cents,
-                excluded_count: p.excluded_count,
-                met_only_with_at_risk: p.met_only_with_at_risk,
-                txn_count: p.txn_count,
-                txns_required: p.txns_required,
-                txns_remaining: p.txns_remaining,
-                cap_reached: p.cap_reached,
-                window: p.window,
-              });
-            }
-            out.push({
-              id: card.id,
-              issuer: card.issuer,
-              product: card.product,
-              nickname: card.nickname,
-              limit_cents: u.limit_cents,
-              balance_cents: u.balance_cents,
-              at_risk_cents: u.at_risk_cents,
-              percent: u.percent,
-              cycle: u.cycle,
-              days_left: u.days_left,
-              requirements: progress,
-            });
-          }
+          // Led by minimum spend, not by the credit limit. The limit is what a
+          // credit score reads; the minimum is the thing you can still act on,
+          // and the order is most-at-risk first.
+          const rows = await standings(env);
+          const out = rows.map(({ card, utilization: u, requirements, headline, percent, lost }) => ({
+            id: card.id,
+            issuer: card.issuer,
+            product: card.product,
+            nickname: card.nickname,
+            limit_cents: u.limit_cents,
+            balance_cents: u.balance_cents,
+            at_risk_cents: u.at_risk_cents,
+            /** Progress toward the minimum that matters, or utilization when there is none. */
+            percent,
+            /** Kept so the limit is still reportable, just not as the headline. */
+            util_percent: u.percent,
+            headline_id: headline?.requirement.id ?? null,
+            /** The window's reward is already gone; spending here cannot bring it back. */
+            lost,
+            cycle: u.cycle,
+            days_left: u.days_left,
+            requirements: requirements.map((p) => ({
+              id: p.requirement.id,
+              kind: p.requirement.kind,
+              amount_cents: p.requirement.amount_cents,
+              reward_note: p.requirement.reward_note,
+              bonus_cap_cents: p.requirement.bonus_cap_cents,
+              window_kind: p.requirement.window,
+              spent_cents: p.spent_cents,
+              remaining_cents: p.remaining_cents,
+              days_left: p.days_left,
+              per_day_cents: p.per_day_cents,
+              met: p.met,
+              confirmed_cents: p.confirmed_cents,
+              at_risk_cents: p.at_risk_cents,
+              excluded_cents: p.excluded_cents,
+              excluded_count: p.excluded_count,
+              met_only_with_at_risk: p.met_only_with_at_risk,
+              txn_count: p.txn_count,
+              txns_required: p.txns_required,
+              txns_remaining: p.txns_remaining,
+              cap_reached: p.cap_reached,
+              window: p.window,
+              // The quarter a per-month minimum sits in, and every month of it,
+              // so a month already missed is visible rather than discovered.
+              quarter: p.quarter,
+              months: p.months,
+              tiers: p.tiers,
+              tier: p.tier,
+              quarter_tier: p.quarter_tier,
+              thirds: p.thirds,
+              projected_reward_cents: p.projected_reward_cents,
+              months_missed: p.months_missed,
+            })),
+          }));
+
           const totalBal = out.reduce((s, c) => s + c.balance_cents, 0);
           const totalLimit = out.reduce((s, c) => s + c.limit_cents, 0);
+          const all = rows.flatMap((r) => r.requirements);
           return json({
             today: today(env),
             cards: out,
@@ -131,6 +144,12 @@ export default {
               balance_cents: totalBal,
               limit_cents: totalLimit,
               percent: totalLimit ? (totalBal / totalLimit) * 100 : 0,
+              // What the dashboard now leads with.
+              minimums_total: all.length,
+              minimums_met: all.filter((p) => p.met).length,
+              minimums_at_risk: all.filter((p) => !p.met && p.days_left <= parseInt(env.MIN_SPEND_WARN_DAYS || '7', 10)).length,
+              still_needed_cents: all.reduce((s, p) => s + p.remaining_cents, 0),
+              soonest_days: all.filter((p) => !p.met).reduce<number | null>((lo, p) => (lo === null ? p.days_left : Math.min(lo, p.days_left)), null),
             },
           });
         }
@@ -596,6 +615,11 @@ export default {
           const { results: reqs } = await env.DB.prepare(
             `SELECT * FROM requirements WHERE active = 1 ORDER BY card_id, id`
           ).all<any>();
+          const { results: tierRows } = await env.DB.prepare(
+            `SELECT t.* FROM requirement_tiers t
+             JOIN requirements r ON r.id = t.requirement_id
+             WHERE r.active = 1 ORDER BY t.requirement_id, t.min_spend_cents`
+          ).all<any>();
           const { results: programs } = await env.DB.prepare(
             `SELECT key, name, kind, unit FROM programs ORDER BY kind, name`
           ).all<any>();
@@ -606,7 +630,9 @@ export default {
             cards: (cards ?? []).map((c) => ({
               ...c,
               rules: (rules ?? []).filter((r) => r.card_id === c.id),
-              requirements: (reqs ?? []).filter((r) => r.card_id === c.id),
+              requirements: (reqs ?? [])
+                .filter((r) => r.card_id === c.id)
+                .map((r) => ({ ...r, tiers: (tierRows ?? []).filter((t) => t.requirement_id === r.id) })),
             })),
             programs: programs ?? [],
             categories: (categories ?? []).map((c) => c.category),
@@ -763,10 +789,14 @@ export default {
             min_txns?: number | null;
             bonus_cap?: string | number | null;
             reward_note?: string | null;
+            anchor_at?: string | null;
+            per_month?: boolean;
+            prorate_first?: boolean;
+            tiers?: { min_spend?: string | number; reward?: string | number; label?: string | null }[];
           };
-          const card = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+          const card = await env.DB.prepare(`SELECT id, opened_at FROM cards WHERE nickname = ? COLLATE NOCASE`)
             .bind(String(b.nickname ?? '').trim())
-            .first<{ id: number }>();
+            .first<{ id: number; opened_at: string | null }>();
           if (!card) return json({ error: 'no such card' }, 404);
 
           const kind = b.kind === 'signup_min' ? 'signup_min' : 'monthly_min';
@@ -774,7 +804,7 @@ export default {
           if (!amount || amount <= 0) return json({ error: 'an amount is required' }, 400);
 
           const window = String(b.window ?? 'calendar_month');
-          if (!['calendar_month', 'calendar_quarter', 'statement_cycle', 'fixed_window'].includes(window))
+          if (!['calendar_month', 'calendar_quarter', 'statement_cycle', 'statement_quarter', 'fixed_window'].includes(window))
             return json({ error: 'unknown window' }, 400);
 
           const deadline = b.deadline ? parseDateToken(String(b.deadline), env) : null;
@@ -786,10 +816,32 @@ export default {
           if (window === 'fixed_window' && !deadline)
             return json({ error: 'a fixed window needs a deadline' }, 400);
 
+          // A statement quarter is counted from a date, so without one there is
+          // nothing to anchor it to and every month would be quarter one.
+          const anchor = b.anchor_at ? parseDateToken(String(b.anchor_at), env) : null;
+          if (b.anchor_at && !anchor) return json({ error: 'bad anchor date' }, 400);
+          if (window === 'statement_quarter' && !(anchor ?? card.opened_at))
+            return json(
+              { error: 'a statement quarter is counted from the month the card was issued — set the card\u2019s opening date, or give an anchor date' },
+              400
+            );
+
+          const tiers = (b.tiers ?? [])
+            .map((t) => ({
+              min_spend: parseMoney(String(t.min_spend ?? '')),
+              reward: parseMoney(String(t.reward ?? '')),
+              label: t.label?.trim() || null,
+            }))
+            .filter((t) => t.min_spend !== null || t.reward !== null);
+          for (const t of tiers) {
+            if (!t.min_spend || t.min_spend <= 0 || t.reward === null || t.reward < 0)
+              return json({ error: 'each tier needs a spend and what it pays' }, 400);
+          }
+
           const ins = await env.DB.prepare(
             `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, min_txns,
-               bonus_cap_cents, reward_note, active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+               bonus_cap_cents, reward_note, anchor_at, per_month, prorate_first, active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
           )
             .bind(
               card.id,
@@ -800,10 +852,21 @@ export default {
               starts,
               b.min_txns ? Math.max(0, Math.round(Number(b.min_txns))) : null,
               b.bonus_cap ? parseMoney(String(b.bonus_cap)) : null,
-              b.reward_note?.trim() || null
+              b.reward_note?.trim() || null,
+              anchor,
+              b.per_month ? 1 : 0,
+              b.prorate_first ? 1 : 0
             )
             .run();
-          return json({ ok: true, id: ins.meta.last_row_id });
+
+          for (const t of tiers) {
+            await env.DB.prepare(
+              `INSERT INTO requirement_tiers (requirement_id, min_spend_cents, reward_cents, label) VALUES (?, ?, ?, ?)`
+            )
+              .bind(ins.meta.last_row_id, t.min_spend, t.reward, t.label)
+              .run();
+          }
+          return json({ ok: true, id: ins.meta.last_row_id, tiers: tiers.length });
         }
 
         if (url.pathname === '/api/card/requirement/delete' && req.method === 'POST') {

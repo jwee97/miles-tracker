@@ -42,13 +42,28 @@ export interface Requirement {
   card_id: number;
   kind: 'monthly_min' | 'signup_min';
   amount_cents: number;
-  window: 'calendar_month' | 'calendar_quarter' | 'statement_cycle' | 'fixed_window';
+  window: 'calendar_month' | 'calendar_quarter' | 'statement_cycle' | 'statement_quarter' | 'fixed_window';
   deadline: string | null;
   starts_at: string | null;
   min_txns: number | null;
   bonus_cap_cents: number | null;
   reward_note: string | null;
+  /** Sets a statement quarter's cycle; defaults to the card's opening date. */
+  anchor_at: string | null;
+  /** 1 when the minimum must be met in EVERY statement month of the window. */
+  per_month: number;
+  /** 1 when the first quarter pays in thirds for its qualifying months. */
+  prorate_first: number;
   active: number;
+}
+
+/** One rung of a tiered reward: spend this much, the window pays that much. */
+export interface RequirementTier {
+  id: number;
+  requirement_id: number;
+  min_spend_cents: number;
+  reward_cents: number;
+  label: string | null;
 }
 
 export interface Offer {

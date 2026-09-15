@@ -1,4 +1,4 @@
-import type { Card, Env, Requirement } from './types';
+import type { Card, Env, Requirement, RequirementTier } from './types';
 
 export const money = (cents: number) =>
   (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -65,6 +65,62 @@ export function statementCycle(statementDay: number, env: Env): { start: string;
   }
   const prevClose = new Date(Date.UTC(startY, startM, clamp(startY, startM)));
   return { start: isoDate(new Date(prevClose.getTime() + 86400_000)), end: isoDate(end) };
+}
+
+/**
+ * The statement cycle that STARTS in a given month.
+ *
+ * `statementCycle` answers "which cycle is today in"; this answers "which cycle
+ * is the one beginning in March", which is what a quarter anchored to a card's
+ * issuance month is counted in. A cycle closing on day 18 and starting in
+ * February runs 19 Feb to 18 Mar — so a cycle is named for the month it opens
+ * in, not the month it closes in.
+ */
+export function cycleStartingIn(
+  year: number,
+  month: number,
+  statementDay: number
+): { start: string; end: string } {
+  const norm = (y: number, m: number) => [y + Math.floor(m / 12), ((m % 12) + 12) % 12] as const;
+  const [sy, sm] = norm(year, month);
+  const [ey, em] = norm(year, month + 1);
+  const close = (y: number, m: number) => new Date(Date.UTC(y, m, Math.min(statementDay, daysInMonth(y, m))));
+  return {
+    start: isoDate(new Date(close(sy, sm).getTime() + 86400_000)),
+    end: isoDate(close(ey, em)),
+  };
+}
+
+export interface StatementQuarter {
+  start: string;
+  end: string;
+  /** 1 for the card's first quarter, counting from the anchor month. */
+  index: number;
+  /** The three statement months, in order. */
+  months: { start: string; end: string }[];
+}
+
+/**
+ * Three consecutive statement months, anchored to the month a card was issued.
+ *
+ * Cards like UOB One do not use calendar quarters. A card issued in February
+ * runs Feb–Mar–Apr, then May–Jun–Jul, for as long as it is held, and each
+ * "month" is a statement period rather than the 1st to the 31st. Getting this
+ * wrong by a single cycle would report a minimum as met a month before it is.
+ */
+export function statementQuarter(anchorDate: string, statementDay: number, env: Env): StatementQuarter {
+  const here = statementCycle(statementDay, env);
+  const [hy, hm] = here.start.split('-').map(Number);
+  const [ay, am] = anchorDate.split('-').map(Number);
+
+  // Index by the month a cycle opens in, so a cycle running 19 Feb - 18 Mar
+  // belongs to February, which is what the anchor month means.
+  const elapsed = hy * 12 + (hm - 1) - (ay * 12 + (am - 1));
+  const q = Math.floor(Math.max(0, elapsed) / 3);
+  const firstMonth = (ay * 12 + (am - 1)) + q * 3;
+
+  const months = [0, 1, 2].map((i) => cycleStartingIn(Math.floor((firstMonth + i) / 12), (firstMonth + i) % 12, statementDay));
+  return { start: months[0].start, end: months[2].end, index: q + 1, months };
 }
 
 export function calendarQuarter(env: Env): { start: string; end: string } {
@@ -223,6 +279,23 @@ export async function utilization(env: Env, card: Card): Promise<Utilization> {
   };
 }
 
+/** One statement month inside a quarter, and what it did. */
+export interface MonthSlice {
+  /** 1, 2 or 3 within the quarter. */
+  index: number;
+  window: { start: string; end: string };
+  spent_cents: number;
+  confirmed_cents: number;
+  at_risk_cents: number;
+  txn_count: number;
+  /** Both halves of the gate: the amount and the transaction count. */
+  qualified: boolean;
+  /** Highest tier this month's spend reached, or null for none. */
+  tier_index: number | null;
+  /** Where today is relative to this month. */
+  state: 'past' | 'current' | 'future';
+}
+
 export interface Progress {
   requirement: Requirement;
   card: Card;
@@ -248,27 +321,91 @@ export interface Progress {
   /** Set when the elevated earn rate has been exhausted — stop using this card. */
   cap_reached: boolean;
   over_cap_cents: number;
+
+  // --- tiered, per-statement-month windows (UOB One and its like) ----------
+  /** The quarter the current statement month sits in, when there is one. */
+  quarter: StatementQuarter | null;
+  /** Every statement month in that quarter, so a missed one is visible. */
+  months: MonthSlice[];
+  tiers: RequirementTier[];
+  /** The tier THIS window's spend has reached — what you are on right now. */
+  tier: RequirementTier | null;
+  /**
+   * What the quarter pays if it ends the way it stands: the LOWEST tier across
+   * the months that have qualified, because the reward is for sustaining the
+   * spend and one large month does not carry two thin ones. Null once a decided
+   * month has failed, since then there is nothing to pay.
+   */
+  quarter_tier: RequirementTier | null;
+  /** Thirds earned, when the first quarter pro-rates. 3 means the whole thing. */
+  thirds: number | null;
+  projected_reward_cents: number;
+  /** Months already closed that failed — those cannot be recovered. */
+  months_missed: number;
+}
+
+export async function requirementTiers(env: Env, requirementId: number): Promise<RequirementTier[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM requirement_tiers WHERE requirement_id = ? ORDER BY min_spend_cents`
+  )
+    .bind(requirementId)
+    .all<RequirementTier>();
+  return results ?? [];
+}
+
+/**
+ * How much of a window's spend the issuer will actually count.
+ *
+ * Most issuers leave the same codes out of a minimum that they leave out of
+ * earning — tax, insurance, top-ups. Counting them would call a minimum met
+ * when the bank does not, and that costs the whole bonus; not counting them
+ * only means spending a little more than strictly necessary. The safer error is
+ * the default, and the amount left out is always reported.
+ */
+async function countedSpend(env: Env, cardId: number, start: string, end: string) {
+  const spend = await spendIn(env, cardId, start, end);
+  const countsExcluded = (env.MIN_SPEND_COUNTS_EXCLUDED ?? '').toLowerCase() === 'true';
+  const excluded = countsExcluded ? 0 : spend.excluded_cents;
+  return {
+    spend,
+    excluded,
+    excluded_count: countsExcluded ? 0 : spend.excluded_count,
+    spent: spend.total_cents - excluded,
+  };
+}
+
+/** The highest tier a given spend reaches, or null when it clears none. */
+function tierFor(tiers: RequirementTier[], spent: number): number | null {
+  let hit: number | null = null;
+  for (let i = 0; i < tiers.length; i++) if (spent >= tiers[i].min_spend_cents) hit = i;
+  return hit;
 }
 
 export async function requirementProgress(env: Env, card: Card, req: Requirement): Promise<Progress> {
+  const now = today(env);
+  const tiers = await requirementTiers(env, req.id);
+
+  // A quarter of three statement months, anchored to the month the card was
+  // issued. The minimum itself is still a MONTHLY one — that is what you act on
+  // today — so the window stays the current statement month and the quarter is
+  // reported around it.
+  const quarter =
+    req.window === 'statement_quarter'
+      ? statementQuarter(req.anchor_at ?? req.starts_at ?? card.opened_at ?? now, card.statement_day, env)
+      : null;
+
   let window: { start: string; end: string };
-  if (req.window === 'calendar_month') window = calendarMonth(env);
+  if (quarter && req.per_month) window = quarter.months.find((m) => m.end >= now) ?? quarter.months[2];
+  else if (quarter) window = quarter;
+  else if (req.window === 'calendar_month') window = calendarMonth(env);
   else if (req.window === 'calendar_quarter') window = calendarQuarter(env);
   else if (req.window === 'statement_cycle') window = statementCycle(card.statement_day, env);
-  else window = { start: req.starts_at ?? card.opened_at ?? today(env), end: req.deadline ?? today(env) };
+  else window = { start: req.starts_at ?? card.opened_at ?? now, end: req.deadline ?? now };
 
-  const spend = await spendIn(env, card.id, window.start, window.end);
-  // Most issuers exclude the same codes from a minimum that they exclude from
-  // earning — tax, insurance, top-ups. Counting them would say a minimum is met
-  // when the bank says it is not, and that costs the bonus; not counting them
-  // only means spending slightly more than strictly necessary. The safer error
-  // is the default, and the amount left out is always reported.
-  const countsExcluded = (env.MIN_SPEND_COUNTS_EXCLUDED ?? '').toLowerCase() === 'true';
-  const excluded = countsExcluded ? 0 : spend.excluded_cents;
-  const spent = spend.total_cents - excluded;
+  const { spend, excluded, excluded_count, spent } = await countedSpend(env, card.id, window.start, window.end);
   const confirmed = spent - spend.at_risk_cents;
   const remaining = Math.max(0, req.amount_cents - spent);
-  const daysLeft = Math.max(0, daysBetween(today(env), window.end));
+  const daysLeft = Math.max(0, daysBetween(now, window.end));
   const cap = req.bonus_cap_cents ?? 0;
 
   // Cards like UOB One gate the reward on a transaction count as well as a
@@ -276,6 +413,83 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
   const txnsRequired = req.min_txns ?? 0;
   const txnCount = txnsRequired > 0 ? await countBetween(env, card.id, window.start, window.end) : 0;
   const txnsRemaining = Math.max(0, txnsRequired - txnCount);
+
+  // Every month of the quarter, so a month already missed is visible rather
+  // than discovered when the cashback does not arrive.
+  const months: MonthSlice[] = [];
+  if (quarter && req.per_month) {
+    for (const [i, m] of quarter.months.entries()) {
+      const c = await countedSpend(env, card.id, m.start, m.end);
+      const txns = await countBetween(env, card.id, m.start, m.end);
+      months.push({
+        index: i + 1,
+        window: m,
+        spent_cents: c.spent,
+        confirmed_cents: c.spent - c.spend.at_risk_cents,
+        at_risk_cents: c.spend.at_risk_cents,
+        txn_count: txns,
+        qualified: c.spent >= req.amount_cents && txns >= txnsRequired,
+        tier_index: tierFor(tiers, c.spent),
+        state: m.end < now ? 'past' : m.start > now ? 'future' : 'current',
+      });
+    }
+  }
+
+  // What the quarter is on course to pay.
+  //
+  // `tier` is where this month stands. `quarter_tier` is the lowest tier across
+  // the months that have qualified so far — sustained spend, not a best month —
+  // and it goes to null the moment a closed month failed, because then there is
+  // nothing left to pay.
+  const tier = tiers.length ? (tierFor(tiers, spent) !== null ? tiers[tierFor(tiers, spent)!] : null) : null;
+  let thirds: number | null = null;
+  let quarterTier: RequirementTier | null = null;
+  let projected = 0;
+
+  if (months.length) {
+    const decided = months.filter((m) => m.state !== 'future');
+    const failed = decided.filter((m) => !m.qualified && m.state === 'past');
+
+    // Pro-ration applies to the first quarter only, and to a trailing run:
+    // qualify in the 3rd month alone and a third is paid, in the 2nd and 3rd and
+    // two thirds. Every later quarter is all three months or nothing.
+    //
+    // The run is measured over the months that have HAPPENED. The months still
+    // ahead are assumed to continue it, which is what makes this a projection
+    // rather than a result, and it is labelled as one wherever it is shown.
+    const prorating = quarter!.index === 1 && !!req.prorate_first;
+    const ahead = months.filter((m) => m.state === 'future').length;
+    let run = 0;
+    for (let i = decided.length - 1; i >= 0; i--) {
+      if (decided[i].qualified) run++;
+      else break;
+    }
+
+    // Under pro-ration only the trailing run is paid for, so only those months
+    // set the tier: a good month before a missed one buys nothing.
+    const counted = prorating ? decided.slice(decided.length - run) : decided;
+    const qualified = counted.filter((m) => m.qualified);
+    if (qualified.length && (prorating || !failed.length)) {
+      let lowest: number | null = null;
+      for (const m of qualified) {
+        if (m.tier_index === null) {
+          lowest = null;
+          break;
+        }
+        lowest = lowest === null ? m.tier_index : Math.min(lowest, m.tier_index);
+      }
+      quarterTier = lowest === null ? null : tiers[lowest];
+    }
+
+    thirds = prorating
+      ? Math.min(3, run + ahead)
+      : failed.length
+        ? 0
+        : decided.length > 0 && decided.every((m) => m.qualified)
+          ? 3
+          : null;
+    if (quarterTier && thirds) projected = Math.round((quarterTier.reward_cents * thirds) / 3);
+  }
 
   return {
     requirement: req,
@@ -286,7 +500,7 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
     at_risk_cents: spend.at_risk_cents,
     at_risk_count: spend.at_risk_count,
     excluded_cents: excluded,
-    excluded_count: countsExcluded ? 0 : spend.excluded_count,
+    excluded_count,
     met_only_with_at_risk: remaining === 0 && confirmed < req.amount_cents,
     remaining_cents: remaining,
     days_left: daysLeft,
@@ -297,7 +511,90 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
     txns_remaining: txnsRemaining,
     cap_reached: cap > 0 && spent >= cap,
     over_cap_cents: cap > 0 ? Math.max(0, spent - cap) : 0,
+    quarter,
+    months,
+    tiers,
+    tier,
+    quarter_tier: quarterTier,
+    thirds,
+    projected_reward_cents: projected,
+    months_missed: months.filter((m) => m.state === 'past' && !m.qualified).length,
   };
+}
+
+/**
+ * A card ranked by what you can still do something about.
+ *
+ * The credit limit is what a credit score reads, but it is not what decides
+ * where the next purchase should go. A minimum you are short of is: miss it and
+ * the whole month's bonus is gone, and the only way to fix that is to spend on
+ * that card before the window closes. So the headline is the minimum, and
+ * utilization rides along underneath it.
+ */
+export interface Standing {
+  card: Card;
+  utilization: Utilization;
+  requirements: Progress[];
+  /** The requirement to act on now, or null when the card has none. */
+  headline: Progress | null;
+  /** Progress toward the headline minimum, 0-100. Utilization when there is none. */
+  percent: number;
+  /** Lower sorts first: the card most at risk of losing a bonus. */
+  rank: number;
+  /**
+   * True when the window's reward is already gone — a quarter with a statement
+   * month closed short. Nothing you spend now can bring it back, so the card
+   * stops being urgent even though its minimum is unmet.
+   */
+  lost: boolean;
+}
+
+/**
+ * Which minimum matters right now: the one that can still be missed, soonest.
+ * A met minimum needs no action, and among unmet ones the deadline decides —
+ * $900 due in twenty days is a smaller problem than $200 due tomorrow.
+ */
+function headlineOf(progress: Progress[]): Progress | null {
+  if (!progress.length) return null;
+  const open = progress.filter((p) => !p.met);
+  if (!open.length) return progress.slice().sort((a, b) => a.days_left - b.days_left)[0];
+  return open.slice().sort((a, b) => a.days_left - b.days_left || b.remaining_cents - a.remaining_cents)[0];
+}
+
+export async function standings(env: Env): Promise<Standing[]> {
+  const out: Standing[] = [];
+  for (const card of await activeCards(env)) {
+    const utilization_ = await utilization(env, card);
+    const requirements: Progress[] = [];
+    for (const req of await requirementsFor(env, card.id)) {
+      requirements.push(await requirementProgress(env, card, req));
+    }
+    const headline = headlineOf(requirements);
+    const percent = headline
+      ? headline.requirement.amount_cents > 0
+        ? Math.min(100, (headline.spent_cents / headline.requirement.amount_cents) * 100)
+        : 100
+      : utilization_.percent;
+
+    // A quarter with a month already closed short pays nothing whatever you do
+    // now, so it is not urgent — putting it above a minimum you can still hit
+    // would send spend to the one card where it cannot help.
+    const lost = !!headline && headline.months.length > 0 && headline.months_missed > 0 && !headline.thirds;
+
+    // Sort key, most urgent first: unmet minimums by days left, then met ones,
+    // then lost windows, then cards with nothing to hit. Days left is scaled so
+    // it never collides with the band above it.
+    const rank = !headline
+      ? 900_000
+      : lost
+        ? 700_000 + headline.days_left
+        : headline.met
+          ? 500_000 + headline.days_left
+          : headline.days_left * 1000 + Math.round(100 - percent);
+
+    out.push({ card, utilization: utilization_, requirements, headline, percent, rank, lost });
+  }
+  return out.sort((a, b) => a.rank - b.rank);
 }
 
 export async function activeCards(env: Env): Promise<Card[]> {

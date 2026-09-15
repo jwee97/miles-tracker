@@ -36,6 +36,26 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface Tier {
+  id: number;
+  min_spend_cents: number;
+  reward_cents: number;
+  label: string | null;
+}
+
+/** One statement month inside a quarter, and what it did. */
+export interface MonthSlice {
+  index: number;
+  window: { start: string; end: string };
+  spent_cents: number;
+  confirmed_cents: number;
+  at_risk_cents: number;
+  txn_count: number;
+  qualified: boolean;
+  tier_index: number | null;
+  state: 'past' | 'current' | 'future';
+}
+
 export interface Progress {
   id: number;
   kind: 'monthly_min' | 'signup_min';
@@ -57,6 +77,18 @@ export interface Progress {
   txns_remaining: number;
   cap_reached: boolean;
   window: { start: string; end: string };
+  window_kind: 'calendar_month' | 'calendar_quarter' | 'statement_cycle' | 'statement_quarter' | 'fixed_window';
+  /** Set only for a quarter of three statement months anchored to the card. */
+  quarter: { start: string; end: string; index: number; months: { start: string; end: string }[] } | null;
+  months: MonthSlice[];
+  tiers: Tier[];
+  /** The tier this window's spend has reached. */
+  tier: Tier | null;
+  /** What the quarter pays if it ends as it stands — the lowest month's tier. */
+  quarter_tier: Tier | null;
+  thirds: number | null;
+  projected_reward_cents: number;
+  months_missed: number;
 }
 
 export interface CardSummary {
@@ -67,7 +99,13 @@ export interface CardSummary {
   limit_cents: number;
   balance_cents: number;
   at_risk_cents: number;
+  /** Progress toward the minimum that matters — utilization only when there is none. */
   percent: number;
+  util_percent: number;
+  /** Which requirement `percent` is about, if any. */
+  headline_id: number | null;
+  /** The window's reward is already gone — spending here cannot bring it back. */
+  lost: boolean;
   cycle: { start: string; end: string };
   days_left: number;
   requirements: Progress[];
@@ -76,7 +114,16 @@ export interface CardSummary {
 export interface Summary {
   today: string;
   cards: CardSummary[];
-  overall: { balance_cents: number; limit_cents: number; percent: number };
+  overall: {
+    balance_cents: number;
+    limit_cents: number;
+    percent: number;
+    minimums_total: number;
+    minimums_met: number;
+    minimums_at_risk: number;
+    still_needed_cents: number;
+    soonest_days: number | null;
+  };
 }
 
 export type RuleDecision = 'pass' | 'fail' | 'na';
@@ -644,6 +691,10 @@ export interface RequirementRow {
   min_txns: number | null;
   bonus_cap_cents: number | null;
   reward_note: string | null;
+  anchor_at: string | null;
+  per_month: number;
+  prorate_first: number;
+  tiers: Tier[];
 }
 
 export interface CardRow {
@@ -700,7 +751,11 @@ export const addRequirement = (body: {
   min_txns?: number | null;
   bonus_cap?: string | null;
   reward_note?: string | null;
-}) => post<{ ok: true; id: number }>('/api/card/requirement', body);
+  anchor_at?: string | null;
+  per_month?: boolean;
+  prorate_first?: boolean;
+  tiers?: { min_spend: string; reward: string; label?: string | null }[];
+}) => post<{ ok: true; id: number; tiers: number }>('/api/card/requirement', body);
 
 export const deleteRequirement = (id: number) => post<{ ok: true }>('/api/card/requirement/delete', { id });
 

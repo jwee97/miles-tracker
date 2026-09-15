@@ -212,15 +212,30 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             chatId,
             'Format: `nickname|kind|amount|window|deadline|cap|txns|note`\n\n' +
               '`/req citirw|monthly_min|0|statement_cycle||1000||4 mpd, capped`\n' +
-              '`/req uobone|monthly_min|1000|calendar_quarter|||5|$100 quarterly rebate`\n' +
-              '`/req alt|signup_min|1000|fixed_window|2026-11-14|||30k miles`'
+              '`/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback`\n' +
+              '`/req alt|signup_min|1000|fixed_window|2026-11-14|||30k miles`\n\n' +
+              '`statement_quarter` is three statement months counted from the month the card was issued — ' +
+              'the amount must be hit in every one of them. Add its tiers with /tiers.'
           );
         const [nick, kind, amount, window, deadline, cap, txns, note] = p;
         const card = await cardByNick(env, nick);
         if (!card) return send(env, chatId, `No card with nickname \`${nick}\`.`);
+
+        // A rolling quarter is counted from a date. Without one every month
+        // would look like quarter one, so refuse rather than guess.
+        const quarterly = window === 'statement_quarter';
+        if (quarterly && !card.opened_at)
+          return send(
+            env,
+            chatId,
+            `A statement quarter is counted from the month *${card.product}* was issued, and that card has no opening date.\n` +
+              'Set one in the Cards tab first.'
+          );
+
         await env.DB.prepare(
-          `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, bonus_cap_cents, min_txns, reward_note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, bonus_cap_cents,
+             min_txns, reward_note, anchor_at, per_month, prorate_first)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             card.id,
@@ -231,10 +246,110 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             kind === 'signup_min' ? card.opened_at : null,
             cap ? parseMoney(cap) : null,
             txns ? parseInt(txns, 10) : null,
-            note || null
+            note || null,
+            quarterly ? card.opened_at : null,
+            quarterly ? 1 : 0,
+            quarterly ? 1 : 0
           )
           .run();
-        return send(env, chatId, `Requirement added to ${card.product}. /status to see progress.`);
+        return send(
+          env,
+          chatId,
+          `Requirement added to ${card.product}.` +
+            (quarterly
+              ? ` Its quarters run from ${card.opened_at}, three statement months at a time. Add tiers with \`/tiers ${card.nickname} 600=50 1000=110\`.`
+              : '') +
+            ' /status to see progress.'
+        );
+      }
+
+      // Tiered cashback: one minimum is not one number. A card like UOB One
+      // pays a different amount at each rung, and the rung is decided by the
+      // LEANEST month of the quarter, so the whole ladder has to be recorded.
+      case '/tiers': {
+        const tok = args.trim().split(/\s+/).filter(Boolean);
+        const card = tok.length ? await cardByNick(env, tok[0]) : null;
+        if (!card)
+          return send(
+            env,
+            chatId,
+            'Format: `/tiers <card> <spend>=<pays> ...`\n\n' +
+              '`/tiers uobone 600=50 1000=110 2000=300`\n' +
+              '_spend is per statement month, pays is per quarter._\n\n' +
+              'With no rungs it lists what is recorded. Send `/tiers <card> none` to clear them.'
+          );
+
+        const req = await env.DB.prepare(
+          `SELECT * FROM requirements WHERE card_id = ? AND active = 1 AND window = 'statement_quarter'
+           ORDER BY id DESC LIMIT 1`
+        )
+          .bind(card.id)
+          .first<{ id: number; amount_cents: number }>();
+        if (!req)
+          return send(
+            env,
+            chatId,
+            `*${card.product}* has no rolling-quarter minimum to attach tiers to.\n` +
+              `Add one first: \`/req ${card.nickname}|monthly_min|600|statement_quarter||||10|quarterly cashback\``
+          );
+
+        const rungs = tok.slice(1);
+        if (!rungs.length) {
+          const { results } = await env.DB.prepare(
+            `SELECT * FROM requirement_tiers WHERE requirement_id = ? ORDER BY min_spend_cents`
+          )
+            .bind(req.id)
+            .all<any>();
+          if (!results?.length) return send(env, chatId, `No tiers on *${card.product}* yet.`);
+          return send(
+            env,
+            chatId,
+            `*${card.product}* tiers\n` +
+              results
+                .map((t) => `$${money(t.min_spend_cents)} a month → $${money(t.reward_cents)} a quarter`)
+                .join('\n')
+          );
+        }
+
+        if (rungs.length === 1 && rungs[0].toLowerCase() === 'none') {
+          await env.DB.prepare(`DELETE FROM requirement_tiers WHERE requirement_id = ?`).bind(req.id).run();
+          return send(env, chatId, `Tiers cleared on *${card.product}*.`);
+        }
+
+        const parsed: { spend: number; pays: number }[] = [];
+        for (const rung of rungs) {
+          const [a, b] = rung.split('=');
+          const spend = parseMoney(a ?? '');
+          const pays = parseMoney(b ?? '');
+          if (!spend || spend <= 0 || pays === null || pays < 0)
+            return send(env, chatId, `Could not read \`${rung}\`. Each rung is \`<spend>=<pays>\`, e.g. \`600=50\`.`);
+          parsed.push({ spend, pays });
+        }
+        parsed.sort((a, b) => a.spend - b.spend);
+
+        // Replacing rather than appending: sending the ladder twice should not
+        // leave two of every rung.
+        await env.DB.prepare(`DELETE FROM requirement_tiers WHERE requirement_id = ?`).bind(req.id).run();
+        for (const t of parsed) {
+          await env.DB.prepare(
+            `INSERT INTO requirement_tiers (requirement_id, min_spend_cents, reward_cents) VALUES (?, ?, ?)`
+          )
+            .bind(req.id, t.spend, t.pays)
+            .run();
+        }
+
+        const lowest = parsed[0].spend;
+        return send(
+          env,
+          chatId,
+          `*${card.product}* — ${parsed.length} tier(s)\n` +
+            parsed.map((t) => `$${money(t.spend)} a month → $${money(t.pays)} a quarter`).join('\n') +
+            (lowest !== req.amount_cents
+              ? `\n\n⚠️ The minimum on this card is $${money(req.amount_cents)}, but the lowest tier starts at $${money(lowest)}. ` +
+                'Hitting the minimum without reaching a tier pays nothing.'
+              : '') +
+            '\n\n_The quarter pays at the lowest tier held across its three statement months._'
+        );
       }
 
       case '/reqs': {

@@ -1098,6 +1098,99 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('a code that is not four digits is refused, not stored', Number(after.n) === Number(before.n), `${before.n} -> ${after.n}`);
 }
 
+// --- a tiered rolling quarter, end to end ------------------------------------
+{
+  const tg = (text: string) =>
+    worker.fetch(
+      new Request('https://x.test/tg', {
+        method: 'POST',
+        headers: { 'X-Telegram-Bot-Api-Secret-Token': 'y', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: { chat: { id: 1 }, from: { id: 1 }, text } }),
+      }),
+      env
+    );
+
+  const made = await authed('/api/card', {
+    issuer: 'UOB',
+    product: 'UOB One',
+    nickname: 'one',
+    limit: '10000',
+    statement_day: 18,
+    opened_at: '2026-02-10',
+  });
+  check('a card for the quarterly test is added', made.status === 200, String(made.status));
+
+  const res = await authed('/api/card/requirement', {
+    nickname: 'one',
+    kind: 'monthly_min',
+    amount: '600',
+    window: 'statement_quarter',
+    min_txns: 10,
+    per_month: true,
+    prorate_first: true,
+    tiers: [
+      { min_spend: '600', reward: '50' },
+      { min_spend: '1000', reward: '110' },
+    ],
+  });
+  const body = (await res.json()) as any;
+  check('a rolling-quarter minimum can be added from the app', res.status === 200, String(res.status));
+  check('with its tiers', body.tiers === 2, JSON.stringify(body));
+
+  const row = db.prepare(`SELECT * FROM requirements WHERE id = ?`).get(body.id) as any;
+  check('the quarter is anchored to the card', row.per_month === 1 && row.window === 'statement_quarter', JSON.stringify(row));
+  check('and pro-rates its first quarter', row.prorate_first === 1, String(row.prorate_first));
+
+  check(
+    'a tier with no payout is refused',
+    (await authed('/api/card/requirement', { nickname: 'one', amount: '600', window: 'calendar_month', tiers: [{ min_spend: '600' }] })).status === 400,
+    ''
+  );
+
+  // A rolling quarter with nothing to count from would put every month in
+  // quarter one, so it is refused rather than guessed.
+  await authed('/api/card', { issuer: 'X', product: 'No Date', nickname: 'nodate', limit: '1000' });
+  const bad = await authed('/api/card/requirement', { nickname: 'nodate', amount: '600', window: 'statement_quarter' });
+  check('a rolling quarter with no anchor is refused', bad.status === 400, String(bad.status));
+  check('and says what is missing', /issued|anchor/i.test(((await bad.json()) as any).error ?? ''), '');
+
+  // The bot writes the same ladder.
+  await tg('/tiers one 600=50 1000=110 2000=300');
+  const tiers = db.prepare(`SELECT * FROM requirement_tiers WHERE requirement_id = ? ORDER BY min_spend_cents`).all(body.id) as any[];
+  check('the bot replaces the ladder rather than appending to it', tiers.length === 3, String(tiers.length));
+  check('and stores it in cents', tiers[2].min_spend_cents === 200000 && tiers[2].reward_cents === 30000, JSON.stringify(tiers[2]));
+
+  await tg('/tiers one 600=50 1000=110 2000=300');
+  check('sending it twice does not double it', (db.prepare(`SELECT COUNT(*) AS n FROM requirement_tiers WHERE requirement_id = ?`).get(body.id) as any).n === 3, '');
+
+  const before = (db.prepare(`SELECT COUNT(*) AS n FROM requirement_tiers`).get() as any).n;
+  await tg('/tiers one 600');
+  check('a rung without a payout is refused, not stored', (db.prepare(`SELECT COUNT(*) AS n FROM requirement_tiers`).get() as any).n === before, '');
+
+  await tg('/tiers one none');
+  check('and they can be cleared', (db.prepare(`SELECT COUNT(*) AS n FROM requirement_tiers WHERE requirement_id = ?`).get(body.id) as any).n === 0, '');
+}
+
+// --- the summary leads with minimum spend, not the limit ---------------------
+{
+  const s = (await (await authed('/api/summary')).json()) as any;
+  check('the dashboard reports how many minimums are met', typeof s.overall.minimums_met === 'number', JSON.stringify(s.overall));
+  check('and what is still to spend', typeof s.overall.still_needed_cents === 'number', '');
+  check('the limit is kept, just not as the headline', typeof s.overall.limit_cents === 'number', '');
+
+  const card = s.cards.find((c: any) => c.nickname === 'one');
+  check('a card names the requirement its bar is about', card.headline_id !== null, JSON.stringify(card.headline_id));
+  const headline = card.requirements.find((r: any) => r.id === card.headline_id);
+  check('the bar tracks the minimum, not the limit', Math.abs(card.percent - (headline.spent_cents / headline.amount_cents) * 100) < 0.01, JSON.stringify({ p: card.percent, h: headline.spent_cents }));
+  check('utilization is still reported alongside it', typeof card.util_percent === 'number', String(card.util_percent));
+  check('the quarter comes with it', headline.quarter?.index >= 1 && headline.months.length === 3, JSON.stringify(headline.quarter));
+
+  // Most at risk first: that is the whole point of the reordering.
+  const unmet = s.cards.filter((c: any) => c.headline_id !== null);
+  const days = unmet.map((c: any) => c.requirements.find((r: any) => r.id === c.headline_id)).filter((r: any) => !r.met).map((r: any) => r.days_left);
+  check('cards are ordered by how soon a minimum can be missed', days.every((d: number, i: number) => i === 0 || days[i - 1] <= d), JSON.stringify(days));
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

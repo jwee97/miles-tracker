@@ -56,6 +56,7 @@ import {
   type RuleRow,
   type Wallet,
   type ScanSummary,
+  type MonthSlice,
   type Progress,
   type Summary,
   type Txn,
@@ -68,6 +69,12 @@ import {
 
 const tone = (pct: number) => (pct >= 90 ? 'bad' : pct >= 80 ? 'warn' : pct >= 50 ? 'mid' : 'ok');
 
+/**
+ * Progress toward a minimum reads the opposite way round from a credit limit:
+ * full is good, and empty with the window closing is the thing to worry about.
+ */
+const minTone = (p: Progress) => (p.met ? 'ok' : p.days_left <= 3 ? 'bad' : p.days_left <= 7 ? 'warn' : 'mid');
+
 function Meter({ percent, tone: t }: { percent: number; tone: string }) {
   return (
     <div className="meter" role="img" aria-label={`${percent.toFixed(0)} percent`}>
@@ -77,7 +84,12 @@ function Meter({ percent, tone: t }: { percent: number; tone: string }) {
 }
 
 function RequirementRow({ p }: { p: Progress }) {
-  const label = p.kind === 'signup_min' ? 'Sign-up minimum' : 'Monthly minimum';
+  const label =
+    p.kind === 'signup_min'
+      ? 'Sign-up minimum'
+      : p.quarter
+        ? `Month ${p.months.find((m) => m.state === 'current')?.index ?? 3} of Q${p.quarter.index}`
+        : 'Monthly minimum';
   const pct = (p.spent_cents / p.amount_cents) * 100;
   const urgent = !p.met && p.days_left <= 7;
 
@@ -109,6 +121,7 @@ function RequirementRow({ p }: { p: Progress }) {
         )}
         {p.reward_note && <span className="note">{p.reward_note}</span>}
       </div>
+      <QuarterStrip p={p} />
       {/* The mirror of a minimum: past the cap the elevated rate is gone. */}
       {p.cap_reached && <div className="cap">Bonus cap reached — further spend earns the base rate.</div>}
       {!p.met && p.at_risk_cents > 0 && (
@@ -126,7 +139,76 @@ function RequirementRow({ p }: { p: Progress }) {
   );
 }
 
+/**
+ * The three statement months of a quarter, as a row you can read at a glance.
+ *
+ * A card like UOB One pays nothing for the whole quarter if one statement month
+ * falls short, and the months are anchored to the card's issuance date rather
+ * than the calendar. Showing all three is the difference between knowing that
+ * in month two and finding out when the cashback does not arrive.
+ */
+function QuarterStrip({ p }: { p: Progress }) {
+  if (!p.quarter || !p.months.length) return null;
+  const mark = (m: MonthSlice) =>
+    m.qualified ? '✓' : m.state === 'past' ? '✕' : m.state === 'current' ? '›' : '·';
+  const cls = (m: MonthSlice) =>
+    m.qualified ? 'ok' : m.state === 'past' ? 'bad' : m.state === 'current' ? 'now' : 'ahead';
+  // Urging more spend into a quarter that already pays nothing is the opposite
+  // of useful, so the next rung is only offered while there is one to earn.
+  const dead = p.months_missed > 0 && !p.thirds;
+  const next = dead ? undefined : p.tiers.find((t) => t.min_spend_cents > p.spent_cents);
+
+  return (
+    <div className="quarter">
+      <div className="quarter-head">
+        <span>Quarter {p.quarter.index}</span>
+        <span className="mono">
+          {p.quarter.start} → {p.quarter.end}
+        </span>
+      </div>
+      <ol className="months">
+        {p.months.map((m) => (
+          <li key={m.index} className={cls(m)}>
+            <span className="mark" aria-hidden="true">
+              {mark(m)}
+            </span>
+            <span className="mno">Month {m.index}</span>
+            <span className="mono amt">${money(m.spent_cents)}</span>
+            {p.txns_required > 0 && (
+              <span className="mono tx">
+                {m.txn_count}/{p.txns_required} tx
+              </span>
+            )}
+            <span className="state">
+              {m.qualified ? 'qualified' : m.state === 'past' ? 'missed' : m.state === 'current' ? 'in progress' : 'ahead'}
+            </span>
+          </li>
+        ))}
+      </ol>
+      {dead ? (
+        <p className="cap">
+          {p.months_missed} statement month{p.months_missed === 1 ? '' : 's'} closed short — this quarter pays nothing.
+          The next one starts after {p.quarter.end}.
+        </p>
+      ) : p.quarter_tier && p.thirds ? (
+        <p className="sub">
+          On course for <strong>${money(p.projected_reward_cents)}</strong> at the ${money(p.quarter_tier.min_spend_cents)}{' '}
+          tier{p.thirds < 3 ? ` · pro-rated to ${p.thirds}/3` : ''} — a projection, not a promise: the months ahead have
+          to hold.
+        </p>
+      ) : null}
+      {next && (
+        <p className="sub">
+          ${money(next.min_spend_cents - p.spent_cents)} more this month reaches the ${money(next.min_spend_cents)} tier,
+          worth ${money(next.reward_cents)} a quarter.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Card({ c }: { c: CardSummary }) {
+  const headline = c.requirements.find((r) => r.id === c.headline_id) ?? null;
   return (
     <section className="card">
       <header>
@@ -136,12 +218,39 @@ function Card({ c }: { c: CardSummary }) {
             {c.issuer} · {c.nickname}
           </p>
         </div>
-        <div className={`pct ${tone(c.percent)}`}>{c.percent.toFixed(0)}%</div>
+        <div className={`pct ${c.lost ? 'bad' : headline ? minTone(headline) : tone(c.percent)}`}>
+          {c.percent.toFixed(0)}%
+        </div>
       </header>
-      <Meter percent={c.percent} tone={tone(c.percent)} />
-      <p className="sub mono">
-        ${money(c.balance_cents)} / ${money(c.limit_cents)} · closes {c.cycle.end} ({c.days_left}d)
-      </p>
+      <Meter percent={c.percent} tone={c.lost ? 'bad' : headline ? minTone(headline) : tone(c.percent)} />
+      {/* The minimum is what you can still act on today; the limit is what a
+          credit score reads. So the minimum leads and the balance follows. */}
+      {c.lost && headline?.quarter ? (
+        /* A quarter with a month already closed short pays nothing whatever you
+           spend now. Saying so is the difference between chasing it and moving
+           the spend to a card where it still counts. */
+        <p className="cap">
+          This quarter is already short — spend here earns only the base rate until {headline.quarter.end}.
+        </p>
+      ) : null}
+      {headline ? (
+        <p className="sub mono">
+          ${money(headline.spent_cents)} / ${money(headline.amount_cents)} minimum
+          {headline.txns_required > 0 && ` · ${headline.txn_count}/${headline.txns_required} txns`} ·{' '}
+          {headline.met ? 'met' : `$${money(headline.remaining_cents)} to go`} by {headline.window.end} (
+          {headline.days_left}d)
+        </p>
+      ) : (
+        <p className="sub mono">
+          No minimum to hit · ${money(c.balance_cents)} / ${money(c.limit_cents)} · closes {c.cycle.end} ({c.days_left}d)
+        </p>
+      )}
+      {headline && (
+        <p className="sub dim">
+          Balance ${money(c.balance_cents)} of ${money(c.limit_cents)} ({c.util_percent.toFixed(0)}%) · statement closes{' '}
+          {c.cycle.end}
+        </p>
+      )}
       {c.at_risk_cents > 0 && (
         <p className="risk">⏳ ${money(c.at_risk_cents)} may post after this cycle closes</p>
       )}
@@ -1724,14 +1833,48 @@ export default function App() {
             <section className="card overall">
               <header>
                 <div>
-                  <h2>All cards</h2>
-                  <p className="sub">Total utilization — what a credit score actually reads</p>
+                  <h2>Minimums</h2>
+                  <p className="sub">
+                    What you can still act on — miss one and the month&rsquo;s bonus is gone
+                  </p>
                 </div>
-                <div className={`pct ${tone(summary.overall.percent)}`}>{summary.overall.percent.toFixed(0)}%</div>
+                <div
+                  className={`pct ${
+                    summary.overall.minimums_total === 0
+                      ? 'ok'
+                      : summary.overall.minimums_at_risk > 0
+                        ? 'bad'
+                        : summary.overall.minimums_met === summary.overall.minimums_total
+                          ? 'ok'
+                          : 'mid'
+                  }`}
+                >
+                  {summary.overall.minimums_met}/{summary.overall.minimums_total}
+                </div>
               </header>
-              <Meter percent={summary.overall.percent} tone={tone(summary.overall.percent)} />
+              <Meter
+                percent={
+                  summary.overall.minimums_total
+                    ? (summary.overall.minimums_met / summary.overall.minimums_total) * 100
+                    : 100
+                }
+                tone={summary.overall.minimums_at_risk > 0 ? 'warn' : 'ok'}
+              />
               <p className="sub mono">
-                ${money(summary.overall.balance_cents)} / ${money(summary.overall.limit_cents)}
+                {summary.overall.minimums_total === 0
+                  ? 'No minimums recorded — add one under a card below'
+                  : summary.overall.still_needed_cents > 0
+                    ? `$${money(summary.overall.still_needed_cents)} still to spend` +
+                      (summary.overall.soonest_days !== null
+                        ? ` · soonest closes in ${summary.overall.soonest_days}d`
+                        : '')
+                    : 'Every minimum met'}
+              </p>
+              {/* Total utilization is what actually moves a credit score, so it
+                  stays — just not as the thing being asked about. */}
+              <p className="sub dim">
+                Total balance ${money(summary.overall.balance_cents)} of ${money(summary.overall.limit_cents)} (
+                {summary.overall.percent.toFixed(0)}% utilization)
               </p>
             </section>
             <AddSpend cards={summary.cards} categories={categories} onSaved={refresh} />

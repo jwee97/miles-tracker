@@ -170,10 +170,16 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /newcard issuer|product|nickname|limit|statement\\_day|opened\\_at
   e.g. \`/newcard DBS|Altitude Visa|alt|8000|18|2025-03-04\`
 /closecard nickname|YYYY-MM-DD
-/req nickname|kind|amount|window|deadline|cap|note
-  monthly: \`/req wwmc|monthly_min|800|calendar_month||1000|4 mpd on first $1k\`
-  signup:  \`/req alt|signup_min|1000|fixed_window|2026-11-14||30k miles\`
-  window is calendar_month, statement_cycle or fixed_window
+/req nickname|kind|amount|window|deadline|cap|txns|note
+  monthly: \`/req wwmc|monthly_min|800|calendar_month||1000||4 mpd on first $1k\`
+  signup:  \`/req alt|signup_min|1000|fixed_window|2026-11-14|||30k miles\`
+  rolling: \`/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback\`
+  window is calendar_month, statement_cycle, calendar_quarter,
+  statement_quarter or fixed_window
+  statement_quarter = three statement months counted from the month the
+  card was issued, and the amount must be hit in EVERY one of them
+/tiers <card> 600=50 1000=110 2000=300 — tiered cashback: spend a month,
+  pays a quarter. The quarter pays at the LOWEST tier its three months held.
 /reqs — list requirements
 /delreq <id>
 

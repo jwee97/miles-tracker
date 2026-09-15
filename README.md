@@ -97,6 +97,20 @@ change and drops the ones that did.
 
 Both end up in the same place, and you can use both.
 
+## What it leads with
+
+Minimum spend, not the credit limit.
+
+The limit is what a credit score reads, but it is not what decides where the
+next purchase goes. A minimum you are short of is: miss it and the whole
+window's bonus is gone, and the only way to fix that is to spend on that card
+before the window closes. So `/status` and the Cards tab lead with progress
+toward the minimum, order cards by how soon one can be missed, and keep the
+balance and utilization underneath.
+
+A card whose quarter is already short sorts *below* every minimum still worth
+hitting, and says so — spending there cannot bring that quarter back.
+
 ## Daily use
 
 ```
@@ -118,8 +132,34 @@ one. `/scan` runs a scan immediately; `/scan <url>` reads a single page.
 /req wwmc|monthly_min|800|calendar_month||1000|4 mpd on first $1k
 ```
 
-`/req` fields are `nickname|kind|amount|window|deadline|cap|note`.
-Window is `calendar_month`, `statement_cycle`, or `fixed_window`.
+`/req` fields are `nickname|kind|amount|window|deadline|cap|txns|note`.
+Window is `calendar_month`, `statement_cycle`, `calendar_quarter`,
+`statement_quarter` or `fixed_window`.
+
+### Cards that pay by the quarter, in tiers
+
+A card like UOB One does not use calendar quarters. Its quarter is **three
+statement months counted from the month the card was issued** — issued in
+February means Feb–Mar–Apr, then May–Jun–Jul — and a "month" runs from the day
+after one statement closes to the day the next one does, not the 1st to the
+31st. The minimum has to be hit in *every* one of the three, and how much the
+quarter pays depends on which spend tier you held.
+
+```
+/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback
+/tiers uobone 600=50 1000=110 2000=300
+```
+
+`/tiers` is spend per statement month on the left, what the quarter pays on the
+right. The quarter pays at the **lowest** tier held across its three months, so
+one big month does not carry two thin ones. The first quarter pro-rates: hit the
+minimum in the last two months only and two thirds is paid; in the last month
+only, a third.
+
+Same thing in the app: **Cards → Add a minimum → every statement month of a
+rolling quarter**, then add the tiers. Every card shows its three months with a
+tick, a cross or the one in progress, so a month that closed short is visible
+the day it happens rather than when the cashback fails to arrive.
 
 When you close a card, use `/closecard alt|2026-09-01` — eligibility cooldowns
 run from the closure date, so this is what keeps future verdicts honest.

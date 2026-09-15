@@ -66,7 +66,7 @@ main { max-width: 640px; margin: 0 auto; padding: 12px 16px 48px; }
 .fill.bad { background: var(--bad); }
 
 .req { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
-.req-head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
+.req-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 13px; margin-bottom: 6px; }
 .req-foot { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--dim); margin-top: 6px; }
 .req.urgent .req-foot { color: var(--warn); }
 .ok-text { color: var(--ok); }
@@ -708,3 +708,33 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .entry-grid.compact { gap: 8px; margin-top: 8px; }
 .entry-grid.compact .f > span { font-size: 10px; }
 .entry-grid.compact .f input, .entry-grid.compact .f select { padding: 7px 8px; font-size: 14px; }
+
+/* A quarter of three statement months.
+   Colour alone would not say which month failed, so each row carries a glyph
+   and its own words as well — ✓ qualified, ✕ missed, › in progress. */
+.quarter { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
+.quarter-head {
+  display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim);
+}
+.months { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.months li {
+  display: grid; grid-template-columns: 14px 1fr auto; gap: 2px 8px;
+  align-items: baseline; font-size: 13px; padding: 5px 0; border-top: 1px solid var(--line);
+}
+.months li:first-child { border-top: none; }
+.months .mark { font-weight: 700; }
+.months li.ok .mark { color: var(--ok); }
+.months li.bad .mark { color: var(--bad); }
+.months li.now .mark { color: var(--mid); }
+.months li.ahead .mark, .months li.ahead .mno { color: var(--dim); }
+.months .amt { font-variant-numeric: tabular-nums; }
+.months .tx { grid-column: 3; font-variant-numeric: tabular-nums; color: var(--dim); font-size: 12px; }
+.months .state { grid-column: 2 / -1; font-size: 11.5px; color: var(--dim); }
+.months li.bad .state { color: var(--bad); }
+.months li.ok .state { color: var(--ok); }
+.quarter .sub { margin-top: 8px; }
+.sub.dim { color: #5f6878; font-size: 12px; }
+.tiers { margin-top: 12px; padding: 10px; border: 1px dashed var(--line); border-radius: 10px; }
+.tiers .entry-grid { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.tiers .entry-grid:first-of-type { border-top: none; }

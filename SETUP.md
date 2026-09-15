@@ -356,6 +356,70 @@ For a card where you **choose** the bonus category, like UOB Lady's, just add
 a rule for the category you picked and swap it with `/delearn` + `/addearn`
 when you change.
 
+## Cards that pay by the quarter, in tiers
+
+Some cards — UOB One is the one everyone means — do not work on calendar
+quarters or calendar months, and do not pay a single number.
+
+**The quarter.** Three consecutive *statement* months, counted from the month
+the principal card was issued, fixed for as long as you hold the card. A card
+issued in February runs Feb–Mar–Apr, then May–Jun–Jul, then Aug–Sep–Oct, then
+Nov–Dec–Jan.
+
+**The month.** A statement month, not a calendar one. If the statement closes on
+the 18th, month 1 runs 19 Feb to 18 Mar, month 2 runs 19 Mar to 18 Apr, month 3
+runs 19 Apr to 18 May. Spend has to *post* inside the month to count, which is
+why the app reports at-risk spend separately.
+
+**The gate.** The minimum and the transaction count must both be met in **every
+one of the three months**. One thin month and the quarter pays nothing.
+
+**The tiers.** A different quarterly payout at each monthly spend level. The
+quarter pays at the **lowest** tier held across its three months — the reward is
+for sustaining the spend, so one big month does not carry two thin ones.
+
+**The first quarter.** It pro-rates on a trailing run: meet the minimum in the
+3rd month only and a third is paid; in the 2nd and 3rd, two thirds. Every later
+quarter is all three or nothing.
+
+Set one up in the bot:
+
+```
+/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback
+/tiers uobone 600=50 1000=110 2000=300
+```
+
+Or in the app: **Cards → Add a minimum**, set *Measured over* to **every
+statement month of a rolling quarter**, then add the tiers. The quarter is
+anchored to the card's opening date unless you give another, and the app refuses
+to create one with nothing to anchor to — without a date every month would look
+like quarter one.
+
+Once it exists, every status report draws the quarter month by month:
+
+```
+✅ M1 $700.00/10tx  ▶️ M2 $420.00/6tx  · M3 $0.00/0tx
+💰 on course for $50.00 at the $600.00 tier
+↗ $180.00 more this month reaches the $1,000.00 tier ($110.00/quarter)
+```
+
+A tick is a month that qualified, a cross is one that closed short, and the
+arrow is the month in play. A month that fails is alerted the moment it closes,
+not when the cashback fails to arrive three months later — and once a quarter is
+beyond saving the app stops urging you to spend into it, because nothing you
+spend now brings it back.
+
+## Where the app looks first: minimums, not limits
+
+`/status` and the Cards tab lead with minimum spend. The credit limit is what a
+credit score reads, and it is still reported — under the minimum, on every card
+and in the total — but it is not the thing being asked about. What you can act
+on today is the minimum you are short of, so cards are ordered by how soon one
+can be missed, with the headline bar showing progress toward it.
+
+Three bands, in order: minimums you can still hit, soonest deadline first; then
+ones already met; then windows already lost; then cards with no minimum at all.
+
 ## Which card to use
 
 The **Use** tab is the front door: type a merchant, optionally an amount, and

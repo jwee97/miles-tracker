@@ -54,15 +54,37 @@ CREATE TABLE IF NOT EXISTS requirements (
   card_id         INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
   kind            TEXT    NOT NULL,              -- monthly_min | signup_min
   amount_cents    INTEGER NOT NULL,
-  window          TEXT    NOT NULL,              -- calendar_month | calendar_quarter | statement_cycle | fixed_window
+  window          TEXT    NOT NULL,              -- calendar_month | calendar_quarter | statement_cycle
+                                                 --   | statement_quarter | fixed_window
   deadline        TEXT,                          -- YYYY-MM-DD, for signup_min / fixed_window
   starts_at       TEXT,                          -- YYYY-MM-DD, for fixed_window
   min_txns        INTEGER,                       -- some cards also require N transactions
   bonus_cap_cents INTEGER,                       -- elevated rate applies to first N only
   reward_note     TEXT,                          -- '4 mpd on first $1,000'
+  -- A card like UOB One runs on quarters of three STATEMENT months anchored to
+  -- the month the card was issued, not on calendar quarters. anchor_at is the
+  -- date that sets the cycle (defaults to cards.opened_at); per_month says the
+  -- minimum must be hit in every statement month of the window, not once across
+  -- it; prorate_first pays thirds when only the later months of the very first
+  -- quarter qualified.
+  anchor_at       TEXT,
+  per_month       INTEGER NOT NULL DEFAULT 0,
+  prorate_first   INTEGER NOT NULL DEFAULT 0,
   active          INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS req_card ON requirements(card_id, active);
+
+-- Tiered cashback: one minimum is not one number. UOB One pays a different
+-- amount at S$600, S$1,000 and S$2,000 a statement month, so the tiers are rows
+-- rather than columns and a card can have as many as it likes.
+CREATE TABLE IF NOT EXISTS requirement_tiers (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  requirement_id  INTEGER NOT NULL REFERENCES requirements(id) ON DELETE CASCADE,
+  min_spend_cents INTEGER NOT NULL,              -- spend per window that reaches this tier
+  reward_cents    INTEGER NOT NULL,              -- what the FULL window pays at this tier
+  label           TEXT
+);
+CREATE INDEX IF NOT EXISTS req_tier ON requirement_tiers(requirement_id, min_spend_cents);
 
 CREATE TABLE IF NOT EXISTS offers (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,

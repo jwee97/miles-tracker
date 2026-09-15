@@ -597,6 +597,7 @@ const WINDOW_LABEL: Record<string, string> = {
   calendar_month: 'each calendar month',
   calendar_quarter: 'each calendar quarter',
   statement_cycle: 'each statement cycle',
+  statement_quarter: 'every statement month of a rolling quarter',
   fixed_window: 'once, by the deadline',
 };
 
@@ -617,7 +618,13 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
     min_txns: '',
     bonus_cap: '',
     reward_note: '',
+    anchor_at: card.opened_at ?? '',
+    prorate_first: true,
   });
+  // A tiered card pays a different amount at each rung, so the tiers are rows
+  // the user adds, not three fixed boxes.
+  const [tiers, setTiers] = useState<{ min_spend: string; reward: string; label: string }[]>([]);
+  const quarterly = r.window === 'statement_quarter';
 
   async function save() {
     setBusy(true);
@@ -633,8 +640,15 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
         min_txns: r.min_txns ? Number(r.min_txns) : null,
         bonus_cap: r.bonus_cap || null,
         reward_note: r.reward_note || null,
+        anchor_at: quarterly ? r.anchor_at || null : null,
+        per_month: quarterly,
+        prorate_first: quarterly && r.prorate_first,
+        tiers: tiers
+          .filter((t) => t.min_spend && t.reward)
+          .map((t) => ({ min_spend: t.min_spend, reward: t.reward, label: t.label || null })),
       });
       setR({ ...r, amount: '', min_txns: '', bonus_cap: '', reward_note: '' });
+      setTiers([]);
       setOpen(false);
       onChanged();
     } catch (e) {
@@ -660,6 +674,19 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
                 <p className="sub">
                   {q.reward_note ?? ''}
                   {q.bonus_cap_cents ? ` · elevated rate stops after $${money(q.bonus_cap_cents)}` : ''}
+                </p>
+              )}
+              {q.window === 'statement_quarter' && (
+                <p className="sub">
+                  Counted from {q.anchor_at ?? card.opened_at ?? 'the card\u2019s opening date'}
+                  {q.prorate_first ? ' · the first quarter pro-rates' : ' · all three months or nothing'}
+                </p>
+              )}
+              {q.tiers?.length > 0 && (
+                <p className="sub">
+                  {q.tiers
+                    .map((t) => `$${money(t.min_spend_cents)}/mth → $${money(t.reward_cents)}/qtr`)
+                    .join(' · ')}
                 </p>
               )}
               <div className="entry-foot rule-actions">
@@ -698,6 +725,7 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
                 <option value="calendar_month">each calendar month</option>
                 <option value="statement_cycle">each statement cycle</option>
                 <option value="calendar_quarter">each calendar quarter</option>
+                <option value="statement_quarter">every statement month of a rolling quarter</option>
                 <option value="fixed_window">a one-off window</option>
               </select>
             </label>
@@ -725,7 +753,89 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
                 placeholder="30,000 miles"
               />
             </label>
+            {quarterly && (
+              <>
+                <label className="f">
+                  <span>Quarter anchored to</span>
+                  <input type="date" value={r.anchor_at} onChange={(e) => setR({ ...r, anchor_at: e.target.value })} />
+                </label>
+                <label className="f">
+                  <span>First quarter</span>
+                  <select
+                    value={r.prorate_first ? 'yes' : 'no'}
+                    onChange={(e) => setR({ ...r, prorate_first: e.target.value === 'yes' })}
+                  >
+                    <option value="yes">pays in thirds for the months you hit</option>
+                    <option value="no">all three months or nothing</option>
+                  </select>
+                </label>
+              </>
+            )}
           </div>
+
+          {quarterly && (
+            <>
+              <p className="sub">
+                A rolling quarter is three <em>statement</em> months counted from the month the card was issued — a card
+                issued in February runs Feb&ndash;Mar&ndash;Apr, then May&ndash;Jun&ndash;Jul, and a &ldquo;month&rdquo;
+                runs from the day after one statement closes to the day the next one does. The minimum above has to be
+                hit in <strong>every</strong> one of the three.
+              </p>
+              <div className="tiers">
+                <div className="quarter-head">
+                  <span>Tiers</span>
+                  <span>spend per month → what the quarter pays</span>
+                </div>
+                {tiers.map((t, i) => (
+                  <div className="entry-grid compact" key={i}>
+                    <label className="f">
+                      <span>Spend a month</span>
+                      <input
+                        value={t.min_spend}
+                        onChange={(e) => setTiers(tiers.map((x, j) => (j === i ? { ...x, min_spend: e.target.value } : x)))}
+                        placeholder="600"
+                        inputMode="decimal"
+                      />
+                    </label>
+                    <label className="f">
+                      <span>Pays a quarter</span>
+                      <input
+                        value={t.reward}
+                        onChange={(e) => setTiers(tiers.map((x, j) => (j === i ? { ...x, reward: e.target.value } : x)))}
+                        placeholder="50"
+                        inputMode="decimal"
+                      />
+                    </label>
+                    <label className="f f-note">
+                      <span>Label</span>
+                      <input
+                        value={t.label}
+                        onChange={(e) => setTiers(tiers.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+                        placeholder="optional"
+                      />
+                    </label>
+                    <div className="entry-foot" style={{ gridColumn: '1 / -1', margin: 0 }}>
+                      <button className="secondary danger" onClick={() => setTiers(tiers.filter((_, j) => j !== i))}>
+                        Remove tier
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <div className="entry-foot">
+                  <button
+                    className="secondary"
+                    onClick={() => setTiers([...tiers, { min_spend: '', reward: '', label: '' }])}
+                  >
+                    Add a tier
+                  </button>
+                </div>
+                <p className="sub">
+                  The quarter pays at the <strong>lowest</strong> tier you held across its three months, so one big month
+                  does not carry two thin ones. Leave the tiers empty if the reward is a flat amount.
+                </p>
+              </div>
+            </>
+          )}
           <div className="entry-foot">
             <button className="secondary" onClick={save} disabled={busy || !r.amount}>
               Add this minimum

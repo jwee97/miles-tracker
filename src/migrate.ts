@@ -10,6 +10,17 @@ import type { Env } from './types';
  */
 const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: 'requirements', column: 'min_txns', ddl: 'ALTER TABLE requirements ADD COLUMN min_txns INTEGER' },
+  { table: 'requirements', column: 'anchor_at', ddl: 'ALTER TABLE requirements ADD COLUMN anchor_at TEXT' },
+  {
+    table: 'requirements',
+    column: 'per_month',
+    ddl: 'ALTER TABLE requirements ADD COLUMN per_month INTEGER NOT NULL DEFAULT 0',
+  },
+  {
+    table: 'requirements',
+    column: 'prorate_first',
+    ddl: 'ALTER TABLE requirements ADD COLUMN prorate_first INTEGER NOT NULL DEFAULT 0',
+  },
   { table: 'transactions', column: 'posted_at', ddl: 'ALTER TABLE transactions ADD COLUMN posted_at TEXT' },
   { table: 'conversions', column: 'verified_at', ddl: 'ALTER TABLE conversions ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
