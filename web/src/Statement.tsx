@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { PROFILES, normalise, type Normalised } from './banks';
 import { importStatement, money, parseStatement, type CardSummary, type ParsedRow, type StatementParse } from './api';
 
 /** Signed money: a statement full of refunds should not read "$-9.25". */
@@ -26,13 +27,49 @@ export default function Statement({ cards, onImported }: { cards: CardSummary[];
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
+  const [pdf, setPdf] = useState<(Normalised & { rows: number; file: string }) | null>(null);
+  const [bank, setBank] = useState('');
+
+  /**
+   * The PDF is read here, in the browser — pdf.js is pulled in only when you
+   * open one. The file itself never leaves the device; what goes to your Worker
+   * is the lines below, once you ask for them.
+   */
+  async function readPdf(file: File, forced = bank) {
+    setReading(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      const { extractPdfLines } = await import('./pdf');
+      const pages = await extractPdfLines(file);
+      const n = normalise(pages, forced || undefined);
+      if (!n.text) {
+        setPdf(null);
+        setErr(
+          `Read ${pages.length} page(s) of ${n.label} but found no transaction rows. ` +
+            'If this is a scan rather than a text PDF there is nothing to extract — or pick the bank by hand below.'
+        );
+        setText('');
+        return;
+      }
+      setPdf({ ...n, rows: n.text.split('\n').length, file: file.name });
+      setBank(n.bank);
+      setText(n.text);
+      setParsed(null);
+    } catch (e) {
+      setErr(`Could not read that PDF: ${(e as Error).message}`);
+    } finally {
+      setReading(false);
+    }
+  }
 
   async function read() {
     setBusy(true);
     setErr(null);
     setMsg(null);
     try {
-      const r = await parseStatement(text, nickname);
+      const r = await parseStatement(text, nickname, pdf?.statement_date ?? null);
       setParsed(r);
       // Anything that looks already logged starts unticked.
       setKeep(new Set(r.rows.map((_, i) => i).filter((i) => !r.rows[i].duplicate)));
@@ -79,9 +116,55 @@ export default function Statement({ cards, onImported }: { cards: CardSummary[];
       {open && (
         <>
           <p className="sub">
-            Copy the transaction rows out of your statement and paste them here — date, description, amount, one per
-            line. Two dates on a line are read as the transaction date and the posting date.
+            Upload the statement PDF, or paste the rows yourself — date, description, amount, one per line. Two dates on
+            a line are read as the transaction date and the posting date.
           </p>
+
+          <div className="entry-grid">
+            <label className="f f-note">
+              <span>Statement PDF</span>
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) readPdf(file);
+                }}
+              />
+            </label>
+            <label className="f">
+              <span>Bank</span>
+              <select
+                value={bank}
+                onChange={(e) => {
+                  setBank(e.target.value);
+                  const input = document.querySelector<HTMLInputElement>('input[type=file][accept*=pdf]');
+                  const file = input?.files?.[0];
+                  if (file) readPdf(file, e.target.value);
+                }}
+              >
+                <option value="">detect</option>
+                {PROFILES.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <p className="sub">
+            The PDF is read in this browser and never uploaded. Only the rows you choose to import are sent, and only to
+            your own app.
+          </p>
+          {reading && <p className="sub">Reading the PDF…</p>}
+          {pdf && (
+            <p className="sub">
+              <strong>{pdf.label}</strong> · {pdf.file} · {pdf.rows} transaction row{pdf.rows === 1 ? '' : 's'}
+              {pdf.statement_date ? ` · statement dated ${pdf.statement_date}` : ' · no statement date found'} ·{' '}
+              {pdf.dropped} other line{pdf.dropped === 1 ? '' : 's'} ignored
+              {pdf.confidence === 0 ? ' · the bank was a guess, check the rows' : ''}
+            </p>
+          )}
           <div className="entry-grid">
             <label className="f">
               <span>Card</span>

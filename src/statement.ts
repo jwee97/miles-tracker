@@ -47,27 +47,30 @@ const MONTHS: Record<string, number> = {
 
 /** Lines every statement carries that are not purchases. */
 const NOISE =
-  /^(sub\s*-?\s*total|total|previous balance|balance (b\/f|c\/f|carried|brought)|payment (received|thank)|thank you|minimum payment|credit limit|available (credit|limit)|statement (date|period)|interest charge|late (payment )?(charge|fee)|annual fee|gst|finance charge|new balance|opening balance|closing balance|transaction date|posting date|description|amount|card number|page \d)/i;
+  /^(sub\s*-?\s*total|grand total|balance previous statement|total|previous balance|balance (b\/f|c\/f|carried|brought)|payment (received|thank)|thank you|minimum payment|credit limit|available (credit|limit)|statement (date|period)|interest charge|late (payment )?(charge|fee)|annual fee|gst|finance charge|new balance|opening balance|closing balance|transaction date|posting date|description|amount|card number|page \d)/i;
 
 function pad(n: number) {
   return String(n).padStart(2, '0');
 }
 
 /**
- * A day and month with no year: a statement rarely prints one. December lines
- * read in January belong to the year before, so anything more than a month
- * ahead of today is pushed back a year rather than dated in the future.
+ * A day and month with no year: a statement rarely prints one.
+ *
+ * With the statement's own date the answer is exact — nothing on a statement
+ * happened after it was issued, so a later-looking date belongs to the year
+ * before. Without it, today is the reference and a month of slack is allowed,
+ * since a pasted statement may well include this week's spend.
  */
-function resolveYear(day: number, month: number, todayIso: string): string {
-  const [ty, tm] = todayIso.split('-').map(Number);
-  let year = ty;
+function resolveYear(day: number, month: number, reference: string, exact: boolean): string {
+  const [ry, rm] = reference.split('-').map(Number);
   const candidate = month * 100 + day;
-  const now = tm * 100 + Number(todayIso.slice(8, 10));
-  if (candidate > now + 100) year -= 1;
+  const ref = rm * 100 + Number(reference.slice(8, 10));
+  let year = ry;
+  if (exact ? candidate > ref : candidate > ref + 100) year -= 1;
   return `${year}-${pad(month)}-${pad(day)}`;
 }
 
-function parseDate(token: string, todayIso: string): string | null {
+function parseDate(token: string, reference: string, exact: boolean): string | null {
   // 2026-09-14
   let m = token.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (m) return token;
@@ -79,23 +82,30 @@ function parseDate(token: string, todayIso: string): string | null {
     return `${year}-${pad(Number(m[2]))}-${pad(Number(m[1]))}`;
   }
 
+  // 14/09 — OCBC prints the year only in the statement header.
+  m = token.match(/^(\d{1,2})[/-](\d{1,2})$/);
+  if (m) {
+    const month = Number(m[2]);
+    if (month >= 1 && month <= 12) return resolveYear(Number(m[1]), month, reference, exact);
+  }
+
   // 14 SEP / 14SEP / SEP 14
   m = token.match(/^(\d{1,2})\s*([a-z]{3,4})$/i);
-  if (m && MONTHS[m[2].toLowerCase()]) return resolveYear(Number(m[1]), MONTHS[m[2].toLowerCase()], todayIso);
+  if (m && MONTHS[m[2].toLowerCase()]) return resolveYear(Number(m[1]), MONTHS[m[2].toLowerCase()], reference, exact);
   m = token.match(/^([a-z]{3,4})\s*(\d{1,2})$/i);
-  if (m && MONTHS[m[1].toLowerCase()]) return resolveYear(Number(m[2]), MONTHS[m[1].toLowerCase()], todayIso);
+  if (m && MONTHS[m[1].toLowerCase()]) return resolveYear(Number(m[2]), MONTHS[m[1].toLowerCase()], reference, exact);
 
   return null;
 }
 
 /** Leading dates on a line: one is the transaction date, two adds the posting date. */
-function leadingDates(line: string, todayIso: string): { dates: string[]; rest: string } {
+function leadingDates(line: string, reference: string, exact: boolean): { dates: string[]; rest: string } {
   const dates: string[] = [];
   let rest = line.trim();
   for (let i = 0; i < 2; i++) {
     const m = rest.match(/^(\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|\d{1,2}\s*[a-z]{3,4}|[a-z]{3,4}\s*\d{1,2})\b[\s|,]*/i);
     if (!m) break;
-    const iso = parseDate(m[1].trim(), todayIso);
+    const iso = parseDate(m[1].trim(), reference, exact);
     if (!iso) break;
     dates.push(iso);
     rest = rest.slice(m[0].length);
@@ -105,7 +115,9 @@ function leadingDates(line: string, todayIso: string): { dates: string[]; rest: 
 
 const AMOUNT = /(-?\(?\$?\s*\d[\d,]*\.\d{2}\)?)\s*(cr|dr)?\s*$/i;
 
-export function parseStatement(text: string, todayIso: string): StatementParse {
+export function parseStatement(text: string, todayIso: string, statementDate?: string | null): StatementParse {
+  const reference = statementDate || todayIso;
+  const exact = !!statementDate;
   const rows: ParsedRow[] = [];
   const skipped: SkippedLine[] = [];
 
@@ -114,7 +126,7 @@ export function parseStatement(text: string, todayIso: string): StatementParse {
     if (!line) continue;
     if (NOISE.test(line)) continue;
 
-    const { dates, rest } = leadingDates(line, todayIso);
+    const { dates, rest } = leadingDates(line, reference, exact);
     if (!dates.length) {
       // Only complain about lines that look like they were meant to be rows.
       if (AMOUNT.test(line)) skipped.push({ raw: original.trim(), reason: 'no date at the start of the line' });
@@ -145,6 +157,9 @@ export function parseStatement(text: string, todayIso: string): StatementParse {
       skipped.push({ raw: original.trim(), reason: 'no merchant between the date and the amount' });
       continue;
     }
+    // Furniture is recognised by its wording, and most banks print it after
+    // the dates: "07 AUG PAYMENT - THANK YOU 500.00" is not a purchase.
+    if (NOISE.test(merchant)) continue;
 
     rows.push({
       // With two dates the bank prints transaction date first, posting second.

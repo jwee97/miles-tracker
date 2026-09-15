@@ -517,10 +517,11 @@ export interface StatementParse {
   skipped: { raw: string; reason: string }[];
   total_cents: number;
   duplicates: number;
+  statement_date: string | null;
 }
 
-export const parseStatement = (text: string, nickname?: string) =>
-  post<StatementParse>('/api/statement/parse', { text, nickname });
+export const parseStatement = (text: string, nickname?: string, statement_date?: string | null) =>
+  post<StatementParse>('/api/statement/parse', { text, nickname, statement_date });
 
 export const importStatement = (nickname: string, rows: ParsedRow[]) =>
   post<{ ok: true; imported: number; expected_miles: number }>('/api/statement/import', { nickname, rows });

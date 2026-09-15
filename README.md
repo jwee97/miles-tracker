@@ -38,8 +38,9 @@ Ignore buttons and in the Offers tab, where **Scan now** runs the same job on
 demand and a URL box reads any page you paste. Everything matched lands in a
 paged list you can filter by state and date and judge in batches.
 
-**Pasting a statement.** Copy the rows out of a statement and the app reads
-them — transaction date, posting date, merchant, amount, refunds included —
+**Statements.** Upload the PDF — Citibank, DBS/POSB, UOB, OCBC or HSBC — and
+the rows are extracted in your browser, never uploaded. Or copy the rows out
+and paste them. Either way the app reads them — transaction date, posting date, merchant, amount, refunds included —
 shows every row before writing anything, unticks the ones that look already
 logged, and lists the lines it could not parse with the reason. Imported rows
 go through the same evaluation a typed one does.
@@ -167,6 +168,8 @@ src/rss.ts            feed and page fetch, parse, URL cleaning, keyword gate
 src/mcc.ts            the code table read across your cards
 src/mccscan.ts        importing merchant codes, and the gaps in your own
 src/statement.ts      reading a pasted statement into transactions
+web/src/pdf.ts        the PDF text layer, grouped back into lines
+web/src/banks.ts      one profile per issuer's statement layout
 src/eligibility.ts    predicate evaluator and your review decisions
 src/offers.ts         saving an extraction without losing your answers
 src/extraction.ts     the prompt handed to you for Claude — the LLM half

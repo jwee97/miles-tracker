@@ -681,6 +681,35 @@ more bonus headroom than you do.
 Closing a card keeps it, with the date: eligibility cooldowns on future offers
 run from it.
 
+### Uploading a statement PDF
+
+**Ledger → Paste a statement → Statement PDF.** Drop in the PDF and the rows
+come out ready to import. It reads the PDF's text layer in your browser —
+pdf.js is fetched only when you open one — so the file itself is never
+uploaded; only the lines you choose to import are sent, and only to your own
+Worker.
+
+A statement PDF has no lines, only positioned text. The reader groups the
+fragments by their y coordinate, sorts each row left to right, and hands the
+result to a bank profile: recognise the issuer, find the statement date, drop
+the furniture, keep the rows that have both a date and an amount.
+
+Five banks are recognised — **Citibank, DBS/POSB, UOB, OCBC and HSBC** — and
+the picker overrides the guess if a statement is unusual. What the profiles
+handle:
+
+- `(259.28)` and `12.30 CR` as refunds
+- one date or two, `05/08`, `16 AUG`, `2026-08-16`
+- a day and month that arrive as separate fragments
+- balances, sub-totals, grand totals, payments and legal text, dropped
+- the statement's own date, which dates rows that print no year **exactly**:
+  nothing on a statement happened after it was issued, so a July row on an
+  August statement is this year and a December row on a January statement is
+  the year before
+
+A scanned statement has no text layer and nothing can be extracted from it; the
+app says so rather than silently returning nothing.
+
 ### Pasting a statement
 
 **Ledger → Paste a statement.** Copy the transaction rows out of your statement

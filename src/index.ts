@@ -381,12 +381,15 @@ export default {
         // --- pasting a statement -----------------------------------------
         // Read the rows and hand them back for checking. Nothing is written.
         if (url.pathname === '/api/statement/parse' && req.method === 'POST') {
-          const b = (await req.json()) as { text?: string; nickname?: string };
+          const b = (await req.json()) as { text?: string; nickname?: string; statement_date?: string | null };
           const text = String(b.text ?? '');
           if (!text.trim()) return json({ error: 'paste the statement text first' }, 400);
           if (text.length > 200_000) return json({ error: 'that is too much text for one paste' }, 400);
 
-          const parsed = parseStatement(text, today(env));
+          // The statement's own date makes an unprinted year exact rather than
+          // inferred: nothing on a statement happened after it was issued.
+          const stmtDate = b.statement_date ? parseDateToken(String(b.statement_date), env) : null;
+          const parsed = parseStatement(text, today(env), stmtDate);
           let rows = parsed.rows;
 
           const card = b.nickname
@@ -414,6 +417,7 @@ export default {
             skipped: parsed.skipped,
             total_cents: parsed.total_cents,
             duplicates: enriched.filter((r) => r.duplicate).length,
+            statement_date: stmtDate,
           });
         }
 
