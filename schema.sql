@@ -122,6 +122,25 @@ CREATE TABLE IF NOT EXISTS feed_items (
 );
 
 -- Dedupe for alerts: key encodes card + threshold + period, so each alert fires once.
+-- Spending that never touched a credit card: PayLah, PayNow, cash, a bank
+-- transfer. It earns nothing, which is exactly why it is worth recording — the
+-- question this table answers is how much of a month is missing out, and how
+-- much of that could have gone on a card instead.
+CREATE TABLE IF NOT EXISTS other_spend (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at  TEXT    NOT NULL,                 -- YYYY-MM-DD
+  amount_cents INTEGER NOT NULL,
+  method       TEXT    NOT NULL,                 -- paylah | paynow | cash | ...
+  merchant     TEXT,
+  category     TEXT,                             -- matches earn_rules.category
+  -- 0 when a card was never an option: a hawker with no terminal, a transfer to
+  -- a person. Keeps the "missed rewards" figure honest.
+  card_possible INTEGER NOT NULL DEFAULT 1,
+  note         TEXT,
+  created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS other_spend_date ON other_spend(occurred_at);
+
 CREATE TABLE IF NOT EXISTS alerts_sent (
   key     TEXT PRIMARY KEY,
   sent_at TEXT NOT NULL DEFAULT (datetime('now'))

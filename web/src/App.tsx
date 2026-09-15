@@ -6,6 +6,8 @@ import Ledger from './Ledger';
 import ExpiryTab from './Expiry';
 import CardSetup from './CardSetup';
 import Mcc from './Mcc';
+import Other from './Other';
+import Routes from './Routes';
 import Pager from './Pager';
 import Settings from './Settings';
 import {
@@ -1534,6 +1536,8 @@ function PointsTab() {
         </details>
       </form>
 
+      <Routes programs={data.programs} />
+
       <section className="card">
         <header>
           <div>
@@ -1600,7 +1604,17 @@ function PointsTab() {
 
 export default function App() {
   const [tab, setTab] = useState<
-    'use' | 'cards' | 'ledger' | 'trends' | 'audit' | 'points' | 'expiry' | 'codes' | 'offers' | 'settings'
+    | 'use'
+    | 'cards'
+    | 'ledger'
+    | 'other'
+    | 'trends'
+    | 'audit'
+    | 'points'
+    | 'expiry'
+    | 'codes'
+    | 'offers'
+    | 'settings'
   >('use');
   const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -1678,6 +1692,9 @@ export default function App() {
         <button className={tab === 'ledger' ? 'on' : ''} onClick={() => setTab('ledger')}>
           Ledger
         </button>
+        <button className={tab === 'other' ? 'on' : ''} onClick={() => setTab('other')}>
+          Off-card
+        </button>
         <button className={tab === 'trends' ? 'on' : ''} onClick={() => setTab('trends')}>
           Trends
         </button>
@@ -1738,6 +1755,8 @@ export default function App() {
       {tab === 'trends' && <Analytics />}
 
       {tab === 'expiry' && <ExpiryTab />}
+
+      {tab === 'other' && <Other />}
 
       {tab === 'codes' && <Mcc />}
 

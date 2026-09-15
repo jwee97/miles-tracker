@@ -160,6 +160,11 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /reqs — list requirements
 /delreq <id>
 
+*Off-card spending*
+/spend <amount> <method> [date] [note] — PayLah, cash, PayNow…
+/spends [YYYY-MM] — the month, and what it cost you
+/delspend <id>
+
 *Merchant codes*
 /mccscan — refresh merchant codes from the public directory
 /mcc <merchant> [code] — look one up here or online, or record it

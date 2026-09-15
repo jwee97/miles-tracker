@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchSettings, fetchUsage, saveSetting, type SettingRow, type Usage } from './api';
+import { fetchSettings, fetchUsage, runMigrate, runSeed, saveSetting, type SettingRow, type Usage } from './api';
 
 const bytes = (n: number) => {
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
@@ -154,6 +154,8 @@ export default function Settings() {
             </div>
           </section>
 
+          <Maintenance />
+
           <StorageNotes usage={usage} />
 
           <section className="card">
@@ -229,6 +231,72 @@ function StorageNotes({ usage }: { usage: Usage }) {
           )}
         </li>
       </ul>
+    </section>
+  );
+}
+
+/**
+ * Bringing the database up to date, and loading the reference data.
+ *
+ * Both used to be bot-only, which is the wrong place for them: the error that
+ * calls for a migration appears here, in the app, right after a deploy.
+ */
+function Maintenance() {
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState('');
+
+  async function migrate() {
+    setBusy('migrate');
+    setMsg(null);
+    try {
+      const r = await runMigrate();
+      setMsg(
+        r.alreadyCurrent
+          ? 'Already up to date.'
+          : `Created ${r.created.length} table(s), added ${r.altered.length} column(s).` +
+              (r.errors.length ? ` ${r.errors.length} problem(s): ${r.errors[0]}` : '')
+      );
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function seed() {
+    setBusy('seed');
+    setMsg(null);
+    try {
+      await runSeed();
+      setMsg('Reference data loaded: merchant codes, programmes and transfer routes. Your own edits were left alone.');
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return (
+    <section className="card">
+      <header>
+        <div>
+          <h2>Maintenance</h2>
+          <p className="sub">After a deploy, or when a screen says the database is behind the code</p>
+        </div>
+      </header>
+      <div className="entry-foot">
+        <button className="secondary" onClick={migrate} disabled={!!busy}>
+          {busy === 'migrate' ? 'Migrating…' : 'Bring the database up to date'}
+        </button>
+        <button className="secondary" onClick={seed} disabled={!!busy}>
+          {busy === 'seed' ? 'Loading…' : 'Load reference data'}
+        </button>
+        {msg && <span className="sub">{msg}</span>}
+      </div>
+      <p className="sub">
+        Both are safe to repeat. Migrating only fills gaps; loading reference data refreshes merchant-code descriptions
+        and adds any missing programmes or routes, without touching categories or rates you have changed.
+      </p>
     </section>
   );
 }

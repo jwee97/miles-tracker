@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   addCard,
   addEarnRule,
+  addRequirement,
+  deleteRequirement,
   closeCard,
   deleteEarnRule,
   fetchCards,
@@ -9,6 +11,8 @@ import {
   type CardRow,
   type EarnRuleRow,
   type ProgramRow,
+  type RequirementRow,
+  setCardProgram,
 } from './api';
 
 /**
@@ -212,6 +216,160 @@ function AddRule({ card, categories, onSaved }: { card: CardRow; categories: str
         thinking you have more bonus headroom than you do.
       </p>
     </div>
+  );
+}
+
+const WINDOW_LABEL: Record<string, string> = {
+  calendar_month: 'each calendar month',
+  calendar_quarter: 'each calendar quarter',
+  statement_cycle: 'each statement cycle',
+  fixed_window: 'once, by the deadline',
+};
+
+/**
+ * Minimum spend: the thing that decides whether a bonus is earned at all, and
+ * until now only the bot could set one.
+ */
+function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [r, setR] = useState({
+    kind: 'monthly_min' as 'monthly_min' | 'signup_min',
+    amount: '',
+    window: 'calendar_month',
+    deadline: '',
+    starts_at: '',
+    min_txns: '',
+    bonus_cap: '',
+    reward_note: '',
+  });
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await addRequirement({
+        nickname: card.nickname,
+        kind: r.kind,
+        amount: r.amount,
+        window: r.window,
+        deadline: r.deadline || null,
+        starts_at: r.starts_at || null,
+        min_txns: r.min_txns ? Number(r.min_txns) : null,
+        bonus_cap: r.bonus_cap || null,
+        reward_note: r.reward_note || null,
+      });
+      setR({ ...r, amount: '', min_txns: '', bonus_cap: '', reward_note: '' });
+      setOpen(false);
+      onChanged();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {card.requirements.length > 0 && (
+        <ul className="rules">
+          {card.requirements.map((q: RequirementRow) => (
+            <li key={q.id} className={q.kind === 'signup_min' ? 'pass' : 'unknown'}>
+              <span>
+                <strong>{q.kind === 'signup_min' ? 'Sign-up minimum' : 'Minimum'}</strong> — ${money(q.amount_cents)}{' '}
+                {WINDOW_LABEL[q.window] ?? q.window}
+                {q.min_txns ? ` and ${q.min_txns} transaction${q.min_txns === 1 ? '' : 's'}` : ''}
+                {q.deadline ? ` · by ${q.deadline}` : ''}
+              </span>
+              {(q.bonus_cap_cents || q.reward_note) && (
+                <p className="sub">
+                  {q.reward_note ?? ''}
+                  {q.bonus_cap_cents ? ` · elevated rate stops after $${money(q.bonus_cap_cents)}` : ''}
+                </p>
+              )}
+              <div className="entry-foot rule-actions">
+                <button
+                  className="danger"
+                  onClick={async () => {
+                    await deleteRequirement(q.id);
+                    onChanged();
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {open && (
+        <div className="addrule">
+          <div className="entry-grid">
+            <label className="f">
+              <span>Kind</span>
+              <select value={r.kind} onChange={(e) => setR({ ...r, kind: e.target.value as typeof r.kind })}>
+                <option value="monthly_min">recurring minimum</option>
+                <option value="signup_min">sign-up bonus minimum</option>
+              </select>
+            </label>
+            <label className="f">
+              <span>Spend</span>
+              <input value={r.amount} onChange={(e) => setR({ ...r, amount: e.target.value })} placeholder="1000" inputMode="decimal" />
+            </label>
+            <label className="f">
+              <span>Measured over</span>
+              <select value={r.window} onChange={(e) => setR({ ...r, window: e.target.value })}>
+                <option value="calendar_month">each calendar month</option>
+                <option value="statement_cycle">each statement cycle</option>
+                <option value="calendar_quarter">each calendar quarter</option>
+                <option value="fixed_window">a one-off window</option>
+              </select>
+            </label>
+            <label className="f">
+              <span>Deadline</span>
+              <input type="date" value={r.deadline} onChange={(e) => setR({ ...r, deadline: e.target.value })} />
+            </label>
+            <label className="f">
+              <span>Starts</span>
+              <input type="date" value={r.starts_at} onChange={(e) => setR({ ...r, starts_at: e.target.value })} />
+            </label>
+            <label className="f">
+              <span>Transactions too</span>
+              <input value={r.min_txns} onChange={(e) => setR({ ...r, min_txns: e.target.value })} placeholder="5" inputMode="numeric" />
+            </label>
+            <label className="f">
+              <span>Bonus cap</span>
+              <input value={r.bonus_cap} onChange={(e) => setR({ ...r, bonus_cap: e.target.value })} placeholder="1000" inputMode="decimal" />
+            </label>
+            <label className="f f-note">
+              <span>What it earns</span>
+              <input
+                value={r.reward_note}
+                onChange={(e) => setR({ ...r, reward_note: e.target.value })}
+                placeholder="30,000 miles"
+              />
+            </label>
+          </div>
+          <div className="entry-foot">
+            <button className="secondary" onClick={save} disabled={busy || !r.amount}>
+              Add this minimum
+            </button>
+            {err && <span className="err-text">{err}</span>}
+          </div>
+          <p className="sub">
+            A one-off window needs a deadline — it is what the countdown counts down to. The bonus cap is the mirror of a
+            minimum: past it, the elevated rate is gone and further spend belongs on another card.
+          </p>
+        </div>
+      )}
+      <div className="entry-foot">
+        <button className="secondary" onClick={() => setOpen((v) => !v)}>
+          {open ? 'Cancel' : 'Add a minimum'}
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -421,6 +579,30 @@ export default function CardSetup({ onChanged }: { onChanged: () => void }) {
           </div>
 
           {open === card.nickname && <AddRule card={card} categories={categories} onSaved={load} />}
+
+          <Requirements card={card} onChanged={load} />
+
+          <div className="entry-foot">
+            <label className="tick">
+              <span>Points go to</span>
+            </label>
+            <select
+              className="range-select"
+              value={card.program_key ?? ''}
+              onChange={async (e) => {
+                await setCardProgram(card.nickname, e.target.value || null);
+                load();
+                onChanged();
+              }}
+            >
+              <option value="">no programme</option>
+              {programs.map((p) => (
+                <option key={p.key} value={p.key}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </section>
       ))}
     </>

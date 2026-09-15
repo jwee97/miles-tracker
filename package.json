@@ -10,7 +10,7 @@
     "db:init:local": "wrangler d1 execute miles --local --file=./schema.sql",
     "db:seed": "wrangler d1 execute miles --remote --file=./seed.sql",
     "tail": "wrangler tail",
-    "test": "npm run test:units && npm run test:e2e && npm run test:migrate && npm run test:api && npm run test:analytics && npm run test:patterns && npm run test:rules && npm run test:advice && npm run test:rss && npm run test:review && npm run test:wallet && npm run test:mcc && npm run test:statement && npm run test:banks",
+    "test": "npm run test:units && npm run test:e2e && npm run test:migrate && npm run test:api && npm run test:analytics && npm run test:patterns && npm run test:rules && npm run test:advice && npm run test:rss && npm run test:review && npm run test:wallet && npm run test:mcc && npm run test:statement && npm run test:banks && npm run test:other",
     "test:units": "esbuild test/units.ts --bundle --loader:.sql=text --platform=node --format=esm --outfile=test/.units.mjs && node test/.units.mjs",
     "test:e2e": "esbuild test/e2e.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.e2e.mjs && node test/.e2e.mjs",
     "build": "npm --prefix web ci && npm --prefix web run build",
@@ -26,7 +26,8 @@
     "test:wallet": "esbuild test/wallet.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.wallet.mjs && node test/.wallet.mjs",
     "test:mcc": "esbuild test/mcc.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.mcc.mjs && node test/.mcc.mjs",
     "test:statement": "esbuild test/statement.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.statement.mjs && node test/.statement.mjs",
-    "test:banks": "esbuild test/banks.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --external:pdfjs-dist --outfile=test/.banks.mjs && node test/.banks.mjs"
+    "test:banks": "esbuild test/banks.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --external:pdfjs-dist --outfile=test/.banks.mjs && node test/.banks.mjs",
+    "test:other": "esbuild test/other.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.other.mjs && node test/.other.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",

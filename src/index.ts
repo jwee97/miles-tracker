@@ -25,6 +25,8 @@ import { evaluate, lookupMerchant, recommend, type Channel, type Objective } fro
 import { buildAudit } from './audit';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
+import { runMigrations, runSeed } from './migrate';
+import { defaultCardPossible, METHODS, monthOfOther, otherMonths } from './other';
 import { assignMerchantCode, importMerchantCodes, lookupMerchantOnline, unknownMerchants } from './mccscan';
 import { markDuplicates, parseStatement, type ParsedRow } from './statement';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
@@ -336,6 +338,17 @@ export default {
           return json({ ok: true, settings: await readSettings(rawEnv) });
         }
 
+        // Bringing the database up to date, and loading the reference data —
+        // both were bot-only, which is an odd place for them when the error
+        // that needs them shows up in the app.
+        if (url.pathname === '/api/migrate' && req.method === 'POST') {
+          return json(await runMigrations(env));
+        }
+
+        if (url.pathname === '/api/seed' && req.method === 'POST') {
+          return json(await runSeed(env));
+        }
+
         if (url.pathname === '/api/usage') {
           return json(await readUsage(env));
         }
@@ -385,6 +398,90 @@ export default {
           if (!id) return json({ error: 'id required' }, 400);
           if (!(await undoCredit(env, id))) return json({ error: 'not credited' }, 404);
           return json({ ok: true, wallet: await wallet(env) });
+        }
+
+        // --- spending that never touched a card ---------------------------
+        if (url.pathname === '/api/other') {
+          const month = url.searchParams.get('month') ?? undefined;
+          return json({
+            ...(await monthOfOther(env, month && /^\d{4}-\d{2}$/.test(month) ? month : undefined)),
+            months: await otherMonths(env),
+            methods: METHODS,
+          });
+        }
+
+        if (url.pathname === '/api/other' && req.method === 'POST') return json({ error: 'use /api/other/add' }, 400);
+
+        if (url.pathname === '/api/other/add' && req.method === 'POST') {
+          const b = (await req.json()) as {
+            amount?: string | number;
+            date?: string;
+            method?: string;
+            merchant?: string;
+            category?: string;
+            card_possible?: boolean;
+            note?: string;
+          };
+          const cents = parseMoney(String(b.amount ?? ''));
+          if (!cents || cents <= 0) return json({ error: 'an amount is required' }, 400);
+
+          const date = b.date ? parseDateToken(String(b.date), env) : today(env);
+          if (!date) return json({ error: 'bad date' }, 400);
+          if (date > today(env)) return json({ error: 'that date is in the future' }, 400);
+
+          const method = String(b.method ?? 'other').trim().toLowerCase() || 'other';
+          const merchant = b.merchant?.trim() || null;
+          // Merchant categories are shared with card spend: tag a merchant once
+          // and it categorises itself everywhere.
+          let category = b.category?.trim().toLowerCase() || null;
+          if (category === '?' || category === 'unknown') category = null;
+          if (category) await rememberMerchant(env, merchant, category);
+          else category = await categoryForMerchant(env, merchant);
+
+          const possible = b.card_possible === undefined ? defaultCardPossible(method) : b.card_possible ? 1 : 0;
+
+          const ins = await env.DB.prepare(
+            `INSERT INTO other_spend (occurred_at, amount_cents, method, merchant, category, card_possible, note)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
+          )
+            .bind(date, cents, method, merchant, category, possible, b.note?.trim() || null)
+            .run();
+          return json({ ok: true, id: ins.meta.last_row_id, date, category, card_possible: possible });
+        }
+
+        if (url.pathname === '/api/other/update' && req.method === 'POST') {
+          const { id, field, value } = (await req.json()) as { id?: number; field?: string; value?: string | null };
+          const columns: Record<string, (v: string | null) => unknown> = {
+            amount_cents: (v) => parseMoney(String(v ?? '')),
+            occurred_at: (v) => (v ? parseDateToken(String(v), env) : null),
+            method: (v) => (v ?? 'other').trim().toLowerCase(),
+            merchant: (v) => v?.trim() || null,
+            category: (v) => v?.trim().toLowerCase() || null,
+            card_possible: (v) => (v === '1' || v === 'true' ? 1 : 0),
+            note: (v) => v?.trim() || null,
+          };
+          if (!id || !field || !(field in columns)) return json({ error: 'id and a known field are required' }, 400);
+          const next = columns[field](value ?? null);
+          if (next === null && ['amount_cents', 'occurred_at'].includes(field))
+            return json({ error: `bad ${field}` }, 400);
+
+          const res = await env.DB.prepare(`UPDATE other_spend SET ${field} = ? WHERE id = ?`).bind(next, id).run();
+          if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such row' }, 404);
+          if (field === 'category' && next) {
+            const row = await env.DB.prepare(`SELECT merchant FROM other_spend WHERE id = ?`)
+              .bind(id)
+              .first<{ merchant: string | null }>();
+            await rememberMerchant(env, row?.merchant ?? null, String(next));
+          }
+          return json({ ok: true });
+        }
+
+        if (url.pathname === '/api/other/delete' && req.method === 'POST') {
+          const { id } = (await req.json()) as { id?: number };
+          if (!id) return json({ error: 'id required' }, 400);
+          const res = await env.DB.prepare(`DELETE FROM other_spend WHERE id = ?`).bind(id).run();
+          if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such row' }, 404);
+          return json({ ok: true });
         }
 
         // --- pasting a statement -----------------------------------------
@@ -495,6 +592,9 @@ export default {
           const { results: rules } = await env.DB.prepare(
             `SELECT * FROM earn_rules WHERE active = 1 ORDER BY card_id, mpd DESC`
           ).all<any>();
+          const { results: reqs } = await env.DB.prepare(
+            `SELECT * FROM requirements WHERE active = 1 ORDER BY card_id, id`
+          ).all<any>();
           const { results: programs } = await env.DB.prepare(
             `SELECT key, name, kind, unit FROM programs ORDER BY kind, name`
           ).all<any>();
@@ -502,7 +602,11 @@ export default {
             `SELECT DISTINCT category FROM mcc_codes ORDER BY category`
           ).all<{ category: string }>();
           return json({
-            cards: (cards ?? []).map((c) => ({ ...c, rules: (rules ?? []).filter((r) => r.card_id === c.id) })),
+            cards: (cards ?? []).map((c) => ({
+              ...c,
+              rules: (rules ?? []).filter((r) => r.card_id === c.id),
+              requirements: (reqs ?? []).filter((r) => r.card_id === c.id),
+            })),
             programs: programs ?? [],
             categories: (categories ?? []).map((c) => c.category),
           });
@@ -627,6 +731,69 @@ export default {
           return json({ ok: true, id: ins.meta.last_row_id });
         }
 
+        // Minimum-spend requirements, which until now only the bot could set.
+        if (url.pathname === '/api/card/requirement' && req.method === 'POST') {
+          const b = (await req.json()) as {
+            nickname?: string;
+            kind?: string;
+            amount?: string | number;
+            window?: string;
+            deadline?: string | null;
+            starts_at?: string | null;
+            min_txns?: number | null;
+            bonus_cap?: string | number | null;
+            reward_note?: string | null;
+          };
+          const card = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(String(b.nickname ?? '').trim())
+            .first<{ id: number }>();
+          if (!card) return json({ error: 'no such card' }, 404);
+
+          const kind = b.kind === 'signup_min' ? 'signup_min' : 'monthly_min';
+          const amount = parseMoney(String(b.amount ?? ''));
+          if (!amount || amount <= 0) return json({ error: 'an amount is required' }, 400);
+
+          const window = String(b.window ?? 'calendar_month');
+          if (!['calendar_month', 'calendar_quarter', 'statement_cycle', 'fixed_window'].includes(window))
+            return json({ error: 'unknown window' }, 400);
+
+          const deadline = b.deadline ? parseDateToken(String(b.deadline), env) : null;
+          if (b.deadline && !deadline) return json({ error: 'bad deadline' }, 400);
+          const starts = b.starts_at ? parseDateToken(String(b.starts_at), env) : null;
+          if (b.starts_at && !starts) return json({ error: 'bad start date' }, 400);
+          // A fixed window with no end is not a window; the progress bar would
+          // have nothing to count down to.
+          if (window === 'fixed_window' && !deadline)
+            return json({ error: 'a fixed window needs a deadline' }, 400);
+
+          const ins = await env.DB.prepare(
+            `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, min_txns,
+               bonus_cap_cents, reward_note, active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+          )
+            .bind(
+              card.id,
+              kind,
+              amount,
+              window,
+              deadline,
+              starts,
+              b.min_txns ? Math.max(0, Math.round(Number(b.min_txns))) : null,
+              b.bonus_cap ? parseMoney(String(b.bonus_cap)) : null,
+              b.reward_note?.trim() || null
+            )
+            .run();
+          return json({ ok: true, id: ins.meta.last_row_id });
+        }
+
+        if (url.pathname === '/api/card/requirement/delete' && req.method === 'POST') {
+          const { id } = (await req.json()) as { id?: number };
+          if (!id) return json({ error: 'id required' }, 400);
+          const res = await env.DB.prepare(`UPDATE requirements SET active = 0 WHERE id = ?`).bind(id).run();
+          if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such requirement' }, 404);
+          return json({ ok: true });
+        }
+
         if (url.pathname === '/api/card/rule/delete' && req.method === 'POST') {
           const { id } = (await req.json()) as { id?: number };
           if (!id) return json({ error: 'id required' }, 400);
@@ -736,6 +903,106 @@ export default {
         }
 
         // Executing a transfer, as opposed to planning one.
+        // --- transfer routes, which only the bot could edit ---------------
+        if (url.pathname === '/api/routes') {
+          const { results } = await env.DB.prepare(
+            `SELECT c.*, pf.name AS from_name, pt.name AS to_name FROM conversions c
+               JOIN programs pf ON pf.key = c.from_program
+               JOIN programs pt ON pt.key = c.to_program
+              WHERE c.active = 1 ORDER BY pf.name, pt.name, c.id`
+          ).all<any>();
+          return json({ routes: results ?? [], today: today(env), recheck_days: parseInt(env.RATE_RECHECK_DAYS || '90', 10) });
+        }
+
+        if (url.pathname === '/api/route' && req.method === 'POST') {
+          const b = (await req.json()) as {
+            id?: number;
+            from_program?: string;
+            to_program?: string;
+            from_units?: number | string;
+            to_units?: number | string;
+            fee_cents?: string | number;
+            min_block?: number | string;
+            block_increment?: number | string;
+            route?: string;
+            bonus_pct?: number | string;
+            bonus_until?: string | null;
+            source_url?: string;
+            note?: string;
+            verified?: boolean;
+          };
+
+          // Marking a rate checked is the common case and needs nothing else.
+          if (b.id && b.verified !== undefined && b.from_program === undefined) {
+            const res = await env.DB.prepare(`UPDATE conversions SET verified_at = ? WHERE id = ?`)
+              .bind(b.verified ? today(env) : null, b.id)
+              .run();
+            if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such route' }, 404);
+            return json({ ok: true });
+          }
+
+          const from = String(b.from_program ?? '').trim();
+          const to = String(b.to_program ?? '').trim();
+          for (const key of [from, to]) {
+            if (!key) return json({ error: 'both programmes are required' }, 400);
+            if (!(await env.DB.prepare(`SELECT key FROM programs WHERE key = ?`).bind(key).first()))
+              return json({ error: `unknown programme: ${key}` }, 400);
+          }
+          const fromUnits = Math.round(Number(b.from_units ?? 0));
+          const toUnits = Math.round(Number(b.to_units ?? 0));
+          if (!(fromUnits > 0 && toUnits > 0)) return json({ error: 'a ratio needs both sides' }, 400);
+
+          const bonusUntil = b.bonus_until ? parseDateToken(String(b.bonus_until), env) : null;
+          if (b.bonus_until && !bonusUntil) return json({ error: 'bad bonus end date' }, 400);
+
+          const fields = [
+            from,
+            to,
+            fromUnits,
+            toUnits,
+            b.fee_cents ? parseMoney(String(b.fee_cents)) ?? 0 : 0,
+            Math.round(Number(b.min_block ?? fromUnits)),
+            Math.round(Number(b.block_increment ?? fromUnits)),
+            b.route?.trim() || 'direct',
+            Number(b.bonus_pct ?? 0) || 0,
+            bonusUntil,
+            b.source_url?.trim() || null,
+            b.note?.trim() || null,
+            // A rate entered by hand is only verified if you say so; the seeded
+            // ones are deliberately left unverified.
+            b.verified ? today(env) : null,
+          ];
+
+          if (b.id) {
+            const res = await env.DB.prepare(
+              `UPDATE conversions SET from_program=?, to_program=?, from_units=?, to_units=?, fee_cents=?,
+                 min_block=?, block_increment=?, route=?, bonus_pct=?, bonus_until=?, source_url=?, note=?, verified_at=?
+               WHERE id = ?`
+            )
+              .bind(...fields, b.id)
+              .run();
+            if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such route' }, 404);
+            return json({ ok: true, id: b.id });
+          }
+
+          const ins = await env.DB.prepare(
+            `INSERT INTO conversions (from_program, to_program, from_units, to_units, fee_cents, min_block,
+               block_increment, route, bonus_pct, bonus_until, source_url, note, verified_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+            .bind(...fields)
+            .run();
+          return json({ ok: true, id: ins.meta.last_row_id });
+        }
+
+        if (url.pathname === '/api/route/delete' && req.method === 'POST') {
+          const { id } = (await req.json()) as { id?: number };
+          if (!id) return json({ error: 'id required' }, 400);
+          const res = await env.DB.prepare(`UPDATE conversions SET active = 0 WHERE id = ?`).bind(id).run();
+          if ((res.meta.changes ?? 0) === 0) return json({ error: 'no such route' }, 404);
+          return json({ ok: true });
+        }
+
         if (url.pathname === '/api/transfer' && req.method === 'POST') {
           const b = (await req.json()) as { conversion_id?: number; points?: string | number; note?: string };
           const id = Number(b.conversion_id);

@@ -45,6 +45,13 @@ shows every row before writing anything, unticks the ones that look already
 logged, and lists the lines it could not parse with the reason. Imported rows
 go through the same evaluation a typed one does.
 
+**Off-card spending.** PayLah, PayNow, cash, a bank transfer — none of it earns
+anything, which is the reason to record it. The Off-card tab shows what share
+of the month went out without a card, and what that cost: for each category, the
+card that would have earned most and what it would have paid. Only spend a card
+could actually have taken is costed, and rows with no category are named rather
+than quietly excluded.
+
 **Merchant codes.** A Codes tab listing all 924 merchant category codes — with
 Citibank's own published descriptions, and a flag on the 20 its manual does not
 list — as a grid against your own cards: which earn nothing, which carry a bonus rate and at
@@ -167,6 +174,7 @@ src/spend.ts          statement cycles, utilization, requirement progress
 src/digest.ts         the daily report and threshold alerts
 src/rss.ts            feed and page fetch, parse, URL cleaning, keyword gate
 src/mcc.ts            the code table read across your cards
+src/other.ts          spending that never touched a card, and what it cost
 src/mccscan.ts        importing merchant codes, and the gaps in your own
 src/statement.ts      reading a pasted statement into transactions
 web/src/pdf.ts        the PDF text layer, grouped back into lines

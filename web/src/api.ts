@@ -374,6 +374,37 @@ export interface Usage {
   worker: { available: boolean; note: string };
 }
 
+// --- transfer routes ---------------------------------------------------------
+
+export interface RouteRow {
+  id: number;
+  from_program: string;
+  to_program: string;
+  from_name: string;
+  to_name: string;
+  from_units: number;
+  to_units: number;
+  fee_cents: number;
+  min_block: number;
+  block_increment: number;
+  route: string | null;
+  bonus_pct: number;
+  bonus_until: string | null;
+  verified_at: string | null;
+  source_url: string | null;
+  note: string | null;
+}
+
+export const fetchRoutes = () =>
+  get<{ routes: RouteRow[]; today: string; recheck_days: number }>('/api/routes');
+
+export const saveRoute = (body: Record<string, unknown>) => post<{ ok: true; id: number }>('/api/route', body);
+export const deleteRoute = (id: number) => post<{ ok: true }>('/api/route/delete', { id });
+
+export const runMigrate = () =>
+  post<{ created: string[]; altered: string[]; alreadyCurrent: boolean; errors: string[] }>('/api/migrate', {});
+export const runSeed = () => post<Record<string, unknown>>('/api/seed', {});
+
 export const fetchSettings = () => get<{ settings: SettingRow[] }>('/api/settings');
 export const saveSetting = (key: string, value: string | null) =>
   post<{ ok: true; settings: SettingRow[] }>('/api/settings', { key, value });
@@ -498,6 +529,63 @@ export const runTransfer = (conversion_id: number, points: string) =>
 export const fetchAnalytics = (month: string) => get<Analytics>(`/api/analytics?month=${month}`);
 export const fetchMonths = () => get<{ months: string[] }>('/api/months');
 
+// --- spending that never touched a card --------------------------------------
+
+export interface OtherRow {
+  id: number;
+  occurred_at: string;
+  amount_cents: number;
+  method: string;
+  merchant: string | null;
+  category: string | null;
+  card_possible: number;
+  note: string | null;
+}
+
+export interface MissedReward {
+  category: string;
+  spend_cents: number;
+  card: string | null;
+  miles: number;
+  cashback_cents: number;
+  value_cents: number;
+}
+
+export interface OtherSummary {
+  month: string;
+  rows: OtherRow[];
+  total_cents: number;
+  avoidable_cents: number;
+  by_method: { method: string; label: string; spend_cents: number; count: number; card_possible: number }[];
+  by_category: { category: string; spend_cents: number; count: number }[];
+  card_spend_cents: number;
+  share_percent: number;
+  missed: MissedReward[];
+  missed_value_cents: number;
+  missed_miles: number;
+  uncategorised_cents: number;
+  months: string[];
+  methods: { key: string; label: string; card_possible: number }[];
+}
+
+export const fetchOther = (month?: string) =>
+  get<OtherSummary>(`/api/other${month ? `?month=${month}` : ''}`);
+
+export const addOther = (body: {
+  amount: string;
+  date?: string;
+  method: string;
+  merchant?: string;
+  category?: string;
+  card_possible?: boolean;
+  note?: string;
+}) => post<{ ok: true; id: number; category: string | null; card_possible: number }>('/api/other/add', body);
+
+export const updateOther = (id: number, field: string, value: string | null) =>
+  post<{ ok: true }>('/api/other/update', { id, field, value });
+
+export const deleteOther = (id: number) => post<{ ok: true }>('/api/other/delete', { id });
+
 // --- pasting a statement ----------------------------------------------------
 
 export interface ParsedRow {
@@ -545,6 +633,19 @@ export interface EarnRuleRow {
   note: string | null;
 }
 
+export interface RequirementRow {
+  id: number;
+  card_id: number;
+  kind: 'monthly_min' | 'signup_min';
+  amount_cents: number;
+  window: string;
+  deadline: string | null;
+  starts_at: string | null;
+  min_txns: number | null;
+  bonus_cap_cents: number | null;
+  reward_note: string | null;
+}
+
 export interface CardRow {
   id: number;
   issuer: string;
@@ -557,6 +658,7 @@ export interface CardRow {
   base_mpd: number;
   program_key: string | null;
   rules: EarnRuleRow[];
+  requirements: RequirementRow[];
 }
 
 export const fetchCards = () =>
@@ -587,6 +689,20 @@ export const addEarnRule = (body: {
   min_txn?: string;
   note?: string;
 }) => post<{ ok: true; id: number }>('/api/card/rule', body);
+
+export const addRequirement = (body: {
+  nickname: string;
+  kind: 'monthly_min' | 'signup_min';
+  amount: string;
+  window: string;
+  deadline?: string | null;
+  starts_at?: string | null;
+  min_txns?: number | null;
+  bonus_cap?: string | null;
+  reward_note?: string | null;
+}) => post<{ ok: true; id: number }>('/api/card/requirement', body);
+
+export const deleteRequirement = (id: number) => post<{ ok: true }>('/api/card/requirement/delete', { id });
 
 export const deleteEarnRule = (id: number) => post<{ ok: true }>('/api/card/rule/delete', { id });
 

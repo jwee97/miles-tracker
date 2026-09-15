@@ -10,6 +10,7 @@ import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes,
 import { runMigrations, runSeed } from './migrate';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
+import { defaultCardPossible, describeMissed, METHODS, monthOfOther } from './other';
 import { assignMerchantCode, importMerchantCodes, lookupMerchantOnline, unknownMerchants } from './mccscan';
 import { evaluate, lookupMerchant } from './rules';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
@@ -664,6 +665,74 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           `MCC ${code} now earns nothing on ${maybeCard ? `*${maybeCard.product}*` : 'every card'}` +
             ' and will not count toward a minimum. It applies from the next purchase you log.'
         );
+      }
+
+      // Spending that never touched a card. It earns nothing, which is the
+      // reason to record it: the month's total is only half the picture.
+      case '/spend': {
+        // /spend 12.80 paylah [date] [note]
+        const parts = args.trim().split(/\s+/).filter(Boolean);
+        if (parts.length < 2)
+          return send(
+            env,
+            chatId,
+            'Format: `/spend <amount> <method> [date] [note]`\n' +
+              `Methods: ${METHODS.map((m) => `\`${m.key}\``).join(' ')}`
+          );
+        const cents = parseMoney(parts[0]);
+        if (!cents || cents <= 0) return send(env, chatId, `Could not read an amount from "${parts[0]}".`);
+        const method = parts[1].toLowerCase();
+
+        let date = today(env);
+        const rest: string[] = [];
+        for (const tok of parts.slice(2)) {
+          const d = parseDateToken(tok, env);
+          if (d && date === today(env)) date = d;
+          else rest.push(tok);
+        }
+        const note = rest.join(' ') || null;
+        const category = (await categoryForMerchant(env, note)) ?? null;
+
+        const ins = await env.DB.prepare(
+          `INSERT INTO other_spend (occurred_at, amount_cents, method, merchant, category, card_possible)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        )
+          .bind(date, cents, method, note, category, defaultCardPossible(method))
+          .run();
+        return send(
+          env,
+          chatId,
+          `Logged $${money(cents)} by ${method}${note ? ` — ${note}` : ''} (#${ins.meta.last_row_id}).` +
+            (category ? ` #${category}` : ' _no category, so it cannot be costed — /spends to see the month_')
+        );
+      }
+
+      case '/spends': {
+        const m = await monthOfOther(env, /^\d{4}-\d{2}$/.test(args.trim()) ? args.trim() : undefined);
+        if (!m.rows.length) return send(env, chatId, `Nothing off-card in ${m.month}.`);
+        return send(
+          env,
+          chatId,
+          `*Off-card, ${m.month}*\n$${money(m.total_cents)} — ${m.share_percent.toFixed(0)}% of everything you spent\n` +
+            m.by_method.map((x) => `  ${x.label}: $${money(x.spend_cents)} (${x.count})`).join('\n') +
+            (m.missed_value_cents > 0
+              ? `\n\n*Left on the table*: about $${money(m.missed_value_cents)}` +
+                (m.missed_miles ? ` (${m.missed_miles.toLocaleString()} miles)` : '') +
+                '\n' +
+                m.missed.slice(0, 5).map((x) => `  ${describeMissed(x)}`).join('\n')
+              : '') +
+            (m.uncategorised_cents > 0
+              ? `\n\n$${money(m.uncategorised_cents)} has no category and is not in that figure.`
+              : '') +
+            '\n\n`/delspend <id>` removes one.'
+        );
+      }
+
+      case '/delspend': {
+        const id = parseInt(args, 10);
+        if (!id) return send(env, chatId, 'Format: `/delspend <id>`');
+        const r = await env.DB.prepare(`DELETE FROM other_spend WHERE id = ?`).bind(id).run();
+        return send(env, chatId, (r.meta.changes ?? 0) ? `Removed #${id}.` : `No off-card row #${id}.`);
       }
 
       case '/prune': {

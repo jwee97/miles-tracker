@@ -964,5 +964,98 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('an empty query is refused', (await authed('/api/mcc/lookup?q=')).status === 400, '');
 }
 
+// --- off-card spending --------------------------------------------------------
+{
+  const res = await authed('/api/other/add', { amount: '12.80', date: '2026-09-10', method: 'paylah', merchant: 'Maxwell', category: 'dining' });
+  const body = (await res.json()) as any;
+  check('off-card spending can be added', res.status === 200, JSON.stringify(body));
+  check('a wallet is assumed card-capable', body.card_possible === 1, String(body.card_possible));
+
+  const cash = (await (await authed('/api/other/add', { amount: '5.00', method: 'cash', merchant: 'Hawker' })).json()) as any;
+  check('cash is not', cash.card_possible === 0, String(cash.card_possible));
+
+  check('an amount is required', (await authed('/api/other/add', { method: 'cash' })).status === 400, '');
+  check('and a future date refused', (await authed('/api/other/add', { amount: '5', date: '2030-01-01' })).status === 400, '');
+
+  const month = (await (await authed('/api/other?month=2026-09')).json()) as any;
+  check('the month comes back with its rows', month.rows.length >= 1, String(month.rows?.length));
+  check('with the methods for the picker', month.methods.some((m: any) => m.key === 'paylah'), '');
+  check('and the months that have data', Array.isArray(month.months), JSON.stringify(month.months));
+
+  const edited = await authed('/api/other/update', { id: body.id, field: 'category', value: 'groceries' });
+  check('a row can be recategorised', edited.status === 200, String(edited.status));
+  check('which teaches the merchant', (db.prepare(`SELECT category FROM merchant_categories WHERE merchant = 'maxwell'`).get() as any)?.category === 'groceries', '');
+  check('an unknown field is refused', (await authed('/api/other/update', { id: body.id, field: 'nonsense', value: 'x' })).status === 400, '');
+
+  check('and a row can be removed', (await authed('/api/other/delete', { id: cash.id })).status === 200, '');
+  check('removing it twice is a 404', (await authed('/api/other/delete', { id: cash.id })).status === 404, '');
+}
+
+// --- minimum-spend requirements from the app ----------------------------------
+{
+  const res = await authed('/api/card/requirement', {
+    nickname: 'crw',
+    kind: 'signup_min',
+    amount: '1000',
+    window: 'fixed_window',
+    deadline: '2026-12-31',
+    min_txns: 5,
+    reward_note: '30,000 miles',
+  });
+  check('a minimum can be set from the app', res.status === 200, String(res.status));
+  const row = db.prepare(`SELECT * FROM requirements ORDER BY id DESC LIMIT 1`).get() as any;
+  check('with the amount in cents', row.amount_cents === 100000, String(row.amount_cents));
+  check('and the transaction count', row.min_txns === 5, String(row.min_txns));
+
+  check(
+    'a one-off window without a deadline is refused',
+    (await authed('/api/card/requirement', { nickname: 'crw', amount: '500', window: 'fixed_window' })).status === 400,
+    ''
+  );
+  check('an unknown window is refused', (await authed('/api/card/requirement', { nickname: 'crw', amount: '500', window: 'weekly' })).status === 400, '');
+  check('an unknown card is a 404', (await authed('/api/card/requirement', { nickname: 'zz', amount: '500' })).status === 404, '');
+
+  const listed = (await (await authed('/api/cards')).json()) as any;
+  check('cards carry their requirements', listed.cards.find((c: any) => c.nickname === 'crw').requirements.length >= 1, '');
+  check('a requirement can be removed', (await authed('/api/card/requirement/delete', { id: row.id })).status === 200, '');
+}
+
+// --- transfer routes from the app ---------------------------------------------
+{
+  db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VALUES ('krisflyer','KrisFlyer','airline','miles',36)`).run();
+  const res = await authed('/api/route', {
+    from_program: 'uob_uni',
+    to_program: 'krisflyer',
+    from_units: 5000,
+    to_units: 10000,
+    fee_cents: '27.25',
+    min_block: 5000,
+    block_increment: 5000,
+  });
+  const body = (await res.json()) as any;
+  check('a route can be added', res.status === 200, JSON.stringify(body));
+  const row = db.prepare(`SELECT * FROM conversions WHERE id = ?`).get(body.id) as any;
+  check('with its fee in cents', row.fee_cents === 2725, String(row.fee_cents));
+  check('and unverified unless you say so', row.verified_at === null, String(row.verified_at));
+
+  check('an unknown programme is refused', (await authed('/api/route', { from_program: 'nope', to_program: 'krisflyer', from_units: 1, to_units: 1 })).status === 400, '');
+  check('a ratio needs both sides', (await authed('/api/route', { from_program: 'uob_uni', to_program: 'krisflyer', from_units: 0, to_units: 5 })).status === 400, '');
+
+  check('marking it checked is one call', (await authed('/api/route', { id: body.id, verified: true })).status === 200, '');
+  check('which dates it', (db.prepare(`SELECT verified_at FROM conversions WHERE id = ?`).get(body.id) as any).verified_at !== null, '');
+
+  const listed = (await (await authed('/api/routes')).json()) as any;
+  check('routes come back with their programme names', listed.routes.some((r: any) => r.to_name === 'KrisFlyer'), '');
+  check('and it can be removed', (await authed('/api/route/delete', { id: body.id })).status === 200, '');
+}
+
+// --- maintenance from the app --------------------------------------------------
+{
+  const res = await authed('/api/migrate', {});
+  const body = (await res.json()) as any;
+  check('the database can be migrated from the app', res.status === 200, String(res.status));
+  check('and reports it is already current', body.alreadyCurrent === true, JSON.stringify(body).slice(0, 120));
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

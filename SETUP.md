@@ -730,6 +730,30 @@ are listed with the reason rather than dropped.
 Imported rows take the same path a typed one does — categorised, evaluated
 against the card's rules, and queued for the points wallet.
 
+### Off-card spending
+
+The **Off-card** tab records what never touched a credit card: PayLah, PayNow,
+cash, NETS, a bank transfer, GIRO. `/spend 12.80 paylah lunch` does the same
+from the bot, and `/spends` reports the month.
+
+It earns nothing, so the numbers that matter are the share and the cost:
+
+- how much of the month went out off-card, against what went on cards
+- for each category, the card that would have earned most on it and what it
+  would have paid — **$100 of PayLah dining would have been 400 miles on your
+  Lady's Card**
+
+Two things keep that honest. A row marked *a card was never an option* — a
+hawker with no terminal, a transfer to a person — stays in the total but out of
+the cost, since there was nothing to miss. And spend with no category cannot be
+costed at all, so it is reported separately rather than counted as zero: give
+those rows a category and the figure grows.
+
+Merchant categories are shared with card spend, so tagging a merchant once
+teaches both. One thing to watch: if you top up PayLah with a card, the top-up
+is already card spend — record what you buy here, not the top-up, or it counts
+twice.
+
 ### Merchant codes
 
 The **Codes** tab is the MCC table seen from your own cards — a grid of codes
@@ -926,6 +950,8 @@ so the same article found through two sources is recognised as one item.
 /scan                       force a scan instead of waiting for 06:00
 /offers                     offers, their clauses and rule ids
 /prune                      what the scanned history costs · compact · delete
+/spend <amt> <method> [note] log spending that never touched a card
+/spends [YYYY-MM]           the month off-card, and what it cost
 /codes [query]              what each card pays on a merchant code
 /exclude <mcc> [card]       record one that earns nothing
 /wallet                     everything you hold, and what it is worth
