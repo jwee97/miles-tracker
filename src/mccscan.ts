@@ -16,6 +16,9 @@ import type { Env } from './types';
  */
 
 const UA = 'miles-tracker/0.3 (personal use)';
+
+/** The directory's host, for saying where a figure came from. */
+const shortHost = (base: string) => base.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '');
 const SOURCE = 'check-mcc.sg';
 
 export interface ImportedMerchant {
@@ -108,7 +111,7 @@ export async function importMerchantCodes(env: Env, opts: ImportOptions = {}): P
     unchanged: 0,
     conflicts: [],
     failed: [],
-    source: base.replace(/^https?:\/\//, ''),
+    source: shortHost(base),
   };
 
   const urls = await merchantUrls(base);
@@ -240,7 +243,11 @@ export async function assignMerchantCode(
   return { merchant: name, updated };
 }
 
-/** URL-shaped names to try for a merchant the directory may have a page for. */
+/**
+ * URL-shaped names for a merchant's own page on the directory. The search
+ * endpoint answers by name, so this is only needed when a page has to be
+ * addressed directly — the importer's own list, and any future per-page read.
+ */
 export function slugCandidates(query: string): string[] {
   const base = query
     .trim()
@@ -265,70 +272,94 @@ export function slugCandidates(query: string): string[] {
   return [...new Set(out)].filter(Boolean).slice(0, 4);
 }
 
-export interface MerchantLookup {
-  query: string;
-  /** What this app already knows, which always outranks the directory. */
-  known: { merchant: string; mcc: string; source: string; confidence: string } | null;
-  found: ImportedMerchant | null;
+export interface DirectoryHit {
+  /** The merchant as the directory spells it. */
+  store: string;
+  mcc: string;
+  /** Their description of the code, which may differ from ours. */
+  their_description: string | null;
+  /** online | offline, as they record it. */
+  channel: string | null;
+  url: string | null;
+  /** What this app calls that code, and how it categorises it. */
   description: string | null;
   category: string | null;
-  tried: string[];
+}
+
+export interface MerchantLookup {
+  query: string;
+  /** What this app already knows, which always outranks a directory. */
+  known: { merchant: string; mcc: string; source: string; confidence: string } | null;
+  results: DirectoryHit[];
   source: string;
+  /** Set when the directory could not be reached, so an empty list is not
+   *  mistaken for "no such merchant". */
+  error: string | null;
 }
 
 /**
- * Look one merchant up. Our own table first — a code confirmed from a statement
- * is worth more than anything published — then the directory's page for that
- * name. Nothing is written: what to record is your decision.
+ * Search a published merchant directory by name.
+ *
+ * This is the search its own site uses, and it matches on fragments — "kopi"
+ * finds ten kopitiams — so several hits come back and the choice is yours.
+ * Nothing is written: recording a code is a separate, deliberate step.
  */
 export async function lookupMerchantOnline(
   env: Env,
   query: string,
-  opts: { base?: string; budget?: number } = {}
+  opts: { base?: string; limit?: number } = {}
 ): Promise<MerchantLookup> {
   const base = opts.base ?? 'https://www.check-mcc.sg';
-  let budget = opts.budget ?? 4;
+  const limit = opts.limit ?? 10;
+  const name = query.trim();
 
-  const name = query.trim().toLowerCase();
   const known = await env.DB.prepare(
     `SELECT merchant, mcc, source, confidence FROM merchant_mcc WHERE merchant = ? OR ? LIKE merchant || '%'
       ORDER BY LENGTH(merchant) DESC LIMIT 1`
   )
-    .bind(name, name)
+    .bind(name.toLowerCase(), name.toLowerCase())
     .first<{ merchant: string; mcc: string; source: string; confidence: string }>();
 
-  const tried: string[] = [];
-  let found: ImportedMerchant | null = null;
+  const out: MerchantLookup = {
+    query: name,
+    known: known ?? null,
+    results: [],
+    source: shortHost(base),
+    error: null,
+  };
+  if (!name) return out;
 
-  for (const slug of slugCandidates(query)) {
-    if (budget <= 0) break;
-    const url = `${base}/mcc/${slug}`;
-    tried.push(slug);
-    budget--;
-    const html = await fetchText(url);
-    if (!html) continue;
-    const parsed = parseMerchantPage(html, url);
-    if (parsed) {
-      found = parsed;
-      break;
-    }
+  const body = await fetchText(`${base}/api/store/search?q=${encodeURIComponent(name)}`);
+  if (body === null) {
+    out.error = 'the directory did not answer';
+    return out;
   }
 
-  // Whatever code comes back, say what this app calls that code.
-  const code = found?.mcc ?? known?.mcc ?? null;
-  const row = code
-    ? await env.DB.prepare(`SELECT description, category FROM mcc_codes WHERE code = ?`)
-        .bind(code)
-        .first<{ description: string; category: string }>()
-    : null;
+  let parsed: { merchants?: any[] };
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    out.error = 'the directory returned something unreadable';
+    return out;
+  }
 
-  return {
-    query: query.trim(),
-    known: known ?? null,
-    found,
-    description: row?.description ?? found?.description ?? null,
-    category: row?.category ?? null,
-    tried,
-    source: base.replace(/^https?:\/\//, ''),
-  };
+  for (const m of (parsed.merchants ?? []).slice(0, limit)) {
+    const code = String(m?.MCC ?? '').trim();
+    if (!/^\d{3,4}$/.test(code)) continue;
+    const padded = code.padStart(4, '0');
+    // Their description of a code is theirs; ours is what the engine matches on.
+    const row = await env.DB.prepare(`SELECT description, category FROM mcc_codes WHERE code = ?`)
+      .bind(padded)
+      .first<{ description: string; category: string }>();
+    out.results.push({
+      store: String(m?.displayName ?? m?.Store ?? '').trim(),
+      mcc: padded,
+      their_description: m?.Category ? String(m.Category) : null,
+      channel: m?.type ? String(m.type) : null,
+      url: m?.url ? String(m.url) : null,
+      description: row?.description ?? null,
+      category: row?.category ?? null,
+    });
+  }
+  return out;
 }

@@ -770,15 +770,25 @@ previously hand-checked codes kept as they were. If your card's terms group a
 code differently, the category is what the earn engine matches on — correct it
 in `seed.sql` and re-seed, or adjust the rule instead.
 
-**Looking one merchant up.** Codes tab → *Look up a merchant*, or `/mcc <name>`
-in the bot. It answers from your own table first — a code confirmed from your
-statement outranks anything published — then tries the public directory's page
-for that name, working through the obvious spellings: `Circles Life` →
-`/mcc/circles-life`, and `CIRCLES LIFE SINGAPORE SG` falls back to the same
-page by dropping the statement padding. Nothing is recorded until you press the
-button. A raw descriptor like `WWW.TADA.G* N019F9C53B` has no page anywhere;
-the app says which spellings it tried rather than implying the merchant does
-not exist.
+**Searching for a merchant.** Codes tab → *Look up a merchant*, or
+`/mcc <name>` in the bot. It searches the public directory of Singapore
+merchants — the same search its own site runs, `/api/store/search?q=` — which
+matches on fragments, so `kopi` returns ten kopitiams and `circles` finds
+Circles Life. Each hit shows the directory's code, what this app calls that
+code, and the category the earn engine would use, and can be recorded under the
+name you searched for or the directory's own spelling.
+
+Your own table is consulted first and shown above the results: a code confirmed
+from your statement outranks anything published, and it is never overwritten by
+a search.
+
+Some merchants genuinely carry more than one code — Shopee comes back as both
+5262 (marketplaces) and 9311 (tax payments, for bill pay) — which is the reason
+every hit is listed rather than the first one being taken as the answer.
+
+Nothing is written until you press *Record*. If the directory cannot be
+reached, the app says so rather than showing an empty list, which would read as
+"no such merchant".
 
 **Keeping codes current.** Codes tab → *Track merchant codes*, or `/mccscan`.
 It reads the merchant pages published at check-mcc.sg (whose robots.txt allows

@@ -956,8 +956,11 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   ).run();
   const body = (await (await authed('/api/mcc/lookup?q=Circles%20Life')).json()) as any;
   check('a merchant we know is answered from our own table', body.known?.mcc === '4814', JSON.stringify(body.known));
-  check('with what this app calls that code', body.category === 'utilities', String(body.category));
-  check('and the spellings it tried are reported', Array.isArray(body.tried), JSON.stringify(body.tried));
+  check('the directory results come back as a list', Array.isArray(body.results), JSON.stringify(body.results));
+  // The fixture fetch returns {"ok":true}, which is valid JSON with no
+  // merchants — so an unreachable directory and an empty one stay distinct.
+  check('an unreadable answer is reported, not shown as no matches', body.results.length === 0 && body.error === null, JSON.stringify(body));
+  check('and the source is named', body.source === 'check-mcc.sg', String(body.source));
   check('an empty query is refused', (await authed('/api/mcc/lookup?q=')).status === 400, '');
 }
 

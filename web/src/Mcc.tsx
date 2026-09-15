@@ -102,8 +102,8 @@ function MerchantLookupBox() {
     <section className="card entry">
       <h2>Look up a merchant</h2>
       <p className="sub">
-        Paste a name as it appears on your statement. The public directory has a page per merchant; this tries the
-        obvious spellings of the name against it.
+        Search the public directory of Singapore merchants by name. It matches on fragments, so “kopi” finds every
+        kopitiam; pick the one that is yours.
       </p>
       <div className="entry-grid">
         <label className="f f-note">
@@ -125,38 +125,46 @@ function MerchantLookupBox() {
       </div>
 
       {res && (
-        <ul className="notes">
+        <>
           {res.known && (
-            <li>
-              <strong>You already have this</strong> — {res.known.merchant} → {res.known.mcc} ({res.known.confidence},
-              from {res.known.source})
-            </li>
+            <p className="sub">
+              You already have <strong>{res.known.merchant}</strong> → {res.known.mcc} ({res.known.confidence}, from{' '}
+              {res.known.source}). That stays unless you record something else.
+            </p>
           )}
-          {res.found ? (
-            <li>
-              <strong>{res.source}</strong> — {res.found.merchant} → {res.found.mcc}
-              {res.found.verified ? ' (they call it verified)' : ' (listed, unverified)'}
-              {res.description ? <div className="sub">{res.description}</div> : null}
-              {res.category ? <div className="sub">this app treats {res.found.mcc} as {res.category}</div> : null}
-              {res.known && res.known.mcc !== res.found.mcc && (
-                <div className="warnbox">
-                  That disagrees with the {res.known.mcc} you already have. Yours came from {res.known.source}.
-                </div>
-              )}
-              <div className="entry-foot rule-actions">
-                <button onClick={() => record(res.query, res.found!.mcc)}>Record {res.found.mcc} for “{res.query}”</button>
-                <a className="link" href={res.found.url} target="_blank" rel="noreferrer">
-                  Their page
-                </a>
-              </div>
-            </li>
+          {res.error ? (
+            <p className="err-text">
+              {res.source} {res.error}.
+            </p>
+          ) : res.results.length ? (
+            <ul className="notes">
+              {res.results.map((r, i) => (
+                <li key={i}>
+                  <strong>{r.store}</strong> → {r.mcc}
+                  {r.channel ? ` · ${r.channel}` : ''}
+                  <div className="sub">
+                    {r.description ?? r.their_description ?? 'this app does not carry that code'}
+                    {r.category ? ` · treated as ${r.category}` : ''}
+                  </div>
+                  {res.known && res.known.mcc !== r.mcc && (
+                    <div className="sub warn-num">differs from the {res.known.mcc} you already have</div>
+                  )}
+                  <div className="entry-foot rule-actions">
+                    <button onClick={() => record(res.query, r.mcc)}>Record for “{res.query}”</button>
+                    {r.store.toLowerCase() !== res.query.trim().toLowerCase() && (
+                      <button onClick={() => record(r.store, r.mcc)}>Record for “{r.store}”</button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
           ) : (
-            <li>
-              Nothing found for {res.tried.map((t) => `/mcc/${t}`).join(', ')}. A raw statement descriptor rarely has a
-              page — try the trading name, or set the code by hand once your statement shows what it earned.
-            </li>
+            <p className="sub">
+              Nothing at {res.source} for “{res.query}”. A raw statement descriptor rarely matches — try the trading
+              name, or set the code by hand once your statement shows what it earned.
+            </p>
           )}
-        </ul>
+        </>
       )}
     </section>
   );

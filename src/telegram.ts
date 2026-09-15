@@ -611,21 +611,29 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
           // Nothing here; ask the public directory before giving up.
           const online = await lookupMerchantOnline(env, merchant);
-          if (!online.found)
+          if (online.error) return send(env, chatId, `No code for *${merchant}* here, and ${online.source} ${online.error}.`);
+          if (!online.results.length)
             return send(
               env,
               chatId,
               `No code for *${merchant}*, here or at ${online.source}.\n` +
-                `Tried ${online.tried.map((t) => `\`${t}\``).join(', ')}.\n` +
                 `\`/mcc ${merchant} 5812\` records one once your statement shows what it earned.`
+            );
+
+          const lines = online.results
+            .slice(0, 6)
+            .map(
+              (r) =>
+                `*${r.store}* → ${r.mcc}` +
+                `${r.channel ? ` (${r.channel})` : ''}` +
+                `${r.category ? ` · ${r.category}` : ''}\n  \`/mcc ${r.store} ${r.mcc}\``
             );
           return send(
             env,
             chatId,
-            `*${merchant}* → ${online.found.mcc} per ${online.source}` +
-              `${online.found.verified ? ' (verified there)' : ' (listed, unverified)'}\n` +
-              `${online.description ?? ''}${online.category ? `\nthis app treats it as ${online.category}` : ''}\n\n` +
-              `\`/mcc ${merchant} ${online.found.mcc}\` to record it.`
+            `*${online.results.length} match(es) at ${online.source}*\n` +
+              lines.join('\n') +
+              (online.results.length > 6 ? `\n…and ${online.results.length - 6} more.` : '')
           );
         }
         const r = await assignMerchantCode(env, merchant, code);

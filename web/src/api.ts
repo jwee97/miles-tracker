@@ -838,14 +838,22 @@ export interface MccScanResult {
   source: string;
 }
 
+export interface DirectoryHit {
+  store: string;
+  mcc: string;
+  their_description: string | null;
+  channel: string | null;
+  url: string | null;
+  description: string | null;
+  category: string | null;
+}
+
 export interface MerchantLookup {
   query: string;
   known: { merchant: string; mcc: string; source: string; confidence: string } | null;
-  found: { merchant: string; mcc: string; description: string | null; verified: boolean; url: string } | null;
-  description: string | null;
-  category: string | null;
-  tried: string[];
+  results: DirectoryHit[];
   source: string;
+  error: string | null;
 }
 
 /** Look one merchant up by name — ours first, then the public directory. */

@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/migrate';
 import { markDuplicates, parseStatement } from '../src/statement';
-import { parseMerchantPage, slugCandidates } from '../src/mccscan';
+import { lookupMerchantOnline, parseMerchantPage, slugCandidates } from '../src/mccscan';
 import type { Env } from '../src/types';
 
 const db = new DatabaseSync(':memory:');
@@ -117,6 +117,61 @@ check('a dotted name keeps its dot', slugCandidates('booking.com').includes('boo
 check('an apostrophe is dropped, not hyphenated', slugCandidates("Lady's Card")[0] === 'ladys-card', JSON.stringify(slugCandidates("Lady's Card")));
 check('nothing in, nothing out', slugCandidates('   ').length === 0, '');
 check('and it never tries more than a handful', slugCandidates('a b c d e f g h').length <= 4, String(slugCandidates('a b c d e f g h').length));
+
+// --- searching the merchant directory -----------------------------------------
+// The directory answers by name and matches on fragments, so a search returns
+// several merchants and the choice is the user's.
+db.prepare(`INSERT OR IGNORE INTO mcc_codes (code, description, category, verified) VALUES ('5814','Fast Food Restaurants','dining',1)`).run();
+db.prepare(`INSERT OR IGNORE INTO mcc_codes (code, description, category, verified) VALUES ('4814','Telecommunication Services','utilities',1)`).run();
+
+const realFetch = globalThis.fetch;
+const asked: string[] = [];
+const serve = (body: string | null, status = 200) => {
+  (globalThis as any).fetch = async (url: string) => {
+    asked.push(String(url));
+    if (body === null) throw new Error('offline');
+    return { ok: status < 400, status, headers: { get: () => 'application/json' }, text: async () => body };
+  };
+};
+
+serve(
+  JSON.stringify({
+    merchants: [
+      { id: '1', Store: 'Circles Life', displayName: 'Circles Life', Category: 'Fax Services', MCC: '4814', type: 'offline', url: null },
+      { id: '2', Store: 'Killiney Kopitiam', displayName: 'Killiney Kopitiam', Category: 'Fast Food', MCC: 5814, type: 'offline', url: null },
+      { id: '3', Store: 'Broken', displayName: 'Broken', Category: null, MCC: 'nope', type: null, url: null },
+    ],
+  })
+);
+const search = await lookupMerchantOnline(env, 'circles');
+check('the search endpoint is asked by name', /\/api\/store\/search\?q=circles/.test(asked[0] ?? ''), asked[0] ?? '');
+check('every usable hit comes back', search.results.length === 2, JSON.stringify(search.results.map((r) => r.store)));
+check('a numeric code is normalised to four digits', search.results[1].mcc === '5814', search.results[1].mcc);
+check('a hit without a real code is dropped', !search.results.some((r) => r.store === 'Broken'), '');
+check('each hit says what this app calls the code', search.results[0].description === 'Telecommunication Services', String(search.results[0].description));
+check('and how it categorises it', search.results[1].category === 'dining', String(search.results[1].category));
+check('their own wording is kept alongside', search.results[0].their_description === 'Fax Services', String(search.results[0].their_description));
+check('nothing is written by searching', (db.prepare(`SELECT COUNT(*) c FROM merchant_mcc WHERE merchant='circles'`).get() as any).c === 0, '');
+
+serve(JSON.stringify({ merchants: [] }));
+const none = await lookupMerchantOnline(env, 'zzzz');
+check('no matches is an empty list, not an error', none.results.length === 0 && none.error === null, JSON.stringify(none));
+
+serve(null);
+const down = await lookupMerchantOnline(env, 'circles');
+check('an unreachable directory is reported', down.error !== null, JSON.stringify(down));
+check('rather than looking like no matches', down.results.length === 0 && /did not answer/.test(down.error ?? ''), String(down.error));
+
+serve('<html>not json</html>');
+const junk = await lookupMerchantOnline(env, 'circles');
+check('and so is an unreadable answer', /unreadable/.test(junk.error ?? ''), String(junk.error));
+
+db.prepare(`INSERT OR REPLACE INTO merchant_mcc (merchant, mcc, source, confidence) VALUES ('circles life','4814','user','confirmed')`).run();
+serve(JSON.stringify({ merchants: [] }));
+const known = await lookupMerchantOnline(env, 'Circles Life');
+check('what you confirmed yourself is reported first', known.known?.mcc === '4814', JSON.stringify(known.known));
+check('and marked as yours', known.known?.source === 'user', String(known.known?.source));
+(globalThis as any).fetch = realFetch;
 
 console.log(fails ? `\n${fails} check(s) failed` : '\nAll checks passed');
 process.exit(fails ? 1 : 0);
