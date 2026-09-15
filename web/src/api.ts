@@ -983,6 +983,33 @@ export const scanMccDirectory = () => post<MccScanResult>('/api/mcc/scan', {});
 export const assignMerchantCode = (merchant: string, mcc: string, backfill = true) =>
   post<{ ok: true; merchant: string; updated: number }>('/api/mcc/assign', { merchant, mcc, backfill });
 
+export interface ScanCandidate {
+  kind: 'rate' | 'cap' | 'mcc' | 'exclusion' | 'minspend' | string;
+  occurrences?: number;
+  quote: string;
+  rate?: number;
+  reward_type?: 'miles' | 'cashback';
+  cap_cents?: number;
+  cap_window?: string;
+  min_spend_cents?: number;
+  mccs?: string[];
+  category?: string | null;
+}
+
+export interface CardPageScan {
+  url: string;
+  title: string;
+  text_length: number;
+  candidates: ScanCandidate[];
+  codes: { mcc: string; description: string | null; category: string | null; excluded_here: boolean }[];
+  prompt: string;
+  error: string | null;
+}
+
+/** Read a card's rewards page (or pasted terms) and report what it claims. */
+export const scanCardPage = (body: { nickname: string; url?: string; text?: string }) =>
+  post<CardPageScan>('/api/card/scan', body);
+
 export const saveExclusion = (body: { mcc: string; nickname?: string | null; reason?: string; active?: boolean }) =>
   post<{ ok: true }>('/api/exclusion', body);
 

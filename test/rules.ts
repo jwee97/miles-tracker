@@ -154,5 +154,48 @@ sql(`UPDATE transactions SET actual_miles = 1200 WHERE merchant = 'Restaurant'`)
 audit = await buildAudit(env, { from: '2026-08-01', to: '2026-08-31' });
 check('over-crediting is flagged', audit.rows.find((r) => r.merchant === 'Restaurant')!.status === 'over', '');
 
+// --- which rule wins when several cover the same category ---------------------
+// A card often states the same category twice: an MCC-restricted bonus and a
+// looser rate underneath it. Whichever was typed in first is not an answer.
+{
+  sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at,base_mpd)
+       VALUES ('Test','Two Rates','t_two','two',500000,1,'2026-01-01',0.4)`);
+  const two = card('two');
+  // Entered worst-first on purpose: order of entry must not decide this.
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'dining',1.2,'miles')`, two.id);
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'dining',4,'miles')`, two.id);
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'*',0.4,'miles')`, two.id);
+
+  const e = await evaluate(env, two, { amount_cents: 10000, category: 'dining', mcc: null, channel: null });
+  check('the best-paying rule wins, not the first entered', e.bonus_rate === 4, JSON.stringify({ rate: e.bonus_rate }));
+
+  // The restricted rule only wins where it applies; elsewhere the looser one
+  // must still be reachable, or the category would fall all the way to base.
+  sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at,base_mpd)
+       VALUES ('Test','Restricted','t_res','res',500000,1,'2026-01-01',0.4)`);
+  const res = card('res');
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type,mcc_include) VALUES (?,'dining',4,'miles','5812')`, res.id);
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'dining',1.2,'miles')`, res.id);
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'*',0.4,'miles')`, res.id);
+
+  const hit = await evaluate(env, res, { amount_cents: 10000, category: 'dining', mcc: '5812', channel: null });
+  check('a code-restricted bonus applies on its codes', hit.bonus_rate === 4, String(hit.bonus_rate));
+  const miss = await evaluate(env, res, { amount_cents: 10000, category: 'dining', mcc: '5814', channel: null });
+  check('and elsewhere the looser rule still applies', miss.bonus_rate === 1.2, String(miss.bonus_rate));
+
+  // Value, not the raw number: 5% cashback beats 4 mpd at 1.5c a mile.
+  sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at,base_mpd)
+       VALUES ('Test','Mixed','t_mix','mix',500000,1,'2026-01-01',0)`);
+  const mix = card('mix');
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'dining',4,'miles')`, mix.id);
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'dining',5,'cashback')`, mix.id);
+  const m = await evaluate(env, mix, { amount_cents: 10000, category: 'dining', mcc: null, channel: null });
+  check(
+    'rules are compared on what they are worth',
+    m.reward_type === 'cashback' && m.bonus_rate === 5,
+    JSON.stringify({ type: m.reward_type, rate: m.bonus_rate })
+  );
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

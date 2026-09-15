@@ -294,15 +294,28 @@ as met when *both* halves clear, and the digest tells you which one is short.
 There is no API for this. Every card's earning structure lives in its terms,
 so the app has to be told once per card. Three ways, easiest first.
 
-**1. Let Claude read the card's page.**
+**1. Point it at the rewards page.**
 
-```
-/cardrules citirw
-```
+**Cards → Read a rewards page.** Give it the card's rewards or T&C page, or
+paste the terms in — most bank sites refuse anything that is not a browser, so
+select the page and paste it and you are never stuck.
 
-The bot replies with a prompt. Paste it into Claude along with the card's
-rewards page, and Claude returns ready-to-send `/addearn` lines. Same pattern
-as the T&C flow, no API key.
+It reads the *numbers*: every rate, the cap beside it, the window the cap
+resets on, the merchant codes a rate is restricted to, and the sentences that
+say something earns nothing. Each one comes back **with the sentence it came
+from**, and nothing is saved until you press the button on it — a rate lifted
+out of the wrong paragraph would quietly misdirect every recommendation the app
+makes, which is worse than having no rate at all. Every code the page names is
+listed with what this app already calls it, so a list of digits is something
+you can check.
+
+What it cannot do is read prose. "Miles are awarded on the first S$1,000 of
+eligible spend in each statement month, excluding the categories set out in
+Clause 7.2" is a rule no regular expression should be trusted with. For that,
+**Copy the prompt for Claude** on the same panel — it hands over the whole page
+wrapped in the instructions that turn it into `/addearn` and `/exclude` lines.
+`/cardrules citirw` in the bot gives you the same prompt, bare, to paste a page
+under yourself.
 
 **2. Type them yourself.**
 
@@ -315,7 +328,13 @@ as the T&C flow, no API key.
 
 Extras go after the rate in any order: `cap <amount>`,
 `window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`,
-`note <text>`.
+`mcc <codes>`, `note <text>`.
+
+**`mcc` is the one that makes a rule true.** `/addearn citirw online 4` claims
+every online purchase earns 4 mpd; the terms almost never say that. What they
+say is a list of codes, and `/addearn citirw online 4 mcc 5262,5964,5969` is
+the rule that matches them — anything outside the list falls to the base rate,
+which is what the card actually does.
 
 **Always add a `*` rule.** It is the rate for anything not otherwise matched,
 and without it the app has no idea what a card does off-category.
@@ -677,6 +696,10 @@ minimum per transaction. The MCC list is what separates "4 mpd online" from
 If one cap is shared across several categories, give those rates the same
 **shared cap name**. Getting that wrong is what makes the app think you have
 more bonus headroom than you do.
+
+Rather than typing all that, use **Read a rewards page** on the same card — see
+*Earn rules* above. It fills the same form from the page, one rate at a time,
+with the sentence each came from next to it.
 
 Closing a card keeps it, with the date: eligibility cooldowns on future offers
 run from it.

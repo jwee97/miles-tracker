@@ -1049,6 +1049,55 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('and it can be removed', (await authed('/api/route/delete', { id: body.id })).status === 200, '');
 }
 
+// --- reading a rewards page ----------------------------------------------------
+{
+  const res = await authed('/api/card/scan', {
+    nickname: 'crw',
+    text: 'Earn 4 mpd on online spend, capped at S$1,000 per calendar month. Excluded MCCs: 4900, 9311.',
+  });
+  const body = (await res.json()) as any;
+  check('a pasted rewards page can be read from the app', res.status === 200, String(res.status));
+  const rate = body.candidates.find((c: any) => c.kind === 'rate');
+  check('the rate comes back with the sentence it came from', rate?.rate === 4 && /Earn 4 mpd/.test(rate.quote), JSON.stringify(rate));
+  check('and its cap', rate?.cap_cents === 100000, String(rate?.cap_cents));
+  check('the excluded codes come back described', body.codes.some((c: any) => c.mcc === '4900' && c.excluded_here), JSON.stringify(body.codes));
+  check('with a prompt for the prose this cannot read', /addearn crw/.test(body.prompt), body.prompt.slice(0, 60));
+
+  // Reading is not saving: the whole design rests on this.
+  const rules = db.prepare(`SELECT COUNT(*) AS n FROM earn_rules WHERE mcc_include = '4900'`).get() as any;
+  check('reading a page writes nothing', Number(rules.n) === 0, String(rules.n));
+
+  check('an unknown card is refused', (await authed('/api/card/scan', { nickname: 'nope', text: 'x' })).status === 404, '');
+  check('and so is no card at all', (await authed('/api/card/scan', { text: 'x' })).status === 400, '');
+}
+
+// --- the bot accepts what the prompt tells Claude to write ---------------------
+// The prompt in /cardrules promises `mcc <codes>`; a command shape the bot then
+// rejects would make the whole flow dead-end at the last step.
+{
+  const tg = (text: string) =>
+    worker.fetch(
+      new Request('https://x.test/tg', {
+        method: 'POST',
+        headers: { 'X-Telegram-Bot-Api-Secret-Token': 'y', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: { chat: { id: 1 }, from: { id: 1 }, text } }),
+      }),
+      env
+    );
+
+  await tg('/addearn crw online 4 cap 1000 window calendar_month group tenx mcc 5262,5964,5969');
+  const rule = db
+    .prepare(`SELECT * FROM earn_rules WHERE card_id = (SELECT id FROM cards WHERE nickname='crw') AND category='online'`)
+    .get() as any;
+  check('the bot accepts a rate restricted to merchant codes', rule?.mcc_include === '5262,5964,5969', JSON.stringify(rule));
+  check('and still reads the cap beside it', rule?.cap_cents === 100000 && rule?.cap_group === 'tenx', JSON.stringify(rule));
+
+  const before = db.prepare(`SELECT COUNT(*) AS n FROM earn_rules`).get() as any;
+  await tg('/addearn crw dining 4 mcc 526');
+  const after = db.prepare(`SELECT COUNT(*) AS n FROM earn_rules`).get() as any;
+  check('a code that is not four digits is refused, not stored', Number(after.n) === Number(before.n), `${before.n} -> ${after.n}`);
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

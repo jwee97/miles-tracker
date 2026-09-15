@@ -266,10 +266,18 @@ export async function evaluate(
   if (p.mcc) trace.push({ check: 'Exclusions', pass: true, detail: `MCC ${p.mcc} is not excluded` });
 
   // 2. Which rule applies. Specific category first, then the fallback.
+  //
+  // Where several rules cover the same category — an MCC-restricted 4 mpd and a
+  // looser 2 mpd, say — the best-paying one wins, not whichever was entered
+  // first. Comparing on value rather than on the raw number is what keeps a
+  // 5% cashback rule from losing to a 4 mpd one.
   const category = p.category ?? null;
   const fallback = mine.find((r) => r.category === '*') ?? null;
+  const worth = (r: EarnRule) => (r.reward_type === 'cashback' ? r.mpd * 100 : r.mpd * mileValue);
   let matched: EarnRule | null = null;
-  for (const r of mine.filter((r) => r.category === category && r.category !== '*')) {
+  for (const r of mine
+    .filter((r) => r.category === category && r.category !== '*')
+    .sort((a, b) => worth(b) - worth(a))) {
     if (ruleMatches(r, p, trace)) {
       matched = r;
       break;

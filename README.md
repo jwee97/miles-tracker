@@ -124,6 +124,23 @@ Window is `calendar_month`, `statement_cycle`, or `fixed_window`.
 When you close a card, use `/closecard alt|2026-09-01` — eligibility cooldowns
 run from the closure date, so this is what keeps future verdicts honest.
 
+### Telling it what a card pays
+
+**Cards → Read a rewards page.** Give it the card's rewards page, or paste the
+terms (bank sites refuse anything that is not a browser). It reads the rates,
+caps, minimums and merchant codes, shows each one **with the sentence it came
+from**, and saves nothing until you press the button on it. A rate read out of
+the wrong paragraph would misdirect every recommendation the app makes, so it
+is offered, never applied.
+
+For the prose it cannot read, **Copy the prompt for Claude** hands over the
+page already wrapped in the instructions that turn it into `/addearn` and
+`/exclude` lines. `/cardrules alt` gives the same prompt in the bot.
+
+The codes matter more than the category word: `/addearn alt online 4` claims
+every online purchase earns the bonus, while
+`/addearn alt online 4 mcc 5262,5964,5969` is what the terms actually say.
+
 ### Working an offer
 
 1. A scan posts a match → tap **Track** → it becomes offer #N.

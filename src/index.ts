@@ -28,6 +28,7 @@ import { mccMatrix } from './mcc';
 import { runMigrations, runSeed } from './migrate';
 import { defaultCardPossible, METHODS, monthOfOther, otherMonths } from './other';
 import { assignMerchantCode, importMerchantCodes, lookupMerchantOnline, unknownMerchants } from './mccscan';
+import { scanCardPage } from './cardscan';
 import { markDuplicates, parseStatement, type ParsedRow } from './statement';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import { executeTransfer, tranchesByExpiry } from './points';
@@ -610,6 +611,25 @@ export default {
             programs: programs ?? [],
             categories: (categories ?? []).map((c) => c.category),
           });
+        }
+
+        // Read a card's rewards page and report what it says. Nothing is
+        // written: a rate lifted from the wrong paragraph would quietly
+        // misdirect every recommendation, so each candidate comes back with the
+        // sentence it came from, to be confirmed or thrown away.
+        if (url.pathname === '/api/card/scan' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as {
+            nickname?: string;
+            url?: string;
+            text?: string;
+          };
+          const nickname = String(b.nickname ?? '').trim().toLowerCase();
+          if (!nickname) return json({ error: 'which card is this page for?' }, 400);
+          const card = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(nickname)
+            .first<{ id: number }>();
+          if (!card) return json({ error: 'no such card' }, 404);
+          return json(await scanCardPage(env, nickname, String(b.url ?? '').trim(), b.text));
         }
 
         if (url.pathname === '/api/card' && req.method === 'POST') {

@@ -1194,6 +1194,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         let cap: string | undefined;
         let capWindow: string | undefined;
         let capGroup: string | undefined;
+        let mccList: string | undefined;
         let note: string | undefined;
 
         if (args.includes('|')) {
@@ -1211,8 +1212,9 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
                 '`/addearn uobone groceries 5%` — 5% cashback\n' +
                 '`/addearn citirw shopping 4 cap 1000` — bonus rate stops after $1,000\n' +
                 '`/addearn citirw online 4 cap 1000 group tenx` — shares that cap with other `tenx` rules\n' +
-                '`/addearn citirw * 0.4` — the fallback rate for everything else\n\n' +
-                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`, `note <text>`'
+                '`/addearn citirw * 0.4` — the fallback rate for everything else\n' +
+                '`/addearn citirw online 4 mcc 5262,5964,5969` — only those merchant codes\n\n' +
+                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`, `mcc <codes>`, `note <text>`'
             );
           [nick, cat, rateRaw] = tok;
           for (let i = 3; i < tok.length; i += 2) {
@@ -1221,6 +1223,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             if (k === 'cap') cap = v;
             else if (k === 'window') capWindow = v;
             else if (k === 'group') capGroup = v;
+            else if (k === 'mcc') mccList = v;
             else if (k === 'note') {
               note = tok.slice(i + 1).join(' ');
               break;
@@ -1235,15 +1238,26 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const rate = parseFloat((rateRaw ?? '').replace('%', ''));
         if (!Number.isFinite(rate)) return send(env, chatId, `Could not read a rate from "${rateRaw}".`);
 
+        // A list of codes is what makes a rule precise: "4 mpd online" is not
+        // the same thing as "4 mpd on 5262, 5964 and 5969", and the terms
+        // almost always say the second.
+        const include = (mccList ?? '')
+          .split(/[,\s]+/)
+          .map((x) => x.trim())
+          .filter(Boolean);
+        if (include.some((x) => !/^\d{4}$/.test(x)))
+          return send(env, chatId, `\`mcc\` takes four-digit codes, comma separated — got "${mccList}".`);
+
         await env.DB.prepare(
-          `INSERT INTO earn_rules (card_id, category, mpd, reward_type, cap_cents, cap_window, cap_group, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO earn_rules (card_id, category, mpd, reward_type, mcc_include, cap_cents, cap_window, cap_group, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             card.id,
             cat.toLowerCase(),
             rate,
             isCashback ? 'cashback' : 'miles',
+            include.length ? include.join(',') : null,
             cap ? parseMoney(cap) : null,
             capWindow || (cap ? 'statement_cycle' : null),
             capGroup || null,
@@ -1255,6 +1269,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           env,
           chatId,
           `*${card.product}* earns ${formatRate(rate, isCashback ? 'cashback' : 'miles')} on *${cat}*` +
+            (include.length ? `, but only on MCC ${include.join(', ')}` : '') +
             (cap ? `, up to $${money(parseMoney(cap) ?? 0)} per ${capWindow || 'statement_cycle'}` : '') +
             (capGroup ? `\n_Shares that cap with other \`${capGroup}\` rules._` : '') +
             '\n\nTry `/which ' + cat.toLowerCase() + ' 100`.'

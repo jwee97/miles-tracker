@@ -65,38 +65,55 @@ T&C text follows:
 `;
 }
 
-export function cardRulesPrompt(nickname: string, product: string): string {
+/**
+ * The prompt that turns a card's terms into rules.
+ *
+ * One prompt, two callers: the bot hands it over bare for you to paste a page
+ * under, and the rewards-page reader hands it over with the page already in it.
+ * They must not drift apart — a rule the bot's version insists on and the web
+ * app's forgets is a rule the app silently stops getting right.
+ */
+export function cardRulesPrompt(
+  nickname: string,
+  product: string,
+  opts: { source?: string; text?: string } = {}
+): string {
+  const { source, text } = opts;
   return `Extract this credit card's earning structure into commands.
 
-I will paste the card's rewards page and terms below.
+Return ONLY a list of commands, one per line, no commentary:
 
-Return ONLY a list of commands, one per line, in this exact shape:
-
-/addearn ${nickname} <category> <rate> cap <amount> window <window> group <name>
+/addearn ${nickname} <category> <rate> cap <amount> window <window> mcc <codes> group <name>
+/exclude <mcc> ${nickname} <reason>
 
 Rules:
 1. <rate> is miles per dollar as a plain number (4), OR a percentage with a
    % sign for cashback cards (5%). Never mix the two on one line.
 2. <category> is one lowercase word. Use the closest of: dining, groceries,
    online, shopping, transport, travel, fuel, utilities, entertainment,
-   contactless, foreign. Use * for the fallback rate on everything else.
+   contactless, foreign, health. Use * for the fallback rate on everything else.
 3. ALWAYS include a /addearn ${nickname} * <rate> line for the base rate.
 4. cap is the spend at which the bonus rate stops, in dollars. Omit if none.
 5. window is statement_cycle, calendar_month or calendar_quarter — whichever
    the cap resets on. Omit if there is no cap.
-6. If ONE cap is shared across several categories, give those lines the SAME
+6. mcc is a comma-separated list of four-digit codes the rate is restricted to,
+   when the terms name them. This matters more than the category word: a rate
+   restricted to 5262,5964,5969 is not the same thing as "online".
+7. If ONE cap is shared across several categories, give those lines the SAME
    group name. If each category has its own cap, omit group. This matters:
    getting it wrong makes the app think you have more bonus headroom than you do.
-7. If the card lets you CHOOSE the bonus category, output only the category
+8. Add a /exclude line for every merchant code or category the terms say earns
+   nothing, with the reason in a few words.
+9. If the card lets you CHOOSE the bonus category, output only the category
    currently selected, and add a comment line saying so.
-8. Do not invent rates. If the page does not state one, leave that line out
-   and add a comment naming what is missing.
+10. Do not invent rates or codes. If the terms do not state one, leave that line
+   out and add a comment naming what is missing.
 
 Card: ${product} (nickname: ${nickname})
-
-Rewards page and terms follow:
+${source ? `Source: ${source}\n` : ''}
+${text ? 'Page text follows:' : 'Rewards page and terms follow:'}
 ---
-`;
+${text ? `${text.slice(0, 12_000)}\n` : ''}`;
 }
 
 export const HELP = `*Miles tracker*
@@ -132,7 +149,7 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /expiry — every batch, soonest expiry first
 /earn — list earn rules
 /addearn <card> <category> <rate> — e.g. \`/addearn citirw shopping 4\`
-   add \`cap 1000\`, \`window calendar_month\`, \`group tenx\` as needed
+   add \`cap 1000\`, \`window calendar_month\`, \`group tenx\`, \`mcc 5262,5964\` as needed
    a rate ending in % means cashback: \`/addearn uobone groceries 5%\`
 /cardrules <card> — get a prompt to extract a card's rates with Claude
 /setearn <id> <rate> — correct a rule, e.g. \`/setearn 3 5%\`

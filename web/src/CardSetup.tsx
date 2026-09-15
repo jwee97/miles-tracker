@@ -3,6 +3,10 @@ import {
   addCard,
   addEarnRule,
   addRequirement,
+  saveExclusion,
+  scanCardPage,
+  type CardPageScan,
+  type ScanCandidate,
   deleteRequirement,
   closeCard,
   deleteEarnRule,
@@ -219,6 +223,376 @@ function AddRule({ card, categories, onSaved }: { card: CardRow; categories: str
   );
 }
 
+/**
+ * Reading a rewards page.
+ *
+ * A bank writes its terms in prose, and prose is not a rule. What can be read
+ * mechanically is the numbers — a rate, a cap, a list of merchant codes, a
+ * sentence that says something earns nothing — and the sentence each came from.
+ * So every candidate below arrives with its quote and nothing is saved until
+ * you say so: a rate lifted out of the wrong paragraph would quietly misdirect
+ * every recommendation the app makes, which is worse than having no rate.
+ */
+/** A number for a field someone will type over — no thousands separator. */
+const plain = (cents: number) => String(cents / 100);
+
+function RateCandidate({
+  c,
+  card,
+  categories,
+  onSaved,
+}: {
+  c: ScanCandidate;
+  card: CardRow;
+  categories: string[];
+  onSaved: () => void;
+}) {
+  const [f, setF] = useState({
+    category: c.category ?? '*',
+    rate: String(c.rate ?? ''),
+    reward_type: (c.reward_type ?? 'miles') as 'miles' | 'cashback',
+    cap: c.cap_cents ? plain(c.cap_cents) : '',
+    cap_window: c.cap_window ?? '',
+    mcc_include: (c.mccs ?? []).join(','),
+  });
+  const [state, setState] = useState<'idle' | 'busy' | 'saved'>('idle');
+  const [err, setErr] = useState<string | null>(null);
+
+  if (state === 'saved') return <li className="pass">Added — {f.category === '*' ? 'base rate' : f.category}.</li>;
+
+  return (
+    <li className="unknown">
+      <span>
+        <strong>
+          {c.rate}
+          {c.reward_type === 'cashback' ? '%' : ' mpd'}
+        </strong>{' '}
+        {c.category ? `on ${c.category}` : 'category unclear'}
+        {c.cap_cents ? ` · cap $${money(c.cap_cents)}` : ''}
+        {(c.occurrences ?? 1) > 1 ? ` · said ${c.occurrences}×` : ''}
+      </span>
+      <p className="sub quote">“{c.quote}”</p>
+      <div className="entry-grid compact">
+        <label className="f">
+          <span>Category</span>
+          <select value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}>
+            <option value="*">everything else (base rate)</option>
+            {categories.map((x) => (
+              <option key={x} value={x}>
+                {x}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="f">
+          <span>Rate</span>
+          <input value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} inputMode="decimal" />
+        </label>
+        <label className="f">
+          <span>Earns</span>
+          <select
+            value={f.reward_type}
+            onChange={(e) =>
+              setF({
+                ...f,
+                reward_type: e.target.value as 'miles' | 'cashback',
+              })
+            }
+          >
+            <option value="miles">miles per dollar</option>
+            <option value="cashback">percent cashback</option>
+          </select>
+        </label>
+        <label className="f">
+          <span>Cap (spend)</span>
+          <input
+            value={f.cap}
+            onChange={(e) => setF({ ...f, cap: e.target.value })}
+            inputMode="decimal"
+            placeholder="none"
+          />
+        </label>
+        <label className="f">
+          <span>Cap resets</span>
+          <select value={f.cap_window} onChange={(e) => setF({ ...f, cap_window: e.target.value })}>
+            {WINDOWS.map((w) => (
+              <option key={w.key} value={w.key}>
+                {w.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="f f-note">
+          <span>Only these MCCs</span>
+          <input
+            value={f.mcc_include}
+            onChange={(e) => setF({ ...f, mcc_include: e.target.value })}
+            inputMode="numeric"
+            placeholder="blank means the whole category"
+          />
+        </label>
+      </div>
+      <div className="entry-foot rule-actions">
+        <button
+          className="secondary"
+          disabled={state === 'busy' || !f.rate}
+          onClick={async () => {
+            setState('busy');
+            setErr(null);
+            try {
+              await addEarnRule({
+                nickname: card.nickname,
+                category: f.category,
+                rate: f.rate,
+                reward_type: f.reward_type,
+                cap: f.cap || undefined,
+                cap_window: f.cap_window || null,
+                mcc_include: f.mcc_include || undefined,
+                note: c.quote.slice(0, 180),
+              });
+              setState('saved');
+              onSaved();
+            } catch (e) {
+              setErr((e as Error).message);
+              setState('idle');
+            }
+          }}
+        >
+          Add this rate
+        </button>
+        {err && <span className="err-text">{err}</span>}
+      </div>
+    </li>
+  );
+}
+
+function ExclusionCandidate({ c, card, onSaved }: { c: ScanCandidate; card: CardRow; onSaved: () => void }) {
+  const [done, setDone] = useState<string[]>([]);
+  const codes = c.mccs ?? [];
+  return (
+    <li className="fail">
+      <span>
+        <strong>Earns nothing</strong>
+        {codes.length ? ` — ${codes.join(', ')}` : ' — no codes named'}
+      </span>
+      <p className="sub quote">“{c.quote}”</p>
+      {codes.length > 0 && (
+        <div className="entry-foot rule-actions">
+          {codes.map((m) => (
+            <button
+              key={m}
+              className="secondary"
+              disabled={done.includes(m)}
+              onClick={async () => {
+                await saveExclusion({
+                  mcc: m,
+                  nickname: card.nickname,
+                  reason: c.quote.slice(0, 120),
+                });
+                setDone((d) => [...d, m]);
+                onSaved();
+              }}
+            >
+              {done.includes(m) ? `${m} excluded` : `Exclude ${m}`}
+            </button>
+          ))}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function MinSpendCandidate({ c, card, onSaved }: { c: ScanCandidate; card: CardRow; onSaved: () => void }) {
+  const [done, setDone] = useState(false);
+  return (
+    <li className="unknown">
+      <span>
+        <strong>Minimum spend</strong> — ${money(c.min_spend_cents ?? 0)}
+      </span>
+      <p className="sub quote">“{c.quote}”</p>
+      <div className="entry-foot rule-actions">
+        <button
+          className="secondary"
+          disabled={done}
+          onClick={async () => {
+            await addRequirement({
+              nickname: card.nickname,
+              kind: 'monthly_min',
+              amount: plain(c.min_spend_cents ?? 0),
+              window: c.cap_window === 'statement_cycle' ? 'statement_cycle' : 'calendar_month',
+              reward_note: c.quote.slice(0, 120),
+            });
+            setDone(true);
+            onSaved();
+          }}
+        >
+          {done ? 'Added' : 'Add as a minimum'}
+        </button>
+      </div>
+    </li>
+  );
+}
+
+function ReadPage({ card, categories, onSaved }: { card: CardRow; categories: string[]; onSaved: () => void }) {
+  const [src, setSrc] = useState({ url: '', text: '' });
+  const [scan, setScan] = useState<CardPageScan | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function read() {
+    setBusy(true);
+    setErr(null);
+    setScan(null);
+    try {
+      const r = await scanCardPage({
+        nickname: card.nickname,
+        url: src.url,
+        text: src.text,
+      });
+      setScan(r);
+      if (r.error) setErr(r.error);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const rates = scan?.candidates.filter((c) => c.kind === 'rate') ?? [];
+  const exclusions = scan?.candidates.filter((c) => c.kind === 'exclusion') ?? [];
+  const minspends = scan?.candidates.filter((c) => c.kind === 'minspend') ?? [];
+  const rest = scan?.candidates.filter((c) => c.kind === 'mcc' || c.kind === 'cap') ?? [];
+
+  return (
+    <div className="addrule">
+      <div className="entry-grid">
+        <label className="f f-note">
+          <span>Rewards page</span>
+          <input
+            value={src.url}
+            onChange={(e) => setSrc({ ...src, url: e.target.value })}
+            placeholder="https://… the card's rewards or T&C page"
+            inputMode="url"
+          />
+        </label>
+        <label className="f f-note">
+          <span>…or paste the terms</span>
+          <textarea
+            value={src.text}
+            onChange={(e) => setSrc({ ...src, text: e.target.value })}
+            rows={4}
+            placeholder="Most bank sites refuse anything that is not a browser. Selecting the page and pasting it here always works."
+          />
+        </label>
+      </div>
+      <div className="entry-foot">
+        <button className="secondary" onClick={read} disabled={busy || (!src.url && !src.text.trim())}>
+          {busy ? 'Reading…' : 'Read it'}
+        </button>
+        {err && <span className="err-text">{err}</span>}
+      </div>
+
+      {scan && !scan.error && (
+        <>
+          <p className="sub">
+            {scan.title ? `${scan.title} · ` : ''}
+            {scan.text_length.toLocaleString()} characters read · {scan.candidates.length} claim
+            {scan.candidates.length === 1 ? '' : 's'} found. Nothing is saved until you add it.
+          </p>
+
+          {scan.candidates.length === 0 && (
+            <p className="cap">
+              No rates, caps or merchant codes stated in words this can read. Copy the prompt below into Claude, which
+              reads the prose rather than the numbers.
+            </p>
+          )}
+
+          {rates.length > 0 && (
+            <ul className="rules">
+              {rates.map((c, i) => (
+                <RateCandidate key={`r${i}`} c={c} card={card} categories={categories} onSaved={onSaved} />
+              ))}
+            </ul>
+          )}
+          {exclusions.length > 0 && (
+            <ul className="rules">
+              {exclusions.map((c, i) => (
+                <ExclusionCandidate key={`x${i}`} c={c} card={card} onSaved={onSaved} />
+              ))}
+            </ul>
+          )}
+          {minspends.length > 0 && (
+            <ul className="rules">
+              {minspends.map((c, i) => (
+                <MinSpendCandidate key={`m${i}`} c={c} card={card} onSaved={onSaved} />
+              ))}
+            </ul>
+          )}
+          {rest.length > 0 && (
+            <ul className="rules">
+              {rest.map((c, i) => (
+                <li key={`o${i}`} className="dim">
+                  <span>
+                    <strong>{c.kind === 'cap' ? 'Cap' : 'Merchant codes'}</strong>
+                    {c.cap_cents ? ` — $${money(c.cap_cents)}` : ''}
+                    {c.mccs?.length ? ` — ${c.mccs.join(', ')}` : ''}
+                  </span>
+                  <p className="sub quote">“{c.quote}”</p>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {scan.codes.length > 0 && (
+            <div className="scroller" style={{ marginTop: 12 }}>
+              <table className="pts">
+                <caption>Every code the page names, and what this app already calls it</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">MCC</th>
+                    <th scope="col">This app calls it</th>
+                    <th scope="col">Category</th>
+                    <th scope="col">On this page</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scan.codes.map((c) => (
+                    <tr key={c.mcc}>
+                      <th scope="row">{c.mcc}</th>
+                      <td>{c.description ?? <span className="dim">not in the code list</span>}</td>
+                      <td>{c.category ?? '—'}</td>
+                      <td className={c.excluded_here ? 'bad-text' : 'ok-text'}>
+                        {c.excluded_here ? '✕ excluded' : '✓ earns'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="entry-foot">
+            <button
+              className="secondary"
+              onClick={async () => {
+                await navigator.clipboard.writeText(scan.prompt);
+                setCopied(true);
+              }}
+            >
+              {copied ? 'Copied' : 'Copy the prompt for Claude'}
+            </button>
+          </div>
+          <p className="sub">
+            The reader above finds numbers. The prompt hands the whole page to Claude, which reads the prose — paste its
+            reply to the bot, or type the rates in yourself.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 const WINDOW_LABEL: Record<string, string> = {
   calendar_month: 'each calendar month',
   calendar_quarter: 'each calendar quarter',
@@ -378,6 +752,7 @@ export default function CardSetup({ onChanged }: { onChanged: () => void }) {
   const [programs, setPrograms] = useState<ProgramRow[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [open, setOpen] = useState<string | null>(null);
+  const [reading, setReading] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -553,6 +928,9 @@ export default function CardSetup({ onChanged }: { onChanged: () => void }) {
             <button className="secondary" onClick={() => setOpen(open === card.nickname ? null : card.nickname)}>
               {open === card.nickname ? 'Done' : 'Add a rate'}
             </button>
+            <button className="secondary" onClick={() => setReading(reading === card.nickname ? null : card.nickname)}>
+              {reading === card.nickname ? 'Close reader' : 'Read a rewards page'}
+            </button>
             {!card.closed_at ? (
               <button
                 className="secondary danger"
@@ -579,6 +957,8 @@ export default function CardSetup({ onChanged }: { onChanged: () => void }) {
           </div>
 
           {open === card.nickname && <AddRule card={card} categories={categories} onSaved={load} />}
+
+          {reading === card.nickname && <ReadPage card={card} categories={categories} onSaved={load} />}
 
           <Requirements card={card} onChanged={load} />
 
