@@ -25,7 +25,7 @@ import { evaluate, lookupMerchant, recommend, type Channel, type Objective } fro
 import { buildAudit } from './audit';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
-import { assignMerchantCode, importMerchantCodes, unknownMerchants } from './mccscan';
+import { assignMerchantCode, importMerchantCodes, lookupMerchantOnline, unknownMerchants } from './mccscan';
 import { markDuplicates, parseStatement, type ParsedRow } from './statement';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import { executeTransfer, tranchesByExpiry } from './points';
@@ -173,6 +173,15 @@ export default {
         // that stop the earn engine seeing a card's MCC rules at all.
         if (url.pathname === '/api/mcc/unknown') {
           return json({ merchants: await unknownMerchants(env) });
+        }
+
+        // One merchant, looked up by name. Ours first, then the directory's
+        // page for that name. Nothing is written — recording it is a choice.
+        if (url.pathname === '/api/mcc/lookup') {
+          const q = (url.searchParams.get('q') ?? '').trim();
+          if (!q) return json({ error: 'a merchant name is required' }, 400);
+          if (q.length > 120) return json({ error: 'that name is too long' }, 400);
+          return json(await lookupMerchantOnline(env, q));
         }
 
         // Read a published merchant-code directory and record what it says.

@@ -747,8 +747,18 @@ description or category; tap a cell for the rule behind it. Every cell is
 computed with the same `ruleMatches` the earn engine uses, so the table cannot
 say one thing while a purchase does another.
 
-**What is seeded.** All 923 codes in ISO 18245, with the descriptions published
-at [check-mcc.sg](https://www.check-mcc.sg/mcc). 596 of them (3000–3999) are
+**What is seeded.** All 924 codes in ISO 18245. Descriptions come from the
+[Merchant Category Codes manual](https://www.citibank.com/tts/solutions/commercial-cards/assets/docs/govt/Merchant-Category-Codes.pdf)
+Citibank publishes for commercial cards — the authoritative wording — and every
+code carries a `verified` flag saying whether it appears there. 904 do; the
+other 20 keep the wording from [check-mcc.sg](https://www.check-mcc.sg/mcc) and
+are shown as *not in the published manual* in the Codes tab. They are mostly
+newer network codes the manual does not enumerate: marketplaces (5262), the
+payment-transaction range (6532–6534), EV charging (5552), multi-category
+digital goods (5818).
+
+`/seed` refreshes descriptions in place and leaves categories alone, so an edit
+of your own survives. 596 of them (3000–3999) are
 individual airlines, hotel chains and car-rental agencies — real, since a hotel
 stay often posts as 3509 rather than 7011, but they would bury everything else,
 so they are hidden behind a chip. The remaining 327 are the generic codes you
@@ -759,6 +769,16 @@ of the standard. It was derived from the code ranges and descriptions, with the
 previously hand-checked codes kept as they were. If your card's terms group a
 code differently, the category is what the earn engine matches on — correct it
 in `seed.sql` and re-seed, or adjust the rule instead.
+
+**Looking one merchant up.** Codes tab → *Look up a merchant*, or `/mcc <name>`
+in the bot. It answers from your own table first — a code confirmed from your
+statement outranks anything published — then tries the public directory's page
+for that name, working through the obvious spellings: `Circles Life` →
+`/mcc/circles-life`, and `CIRCLES LIFE SINGAPORE SG` falls back to the same
+page by dropping the statement padding. Nothing is recorded until you press the
+button. A raw descriptor like `WWW.TADA.G* N019F9C53B` has no page anywhere;
+the app says which spellings it tried rather than implying the merchant does
+not exist.
 
 **Keeping codes current.** Codes tab → *Track merchant codes*, or `/mccscan`.
 It reads the merchant pages published at check-mcc.sg (whose robots.txt allows

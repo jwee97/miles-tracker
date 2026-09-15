@@ -30,6 +30,8 @@ export interface MccRow {
   code: string;
   description: string;
   category: string;
+  /** 1 when the description is the one Citibank publishes for this code. */
+  verified: number;
   /** Excluded on every card, rather than on some of them. */
   excluded_everywhere: boolean;
   exclusion_reason: string | null;
@@ -56,6 +58,8 @@ export interface MccMatrix {
     excluded_somewhere: number;
     bonus_codes: number;
     codes_you_have_used: number;
+    /** Codes whose description matches Citibank's published manual. */
+    verified_codes: number;
     /** Spend in the last 12 months on codes excluded by the card it was on. */
     excluded_spend_cents: number;
   };
@@ -87,8 +91,8 @@ export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<Mcc
     `SELECT card_id, mcc, reason FROM exclusions WHERE active = 1`
   ).all<{ card_id: number | null; mcc: string; reason: string | null }>();
   const { results: codes } = await env.DB.prepare(
-    `SELECT code, description, category FROM mcc_codes ORDER BY category, code`
-  ).all<{ code: string; description: string; category: string }>();
+    `SELECT code, description, category, verified FROM mcc_codes ORDER BY category, code`
+  ).all<{ code: string; description: string; category: string; verified: number }>();
 
   // Your own history, so the codes you actually use can be found first.
   const { results: used } = await env.DB.prepare(
@@ -163,6 +167,7 @@ export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<Mcc
       code: c.code,
       description: c.description,
       category: c.category,
+      verified: c.verified ?? 0,
       excluded_everywhere: everywhere,
       exclusion_reason: blanket[0]?.reason ?? null,
       cells,
@@ -222,6 +227,7 @@ export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<Mcc
       excluded_somewhere: rows.filter((r) => !r.excluded_everywhere && r.cells.some((c) => c.state === 'excluded')).length,
       bonus_codes: rows.filter((r) => r.cells.some((c) => c.state === 'bonus')).length,
       codes_you_have_used: rows.filter((r) => r.txn_count > 0).length,
+      verified_codes: rows.filter((r) => r.verified).length,
       excluded_spend_cents: spent?.cents ?? 0,
     },
     min_spend_counts_excluded: (env.MIN_SPEND_COUNTS_EXCLUDED ?? '').toLowerCase() === 'true',

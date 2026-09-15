@@ -239,3 +239,96 @@ export async function assignMerchantCode(
   }
   return { merchant: name, updated };
 }
+
+/** URL-shaped names to try for a merchant the directory may have a page for. */
+export function slugCandidates(query: string): string[] {
+  const base = query
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9. ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!base) return [];
+
+  const hyphen = base.replace(/ /g, '-');
+  const out = [hyphen];
+  // Statements pad merchant names: "GRAB *TRIP SINGAPORE SG", "SHOPEE SG".
+  const trimmed = base.replace(/\b(singapore|sg|pte|ltd|com|sgp|asia)\b/g, '').replace(/\s+/g, ' ').trim();
+  if (trimmed && trimmed !== base) out.push(trimmed.replace(/ /g, '-'));
+  // A first word on its own catches "watsons personal care" → "watsons".
+  const first = base.split(' ')[0];
+  if (first && first !== base) out.push(first);
+  // Dotted names keep their dot: booking.com.
+  if (base.includes('.')) out.push(base.replace(/ /g, ''));
+  return [...new Set(out)].filter(Boolean).slice(0, 4);
+}
+
+export interface MerchantLookup {
+  query: string;
+  /** What this app already knows, which always outranks the directory. */
+  known: { merchant: string; mcc: string; source: string; confidence: string } | null;
+  found: ImportedMerchant | null;
+  description: string | null;
+  category: string | null;
+  tried: string[];
+  source: string;
+}
+
+/**
+ * Look one merchant up. Our own table first — a code confirmed from a statement
+ * is worth more than anything published — then the directory's page for that
+ * name. Nothing is written: what to record is your decision.
+ */
+export async function lookupMerchantOnline(
+  env: Env,
+  query: string,
+  opts: { base?: string; budget?: number } = {}
+): Promise<MerchantLookup> {
+  const base = opts.base ?? 'https://www.check-mcc.sg';
+  let budget = opts.budget ?? 4;
+
+  const name = query.trim().toLowerCase();
+  const known = await env.DB.prepare(
+    `SELECT merchant, mcc, source, confidence FROM merchant_mcc WHERE merchant = ? OR ? LIKE merchant || '%'
+      ORDER BY LENGTH(merchant) DESC LIMIT 1`
+  )
+    .bind(name, name)
+    .first<{ merchant: string; mcc: string; source: string; confidence: string }>();
+
+  const tried: string[] = [];
+  let found: ImportedMerchant | null = null;
+
+  for (const slug of slugCandidates(query)) {
+    if (budget <= 0) break;
+    const url = `${base}/mcc/${slug}`;
+    tried.push(slug);
+    budget--;
+    const html = await fetchText(url);
+    if (!html) continue;
+    const parsed = parseMerchantPage(html, url);
+    if (parsed) {
+      found = parsed;
+      break;
+    }
+  }
+
+  // Whatever code comes back, say what this app calls that code.
+  const code = found?.mcc ?? known?.mcc ?? null;
+  const row = code
+    ? await env.DB.prepare(`SELECT description, category FROM mcc_codes WHERE code = ?`)
+        .bind(code)
+        .first<{ description: string; category: string }>()
+    : null;
+
+  return {
+    query: query.trim(),
+    known: known ?? null,
+    found,
+    description: row?.description ?? found?.description ?? null,
+    category: row?.category ?? null,
+    tried,
+    source: base.replace(/^https?:\/\//, ''),
+  };
+}

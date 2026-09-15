@@ -10,7 +10,7 @@ import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes,
 import { runMigrations, runSeed } from './migrate';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
-import { assignMerchantCode, importMerchantCodes, unknownMerchants } from './mccscan';
+import { assignMerchantCode, importMerchantCodes, lookupMerchantOnline, unknownMerchants } from './mccscan';
 import { evaluate, lookupMerchant } from './rules';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import type { Card, Env, Offer } from './types';
@@ -601,13 +601,31 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         if (!merchant) return send(env, chatId, 'Format: `/mcc <merchant> [code]` — with a code it records one.');
         if (!code) {
           const guess = await lookupMerchant(env, merchant);
+          if (guess.confidence !== 'unknown')
+            return send(
+              env,
+              chatId,
+              `*${merchant}* → ${guess.mcc} (${guess.description ?? '?'}) · ${guess.confidence}` +
+                (guess.category ? `\ncategory: ${guess.category}` : '')
+            );
+
+          // Nothing here; ask the public directory before giving up.
+          const online = await lookupMerchantOnline(env, merchant);
+          if (!online.found)
+            return send(
+              env,
+              chatId,
+              `No code for *${merchant}*, here or at ${online.source}.\n` +
+                `Tried ${online.tried.map((t) => `\`${t}\``).join(', ')}.\n` +
+                `\`/mcc ${merchant} 5812\` records one once your statement shows what it earned.`
+            );
           return send(
             env,
             chatId,
-            guess.confidence === 'unknown'
-              ? `No code recorded for *${merchant}*. \`/mcc ${merchant} 5812\` to set one, or \`/mccscan\`.`
-              : `*${merchant}* → ${guess.mcc} (${guess.description ?? '?'}) · ${guess.confidence}` +
-                  (guess.category ? `\ncategory: ${guess.category}` : '')
+            `*${merchant}* → ${online.found.mcc} per ${online.source}` +
+              `${online.found.verified ? ' (verified there)' : ' (listed, unverified)'}\n` +
+              `${online.description ?? ''}${online.category ? `\nthis app treats it as ${online.category}` : ''}\n\n` +
+              `\`/mcc ${merchant} ${online.found.mcc}\` to record it.`
           );
         }
         const r = await assignMerchantCode(env, merchant, code);

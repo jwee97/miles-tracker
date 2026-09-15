@@ -129,8 +129,9 @@ CREATE TABLE IF NOT EXISTS alerts_sent (
 
 CREATE TABLE IF NOT EXISTS mcc_codes (
   code        TEXT PRIMARY KEY,          -- '5812'
-  description TEXT NOT NULL,             -- 'Eating places and restaurants'
-  category    TEXT NOT NULL              -- maps to earn_rules.category
+  description TEXT NOT NULL,             -- 'Eating Places and Restaurants'
+  category    TEXT NOT NULL,             -- maps to earn_rules.category
+  verified    INTEGER NOT NULL DEFAULT 0 -- 1 = in Citibank's published MCC manual
 );
 
 -- Which MCC a merchant is likely to present. Likely, not certain: the code is

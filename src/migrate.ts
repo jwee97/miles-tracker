@@ -42,6 +42,11 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
     ddl: "ALTER TABLE balance_tranches ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
   },
   { table: 'balance_tranches', column: 'period', ddl: 'ALTER TABLE balance_tranches ADD COLUMN period TEXT' },
+  {
+    table: 'mcc_codes',
+    column: 'verified',
+    ddl: 'ALTER TABLE mcc_codes ADD COLUMN verified INTEGER NOT NULL DEFAULT 0',
+  },
   { table: 'transactions', column: 'category_source', ddl: 'ALTER TABLE transactions ADD COLUMN category_source TEXT' },
   {
     table: 'transactions',

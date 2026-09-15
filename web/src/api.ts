@@ -777,6 +777,7 @@ export interface MccRow {
   code: string;
   description: string;
   category: string;
+  verified: number;
   excluded_everywhere: boolean;
   exclusion_reason: string | null;
   cells: MccCell[];
@@ -799,6 +800,7 @@ export interface MccMatrix {
     excluded_somewhere: number;
     bonus_codes: number;
     codes_you_have_used: number;
+    verified_codes: number;
     excluded_spend_cents: number;
   };
   min_spend_counts_excluded: boolean;
@@ -835,6 +837,19 @@ export interface MccScanResult {
   failed: string[];
   source: string;
 }
+
+export interface MerchantLookup {
+  query: string;
+  known: { merchant: string; mcc: string; source: string; confidence: string } | null;
+  found: { merchant: string; mcc: string; description: string | null; verified: boolean; url: string } | null;
+  description: string | null;
+  category: string | null;
+  tried: string[];
+  source: string;
+}
+
+/** Look one merchant up by name — ours first, then the public directory. */
+export const lookupMerchant = (q: string) => get<MerchantLookup>(`/api/mcc/lookup?q=${encodeURIComponent(q)}`);
 
 export const fetchUnknownMerchants = () => get<{ merchants: UnknownMerchant[] }>('/api/mcc/unknown');
 

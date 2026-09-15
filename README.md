@@ -45,8 +45,9 @@ shows every row before writing anything, unticks the ones that look already
 logged, and lists the lines it could not parse with the reason. Imported rows
 go through the same evaluation a typed one does.
 
-**Merchant codes.** A Codes tab listing all 923 merchant category codes as a
-grid against your own cards: which earn nothing, which carry a bonus rate and at
+**Merchant codes.** A Codes tab listing all 924 merchant category codes — with
+Citibank's own published descriptions, and a flag on the 20 its manual does not
+list — as a grid against your own cards: which earn nothing, which carry a bonus rate and at
 what cap, and which you actually spend on. Every cell is computed with the same
 matching the earn engine uses, so the table cannot drift from what a purchase
 would really earn. Spend on an excluded code is left out of minimum-spend

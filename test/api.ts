@@ -809,14 +809,15 @@ for (const [code, desc, cat] of [
   ['5411', 'Grocery stores and supermarkets', 'groceries'],
   ['9311', 'Tax payments', 'government'],
   ['7995', 'Betting and casino gaming', 'financial'],
+  ['4814', 'Telecommunication Services', 'utilities'],
 ] as const) {
   db.prepare(`INSERT OR IGNORE INTO mcc_codes (code, description, category) VALUES (?, ?, ?)`).run(code, desc, cat);
 }
 db.prepare(`INSERT INTO exclusions (card_id, mcc, reason, source) VALUES (NULL, '9311', 'Tax is excluded', 'seed')`).run();
 {
   const m = (await (await authed('/api/mcc/matrix')).json()) as any;
-  check('the code table is served', m.rows.length === 4, String(m.rows?.length));
-  check('with its paging state', m.page === 1 && m.pages === 1 && m.total === 4, JSON.stringify({ p: m.page, n: m.pages, t: m.total }));
+  check('the code table is served', m.rows.length === 5, String(m.rows?.length));
+  check('with its paging state', m.page === 1 && m.pages === 1 && m.total === 5, JSON.stringify({ p: m.page, n: m.pages, t: m.total }));
   check('with a column per open card', m.cards.length >= 1, JSON.stringify(m.cards?.map((c: any) => c.nickname)));
   check('and a summary', typeof m.summary.excluded_everywhere === 'number', JSON.stringify(m.summary));
   check('saying whether excluded spend counts', m.min_spend_counts_excluded === false, String(m.min_spend_counts_excluded));
@@ -944,6 +945,20 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   const after = (await (await authed('/api/mcc/unknown')).json()) as any;
   check('so it leaves the list', !after.merchants.some((m: any) => m.merchant === target), '');
   check('a bad code is refused', (await authed('/api/mcc/assign', { merchant: 'x', mcc: '12' })).status === 400, '');
+}
+
+// --- looking one merchant up --------------------------------------------------
+{
+  // The fixture fetch returns {"ok":true}, so the directory half finds nothing;
+  // what matters here is that our own table answers and the shape is right.
+  db.prepare(
+    `INSERT OR REPLACE INTO merchant_mcc (merchant, mcc, source, confidence) VALUES ('circles life','4814','user','confirmed')`
+  ).run();
+  const body = (await (await authed('/api/mcc/lookup?q=Circles%20Life')).json()) as any;
+  check('a merchant we know is answered from our own table', body.known?.mcc === '4814', JSON.stringify(body.known));
+  check('with what this app calls that code', body.category === 'utilities', String(body.category));
+  check('and the spellings it tried are reported', Array.isArray(body.tried), JSON.stringify(body.tried));
+  check('an empty query is refused', (await authed('/api/mcc/lookup?q=')).status === 400, '');
 }
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');

@@ -61,8 +61,8 @@ check('a default page holds 50', firstPage.rows.length === 50, String(firstPage.
 check('paging reports the page count', firstPage.pages === 7, String(firstPage.pages));
 check('and a later page holds the remainder', (await mccMatrix(env, { page: 7 })).rows.length === 27, '');
 check('the whole generic list is counted', m.total === 327, String(m.total));
-check('individual carriers are hidden by default', m.carriers_hidden === 596, String(m.carriers_hidden));
-check('and can be asked for', (await mccMatrix(env, { carriers: true })).total === 923, String((await mccMatrix(env, { carriers: true })).total));
+check('individual carriers are hidden by default', m.carriers_hidden === 597, String(m.carriers_hidden));
+check('and can be asked for', (await mccMatrix(env, { carriers: true })).total === 924, String((await mccMatrix(env, { carriers: true })).total));
 
 check('only open cards are columns', m.cards.length === 2, JSON.stringify(m.cards.map((c) => c.nickname)));
 check('a closed card is not', !m.cards.some((c) => c.nickname === 'old'), '');

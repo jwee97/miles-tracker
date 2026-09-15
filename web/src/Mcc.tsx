@@ -4,6 +4,7 @@ import {
   assignMerchantCode,
   fetchMccMatrix,
   fetchUnknownMerchants,
+  lookupMerchant,
   money,
   saveExclusion,
   scanMccDirectory,
@@ -11,6 +12,7 @@ import {
   type MccMatrix,
   type MccRow,
   type MccScanResult,
+  type MerchantLookup,
   type UnknownMerchant,
 } from './api';
 
@@ -60,6 +62,106 @@ function Cell({ c, onPick }: { c: MccCell; onPick: () => void }) {
  * your card, your statement, your answer — and a disagreement is shown rather
  * than resolved quietly.
  */
+/**
+ * Looking one merchant up by name.
+ *
+ * What this app already knows comes first — a code confirmed from your own
+ * statement outranks any directory — and the directory's page for that name
+ * after it. Nothing is recorded until you say so.
+ */
+function MerchantLookupBox() {
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<MerchantLookup | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function look() {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      setRes(await lookupMerchant(q));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function record(merchant: string, mcc: string) {
+    try {
+      const r = await assignMerchantCode(merchant, mcc);
+      setMsg(`${merchant} is ${mcc}${r.updated ? ` · ${r.updated} past purchase(s) updated` : ''}`);
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
+  }
+
+  return (
+    <section className="card entry">
+      <h2>Look up a merchant</h2>
+      <p className="sub">
+        Paste a name as it appears on your statement. The public directory has a page per merchant; this tries the
+        obvious spellings of the name against it.
+      </p>
+      <div className="entry-grid">
+        <label className="f f-note">
+          <span>Merchant</span>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && q.trim() && look()}
+            placeholder="Circles Life"
+          />
+        </label>
+      </div>
+      <div className="entry-foot">
+        <button onClick={look} disabled={busy || !q.trim()}>
+          {busy ? 'Looking…' : 'Look it up'}
+        </button>
+        {msg && <span className="sub">{msg}</span>}
+        {err && <span className="err-text">{err}</span>}
+      </div>
+
+      {res && (
+        <ul className="notes">
+          {res.known && (
+            <li>
+              <strong>You already have this</strong> — {res.known.merchant} → {res.known.mcc} ({res.known.confidence},
+              from {res.known.source})
+            </li>
+          )}
+          {res.found ? (
+            <li>
+              <strong>{res.source}</strong> — {res.found.merchant} → {res.found.mcc}
+              {res.found.verified ? ' (they call it verified)' : ' (listed, unverified)'}
+              {res.description ? <div className="sub">{res.description}</div> : null}
+              {res.category ? <div className="sub">this app treats {res.found.mcc} as {res.category}</div> : null}
+              {res.known && res.known.mcc !== res.found.mcc && (
+                <div className="warnbox">
+                  That disagrees with the {res.known.mcc} you already have. Yours came from {res.known.source}.
+                </div>
+              )}
+              <div className="entry-foot rule-actions">
+                <button onClick={() => record(res.query, res.found!.mcc)}>Record {res.found.mcc} for “{res.query}”</button>
+                <a className="link" href={res.found.url} target="_blank" rel="noreferrer">
+                  Their page
+                </a>
+              </div>
+            </li>
+          ) : (
+            <li>
+              Nothing found for {res.tried.map((t) => `/mcc/${t}`).join(', ')}. A raw statement descriptor rarely has a
+              page — try the trading name, or set the code by hand once your statement shows what it earned.
+            </li>
+          )}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function MerchantScan() {
   const [rows, setRows] = useState<UnknownMerchant[] | null>(null);
   const [scan, setScan] = useState<MccScanResult | null>(null);
@@ -256,8 +358,9 @@ export default function Mcc() {
         <span className="stat-label">Merchant codes</span>
         <span className="hero-value">{s.codes.toLocaleString()}</span>
         <span className="sub">
-          {s.excluded_everywhere} earn nothing on any card · {s.excluded_somewhere} on some · {s.bonus_codes} carry a
-          bonus rate · {s.codes_you_have_used} you have actually used
+          {s.verified_codes} match Citibank's published manual · {s.excluded_everywhere} earn nothing on any card ·{' '}
+          {s.excluded_somewhere} on some · {s.bonus_codes} carry a bonus rate · {s.codes_you_have_used} you have
+          actually used
         </span>
       </section>
 
@@ -338,6 +441,7 @@ export default function Mcc() {
                     <span className="desc">{r.description}</span>
                     <span className="cat">
                       {r.category}
+                      {r.verified ? '' : ' · not in the published manual'}
                       {r.txn_count > 0 ? ` · $${money(r.spend_cents)} spent` : ''}
                     </span>
                   </th>
@@ -391,6 +495,8 @@ export default function Mcc() {
           </div>
         )}
       </section>
+
+      <MerchantLookupBox />
 
       <MerchantScan />
 

@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/migrate';
 import { markDuplicates, parseStatement } from '../src/statement';
-import { parseMerchantPage } from '../src/mccscan';
+import { parseMerchantPage, slugCandidates } from '../src/mccscan';
 import type { Env } from '../src/types';
 
 const db = new DatabaseSync(':memory:');
@@ -103,6 +103,20 @@ check('and its code', m?.mcc === '7399', String(m?.mcc));
 check('and the description, parentheses and all', m?.description === 'Business Services (Not Elsewhere Classified)', String(m?.description));
 check('and whether the directory verified it', m?.verified === true, String(m?.verified));
 check('a page with no code returns nothing', parseMerchantPage('<html><title>Nothing</title><body>x</body></html>', 'u') === null, '');
+
+// --- the spellings a merchant page might live under ---------------------------
+check('a plain name becomes a slug', slugCandidates('Circles Life')[0] === 'circles-life', JSON.stringify(slugCandidates('Circles Life')));
+check(
+  'a statement-padded name falls back to the trading name',
+  slugCandidates('CIRCLES LIFE SINGAPORE SG').includes('circles-life'),
+  JSON.stringify(slugCandidates('CIRCLES LIFE SINGAPORE SG'))
+);
+check('the first word is tried too', slugCandidates('Watsons Personal Care').includes('watsons'), JSON.stringify(slugCandidates('Watsons Personal Care')));
+check('an ampersand is spelled out', slugCandidates('M&S')[0] === 'm-and-s', JSON.stringify(slugCandidates('M&S')));
+check('a dotted name keeps its dot', slugCandidates('booking.com').includes('booking.com'), JSON.stringify(slugCandidates('booking.com')));
+check('an apostrophe is dropped, not hyphenated', slugCandidates("Lady's Card")[0] === 'ladys-card', JSON.stringify(slugCandidates("Lady's Card")));
+check('nothing in, nothing out', slugCandidates('   ').length === 0, '');
+check('and it never tries more than a handful', slugCandidates('a b c d e f g h').length <= 4, String(slugCandidates('a b c d e f g h').length));
 
 console.log(fails ? `\n${fails} check(s) failed` : '\nAll checks passed');
 process.exit(fails ? 1 : 0);
