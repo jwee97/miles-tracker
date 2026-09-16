@@ -63,9 +63,15 @@ const beforeMigration = await evaluate(env, wwmc, online);
 
 // --- §58: migration must not lose anything ----------------------------------
 {
+  // Both cards are real Singapore products, so the catalogue already holds
+  // them: the migration links to the catalogue entry rather than minting a
+  // private duplicate, which is the whole reason the catalogue exists.
+  const known = one(`SELECT COUNT(*) AS n FROM card_products WHERE product_key IN ('dbs_womans_world','citi_rewards')`).n;
+  check('the catalogue already knows both cards', known === 2, String(known));
+
   const r = await migrateCardsToProducts(env, '2026-09-18');
-  check('every card gets a product', r.products_created === 2, JSON.stringify(r));
-  check('and is linked to it', r.cards_linked === 2, JSON.stringify(r));
+  check('so no duplicate product is created for them', r.products_created === 0, JSON.stringify(r));
+  check('and each card is linked to the catalogue entry', r.cards_linked === 2, JSON.stringify(r));
   check('each product gets a version of its rules', r.rule_sets_created === 2, JSON.stringify(r));
   check('every loose rule is attached to one', r.rules_attached === 4, JSON.stringify(r));
   check('card exclusions are versioned with them', r.exclusions_copied === 1, JSON.stringify(r));
@@ -84,9 +90,10 @@ const beforeMigration = await evaluate(env, wwmc, online);
   check('at the same rate', after.bonus_rate === beforeMigration.bonus_rate, `${beforeMigration.bonus_rate} -> ${after.bonus_rate}`);
   check('but now names the version it used', after.rule_set_id !== null, String(after.rule_set_id));
 
+  const before = one(`SELECT COUNT(*) AS n FROM card_products`).n;
   const again = await migrateCardsToProducts(env, '2026-09-18');
   check('running it twice is a no-op', again.alreadyDone === true, JSON.stringify(again));
-  check('and creates no duplicate product', one(`SELECT COUNT(*) AS n FROM card_products`).n === 2, '');
+  check('and creates no duplicate product', one(`SELECT COUNT(*) AS n FROM card_products`).n === before, '');
 }
 
 // --- §55: the version in force on a date ------------------------------------
@@ -179,12 +186,56 @@ const product = one(`SELECT * FROM card_products WHERE product_key='dbs_womans_w
   check('and creating it again returns the same one', twice.id === custom.id, `${custom.id} / ${twice.id}`);
   check('without overwriting what was there', twice.issuer === 'Some Bank', twice.issuer);
 
-  // Migrated numbers were never checked against a bank document, and the
-  // product says so rather than presenting itself as verified.
-  check('a migrated product admits it is unverified', product.verification_status === 'migrated_unverified', product.verification_status);
-  check('and reads as stale', isStale(product, '2026-09-18'), '');
+  // Nothing in the catalogue claims to be verified: the identities are known,
+  // the rates are not, and the status says which.
+  check('a catalogue product does not claim to be verified', product.verification_status === 'draft', product.verification_status);
+  check('and reads as stale until someone checks it', isStale(product, '2026-09-18'), '');
+  const unseen = one(`SELECT COUNT(*) AS n FROM card_products WHERE verification_status = 'verified'`).n;
+  check('no product is seeded as verified', unseen === 0, String(unseen));
   check('a verified one does not', !isStale({ ...product, verification_status: 'verified', last_verified_at: '2026-09-01' }, '2026-09-18'), '');
   check('until it ages out', isStale({ ...product, verification_status: 'verified', last_verified_at: '2025-01-01' }, '2026-09-18'), '');
+}
+
+// --- the catalogue ----------------------------------------------------------
+{
+  const n = one(`SELECT COUNT(*) AS n FROM card_products WHERE source = 'catalog'`).n;
+  check('the catalogue is populated', n >= 25, String(n));
+
+  // Identity is cheap to check and stable. A rate is neither, and one written
+  // from memory would have the app ranking cards on a number nobody verified.
+  // A catalogue product only ever has rules because a card of yours brought
+  // them: the seed itself writes none.
+  const seededRules = one(
+    `SELECT COUNT(*) AS n FROM card_products p
+      WHERE p.source = 'catalog'
+        AND NOT EXISTS (SELECT 1 FROM cards c WHERE c.product_id = p.id)
+        AND EXISTS (SELECT 1 FROM rule_sets r WHERE r.product_id = p.id)`
+  ).n;
+  check('and the seed writes no rates of its own', seededRules === 0, String(seededRules));
+
+  // The ones that do have rules got them from a card, not from the catalogue.
+  const fromCards = one(
+    `SELECT COUNT(*) AS n FROM card_products p
+      WHERE EXISTS (SELECT 1 FROM rule_sets r WHERE r.product_id = p.id)
+        AND EXISTS (SELECT 1 FROM cards c WHERE c.product_id = p.id)`
+  ).n;
+  check('rules only exist where a card brought them', fromCards === 2, String(fromCards));
+
+  const noUrl = one(`SELECT COUNT(*) AS n FROM card_products WHERE source = 'catalog' AND official_url IS NULL`).n;
+  check('every catalogue product says where its terms live', noUrl === 0, String(noUrl));
+
+  // A programme key that matches nothing means points with nowhere to land.
+  const orphan = one(
+    `SELECT COUNT(*) AS n FROM card_products p
+      WHERE p.program_key IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM programs g WHERE g.key = p.program_key)`
+  ).n;
+  check('every programme it names actually exists', orphan === 0, String(orphan));
+
+  const dupes = one(
+    `SELECT COUNT(*) AS n FROM (SELECT product_key FROM card_products GROUP BY product_key HAVING COUNT(*) > 1)`
+  ).n;
+  check('no product key appears twice', dupes === 0, String(dupes));
 }
 
 // --- a card with no product at all still works ------------------------------

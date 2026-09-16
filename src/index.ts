@@ -30,6 +30,7 @@ import { mccMatrix } from './mcc';
 import { runMigrations, runSeed } from './migrate';
 import { currentRuleSetFor } from './catalog/migrate-products';
 import { isStale, listProducts, productByKey, productKeyOf } from './catalog/products';
+import { recommendV2 } from './recommendations/recommend';
 import { exclusionsIn, overlaps, ruleSetOn, rulesIn, versionsOf } from './catalog/rulesets';
 import { defaultCardPossible, METHODS, monthOfOther, otherMonths } from './other';
 import {
@@ -176,6 +177,48 @@ export default {
         }
 
         // The heart of it: merchant in, ranked cards out, with the reasoning.
+        // The V2 contract: a POST, because a purchase is a body rather than a
+        // query string, and because the answer now carries confidence,
+        // assumptions and the reasoning behind the ranking. The GET below
+        // stays for the current Advisor until the new screen replaces it.
+        if (url.pathname === '/api/recommend' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as {
+            merchant?: string;
+            amount_cents?: number | null;
+            amount?: string;
+            mcc?: string | null;
+            category?: string | null;
+            channel?: string | null;
+            objective?: string;
+            occurred_at?: string;
+          };
+          const cents =
+            typeof b.amount_cents === 'number'
+              ? b.amount_cents
+              : b.amount
+                ? parseMoney(String(b.amount))
+                : null;
+          const on = b.occurred_at ? parseDateToken(String(b.occurred_at), env) : null;
+          if (b.occurred_at && !on) return json({ error: 'bad date' }, 400);
+
+          return json(
+            await recommendV2(
+              env,
+              {
+                amount_cents: cents,
+                mcc: b.mcc ?? null,
+                category: b.category ?? null,
+                channel: (b.channel as Channel) || null,
+              },
+              {
+                merchantQuery: (b.merchant ?? '').trim() || undefined,
+                objective: (b.objective as Objective) || undefined,
+                on: on ?? undefined,
+              }
+            )
+          );
+        }
+
         if (url.pathname === '/api/recommend') {
           const q = url.searchParams.get('merchant') ?? '';
           const amt = url.searchParams.get('amount');

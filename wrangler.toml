@@ -75,6 +75,9 @@ OFFER_RETENTION_DAYS = "90"
 # What the card recommendation optimises for: miles, cashback, balanced (by
 # dollar value), or minspend (clear an unmet minimum before anything else).
 OBJECTIVE = "balanced"
+# Below this gain in cents, splitting a payment across two cards is not worth
+# suggesting: two taps at the till for a few cents is noise, not advice.
+SPLIT_MIN_GAIN_CENTS = "150"
 
 # Secrets — set with `wrangler secret put <NAME>`, never in this file:
 #   TELEGRAM_BOT_TOKEN   from @BotFather

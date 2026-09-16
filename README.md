@@ -112,6 +112,41 @@ the version in force on the day it is asking about. Two published versions may
 never cover the same day, and every evaluation records which version produced
 its numbers. See SETUP.md for the detail.
 
+The card products ship pre-populated: 31 Singapore cards across DBS/POSB, UOB,
+Citi, OCBC, Standard Chartered, HSBC, Amex and Maybank — identity only, and
+deliberately **no rates**. The banks' pages are not machine-readable from here,
+and a rate written from memory is worse than a blank, because a blank asks you
+and a wrong rate answers you. Read a rewards page onto a card you hold and
+those rates become that product's current version, shared by every card on it.
+
+## Which card to use
+
+`POST /api/recommend` ranks your cards for one purchase and shows its working.
+
+Three things it does that a sort by reward rate cannot:
+
+**It disqualifies rather than demotes.** An excluded merchant code, a closed
+card, or a product with no rules in force on that date means the card cannot be
+used for this purchase — not that it is a little behind. No rate however good
+floats it back to the top. It is still returned, under `ineligible` with a
+reason, so the omission is explicable.
+
+**It shows the arithmetic.** Every pick carries its `score_components` — reward
+value, objective bonus, minimum-spend bonus, urgency, uncertainty penalty,
+exhausted-cap penalty — and they add up to the score. A minimum-spend deadline
+inside the week outranks any plausible reward; that is a weight you can read,
+not a comparator you have to trust.
+
+**It says when it is guessing.** Confidence is high, medium or low, with the
+assumptions listed. An unknown merchant code lowers it only where a card's rules
+actually turn on codes — which is exactly the case where a code-gated rule
+cannot match, so the uncertainty must be read off the card, not off the rule
+that won.
+
+When a bonus cap will run out mid-purchase it also says what to put where and
+what the split is worth; under `SPLIT_MIN_GAIN_CENTS` (default $1.50) it keeps
+quiet, because two taps at the counter should be worth something.
+
 ## What it leads with
 
 Minimum spend, not the credit limit.

@@ -1374,6 +1374,34 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('an unknown product is a 404', (await authed('/api/catalog/cards/nope')).status === 404, '');
 }
 
+// --- the V2 recommendation contract -------------------------------------------
+{
+  const res = await authed('/api/recommend', { merchant: 'kopi', amount_cents: 4500, channel: 'offline' });
+  const r = (await res.json()) as any;
+  check('a purchase can be posted rather than query-stringed', res.status === 200, String(res.status));
+  check('one card is the recommendation', 'recommendation' in r, JSON.stringify(Object.keys(r)));
+  check('the rest are alternatives', Array.isArray(r.alternatives), '');
+  check('cards that cannot be used are separated out', Array.isArray(r.ineligible), '');
+  check('confidence comes with reasons', typeof r.confidence.level === 'string' && Array.isArray(r.confidence.reasons), JSON.stringify(r.confidence));
+  check('assumptions are listed', Array.isArray(r.assumptions), '');
+  check('the answer is dated', typeof r.evaluated_at === 'string', r.evaluated_at);
+  check('and says how fresh the rules are', typeof r.data_version === 'string', r.data_version);
+
+  if (r.recommendation) {
+    check('a pick carries its score components', typeof r.recommendation.score_components.reward_value === 'number', JSON.stringify(r.recommendation.score_components));
+    check('and the rule version behind it', 'rule_set_id' in r.recommendation, '');
+    check('with reasons taken from the trace', Array.isArray(r.recommendation.reasons), '');
+  }
+
+  // A date in the past picks the rules that applied then.
+  const old = await authed('/api/recommend', { merchant: 'kopi', amount_cents: 4500, occurred_at: '2026-01-15' });
+  check('a past date is accepted', old.status === 200, String(old.status));
+  check('a bad date is refused', (await authed('/api/recommend', { merchant: 'x', occurred_at: 'nonsense' })).status === 400, '');
+
+  // The old GET still works: nothing in the interface has moved yet.
+  check('the previous endpoint still answers', (await authed('/api/recommend?merchant=kopi&amount=45')).status === 200, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

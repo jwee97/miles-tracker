@@ -19,6 +19,8 @@ export interface Env {
   OFFER_RETENTION_DAYS: string;
   /** 'true' to count spend on excluded codes toward a minimum anyway. */
   MIN_SPEND_COUNTS_EXCLUDED: string;
+  /** Splitting a payment below this gain in cents is noise, not advice. */
+  SPLIT_MIN_GAIN_CENTS: string;
 
   // --- reading Cloudflare's own meters (all optional) ---------------------
   /** A secret, like the others: `wrangler secret put CF_API_TOKEN`. */

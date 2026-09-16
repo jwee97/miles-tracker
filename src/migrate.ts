@@ -2,6 +2,7 @@ import schemaSql from '../schema.sql';
 import seedSql from '../seed.sql';
 import { statements } from './sql';
 import { migrateCardsToProducts, type ProductMigrationReport } from './catalog/migrate-products';
+import { seedCardProducts, type SeedReport } from './catalog/seed-products';
 import { today } from './spend';
 import type { Env } from './types';
 
@@ -239,7 +240,7 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
 }
 
 /** Loads the default feeds, programmes and transfer routes. INSERT OR IGNORE, so safe to repeat. */
-export async function runSeed(env: Env): Promise<{ applied: number; errors: string[] }> {
+export async function runSeed(env: Env): Promise<{ applied: number; errors: string[]; catalog?: SeedReport }> {
   const errors: string[] = [];
   let applied = 0;
   for (const stmt of statements(seedSql)) {
@@ -250,5 +251,14 @@ export async function runSeed(env: Env): Promise<{ applied: number; errors: stri
       errors.push(`${stmt.slice(0, 60)}… — ${(e as Error).message}`);
     }
   }
-  return { applied, errors };
+  // The card catalogue. Identity only — who issues what, and where its terms
+  // live. Not one rate, because a rate nobody verified is worse than none.
+  let catalog: SeedReport | undefined;
+  try {
+    catalog = await seedCardProducts(env);
+  } catch (e) {
+    errors.push(`seeding the card catalogue — ${(e as Error).message}`);
+  }
+
+  return { applied, errors, catalog };
 }

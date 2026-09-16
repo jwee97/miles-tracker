@@ -1394,6 +1394,135 @@ GET /api/catalog/cards/:key       one product: all versions, their rules, source
 Read-only for now. Nothing in the interface depends on the catalogue yet — this
 phase deliberately left the UI alone so the model could be proved underneath it.
 
+## The catalogue, as shipped
+
+`/migrate` now also seeds a Singapore card catalogue: 31 products across DBS/POSB,
+UOB, Citi, OCBC, Standard Chartered, HSBC, Amex and Maybank. Seeding is
+idempotent and never touches a product that already exists, so it is safe to run
+again and it will not overwrite a product you have since verified yourself.
+
+What it contains is **identity only** — issuer, product name, network, whether it
+pays miles or cashback, which programme the points land in, and the official page
+to check:
+
+```
+dbs_womans_world   DBS   Woman's World Card   mastercard   miles      dbs_points
+uob_one            UOB   One Card             visa         cashback   —
+citi_rewards       Citi  Rewards Card         visa         miles      citi_ty
+…
+```
+
+Every seeded product arrives `draft`, with **no rule sets and no rates**. That is
+deliberate rather than unfinished: the banks' own rewards pages were not
+fetchable from here, and a rate written from memory is worse than a blank —
+a blank asks you, a wrong rate answers you. So the seed writes no rates of its
+own, and a test enforces that it never starts to.
+
+Rates arrive the way they always did — through a card you hold. Add the card,
+then use the rewards-page reader on the Cards tab: paste the bank's page, check
+each rate against the sentence it came from, and save. Those rules land in the
+current version of that card's product, so every card on the same product picks
+them up, and a later change is a new version rather than an edit.
+
+Two honest limits while the catalogue is read-only:
+
+- a product **nobody holds** has no way to be given rules yet — the standalone
+  publishing workflow is still to come;
+- nothing yet marks a product `verified`. `draft` and `migrated_unverified` both
+  mean "not checked against a bank document", and both lower a recommendation's
+  confidence rather than pretending otherwise.
+
+```
+GET /api/catalog/cards            31 products, who holds each, which version is live
+GET /api/catalog/cards/:key       one product: versions, rules, sources, overlaps
+```
+
+A product with no published version simply never wins a recommendation — it is
+counted in `awaiting_rules` rather than guessed at.
+
+## Which card to use, version 2
+
+`POST /api/recommend` answers the same question the old endpoint did, and three
+things it could not.
+
+```
+POST /api/recommend
+{ "merchant": "Sheng Siong", "amount": "82.40", "objective": "balanced" }
+```
+
+**Disqualification is not a bad score.** An excluded merchant code, a closed
+card, or a product with no rules in force on that date means the card *cannot be
+used here* — not that it is slightly behind. Such a card is moved to
+`ineligible`, with a reason in words, and no rate however good can float it back
+to the top. It stays in the answer so the omission is explicable:
+
+```json
+"ineligible": [{ "card": {"nickname": "Rewards"},
+                 "disqualified": { "reason": "excluded code",
+                                   "detail": "5411 earns base rate on this card" } }]
+```
+
+**The score says what it is made of.** No magic numbers: each pick carries
+`score_components`, and they add up to `score`.
+
+| component | what it is |
+|---|---|
+| `reward_value` | the purchase's value in cents, miles normalised by `MILE_VALUE_CENTS` |
+| `objective_bonus` | your objective's thumb on the scale — miles, cashback, or minimum-spend |
+| `minimum_spend_bonus` | a minimum still short is worth more than a good rate |
+| `urgency_bonus` | a deadline inside a week outranks any plausible reward |
+| `uncertainty_penalty` | charged once per unknown the answer depends on |
+| `exhausted_cap_penalty` | a bonus already spent is a real disadvantage |
+
+The ordering falls out of the weights rather than out of a sort comparator:
+urgency beats any reward, and an explicit minimum-spend objective beats urgency.
+
+**A guess is labelled as one.** Confidence is `high`, `medium` or `low`, with the
+reasons and the list of assumptions:
+
+```json
+"confidence": { "level": "low",
+                "reasons": ["the merchant code is unknown, and a card's bonus turns on it"] },
+"assumptions": [{ "what": "the merchant code",
+                  "because": "no code recorded for this merchant",
+                  "weight": "material" }]
+```
+
+`weight: "material"` means the answer could change if the assumption is wrong;
+one material assumption is enough to make the whole answer `low`.
+
+An unknown merchant code lowers confidence only where a
+card actually cares about codes — sensitivity is read off the card's rules, not
+off the rule that happened to match. (A code-gated rule *cannot* match while the
+code is unknown, which is precisely when it matters.)
+
+### Splitting a payment
+
+When a bonus cap will run out part-way through a purchase, the answer says so
+and what to do:
+
+```json
+"split_advice": { "bonus_cents": 4000, "remainder_cents": 4240,
+                  "use": "Rewards Card", "earns": "170 miles", "gain_cents": 310 }
+```
+
+Read as: the first $40.00 fills the top card's remaining bonus cap, and the
+$42.40 left over is better put on the Rewards Card, which earns 170 miles there
+— 310 cents more than leaving it on the top card at its base rate. That last
+comparison is the point: re-evaluating the top card fresh would see an unused
+cap and wrongly conclude nothing beats it, so the remainder is scored at the
+**base** rate it would actually earn.
+
+Below `SPLIT_MIN_GAIN_CENTS` (default `150`, editable in Settings) it stays
+quiet — two taps at the counter should be worth more than a dollar fifty.
+
+### Every answer is dated
+
+`evaluated_at` is the day the answer was computed; `data_version` is how fresh
+the card data behind it is, and it is honest about a product that has never been
+verified. Each pick also carries the `rule_set_id` that produced its numbers, so
+an old answer can be re-read against the version it actually used.
+
 ## Verify end to end
 
 ```

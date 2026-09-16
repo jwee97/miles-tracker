@@ -90,6 +90,13 @@ export const EDITABLE = [
   // is a secret, so it is deliberately absent from this list and can neither be
   // read nor written through the app.
   {
+    key: 'SPLIT_MIN_GAIN_CENTS',
+    label: 'Worth splitting a payment for',
+    unit: 'cents of extra value',
+    help: 'Below this, the app will not suggest paying with two cards. Two taps at the till for a few cents is noise rather than advice; 150 is about a dollar and a half of value.',
+    kind: 'number' as const,
+  },
+  {
     key: 'CF_ACCOUNT_ID',
     label: 'Cloudflare account id',
     unit: 'the 32-character id',

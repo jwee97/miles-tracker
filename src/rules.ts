@@ -1,4 +1,14 @@
-import { calendarMonth, calendarQuarter, currentTierCents, money, statementCycle, today, EFFECTIVE_DATE } from './spend';
+import {
+  calendarMonth,
+  calendarQuarter,
+  currentTierCents,
+  money,
+  requirementProgress,
+  requirementsFor,
+  statementCycle,
+  today,
+  EFFECTIVE_DATE,
+} from './spend';
 import { ruleSetOn, rulesIn } from './catalog/rulesets';
 import type { Card, Env } from './types';
 
@@ -448,23 +458,17 @@ export async function evaluate(
   // 4. An unmet minimum on this card, which can outweigh a better rate.
   let shortBy = 0;
   let daysLeft: number | null = null;
-  const { results: reqs } = await env.DB.prepare(
-    `SELECT * FROM requirements WHERE card_id = ? AND active = 1`
-  )
-    .bind(card.id)
-    .all<any>();
-  for (const req of reqs ?? []) {
-    const win = windowFor(req.window, card, env);
-    const spent = await env.DB.prepare(
-      `SELECT COALESCE(SUM(amount_cents),0) AS n FROM transactions
-       WHERE card_id = ? AND ${EFFECTIVE_DATE} >= ? AND ${EFFECTIVE_DATE} <= ? AND amount_cents > 0`
-    )
-      .bind(card.id, win.start, win.end)
-      .first<{ n: number }>();
-    const remaining = Math.max(0, req.amount_cents - (spent?.n ?? 0));
-    if (remaining > shortBy) {
-      shortBy = remaining;
-      daysLeft = Math.round((Date.parse(win.end) - Date.parse(today(env))) / 86400_000);
+
+  // Minimum-spend progress is worked out once, in spend.ts, and asked for here
+  // rather than reimplemented. The copy that used to live in this function
+  // knew only about calendar months, quarters and statement cycles — so a
+  // sign-up bonus with a fixed deadline four days away was measured against a
+  // statement cycle ending in four weeks, and never counted as urgent.
+  for (const req of await requirementsFor(env, card.id)) {
+    const progress = await requirementProgress(env, card, req);
+    if (progress.remaining_cents > shortBy) {
+      shortBy = progress.remaining_cents;
+      daysLeft = progress.days_left;
     }
   }
   if (shortBy > 0) {
