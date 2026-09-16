@@ -24,6 +24,7 @@ import { buildAnalytics } from './analytics';
 import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from './settings';
 import { platformReport } from './platform';
 import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
+import { actionCentre } from './actions';
 import { buildAudit } from './audit';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
@@ -425,6 +426,94 @@ export default {
             .bind(b.miles === null || b.miles === undefined ? null : Math.round(Number(b.miles)), cash, id)
             .run();
           return json({ ok: true });
+        }
+
+        // What to do something about, in the order it costs most to ignore.
+        // Deliberately not a dashboard: every row here has an action attached.
+        if (url.pathname === '/api/actions') {
+          return json({ actions: await actionCentre(env), as_of: today(env) });
+        }
+
+        // "I used this card" — the recommendation, taken.
+        //
+        // The transaction starts PENDING because that is what it is: a purchase
+        // the bank has not confirmed. Recording it as posted would put a date on
+        // it that no statement has agreed to, and every window that counts by
+        // posting date would then count a guess as a fact.
+        if (url.pathname === '/api/tx/used' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as {
+            card_id?: number;
+            nickname?: string;
+            amount_cents?: number | null;
+            amount?: string;
+            merchant?: string | null;
+            mcc?: string | null;
+            category?: string | null;
+            channel?: string | null;
+            occurred_at?: string;
+          };
+
+          const card = b.card_id
+            ? await env.DB.prepare(`SELECT * FROM cards WHERE id = ?`).bind(Number(b.card_id)).first<any>()
+            : await env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`)
+                .bind(String(b.nickname ?? '').trim())
+                .first<any>();
+          if (!card) return json({ error: 'no such card' }, 404);
+
+          const cents =
+            typeof b.amount_cents === 'number' ? b.amount_cents : b.amount ? parseMoney(String(b.amount)) : null;
+          if (cents === null || !Number.isFinite(cents) || cents <= 0) return json({ error: 'bad amount' }, 400);
+
+          const date = b.occurred_at ? parseDateToken(String(b.occurred_at), env) : today(env);
+          if (!date) return json({ error: 'bad date' }, 400);
+
+          const merchant = (b.merchant ?? '').trim() || null;
+          const channel = (b.channel as Channel) ?? null;
+          let category = (b.category ?? '').trim().toLowerCase() || null;
+          let categorySource: string | null = category ? 'manual' : null;
+          if (!category) {
+            category = await categoryForMerchant(env, merchant);
+            if (category) categorySource = 'learned';
+          }
+
+          const expected = await evaluate(env, card, { amount_cents: cents, mcc: b.mcc ?? null, category, channel });
+          const program = expected.miles > 0 ? await programForCard(env, card.id, expected.rule?.id) : null;
+
+          const ins = await env.DB.prepare(
+            `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category,
+               category_source, needs_review, mcc, channel, expected_miles, expected_cashback_cents,
+               expected_program, evaluated_rule_set_id, evaluated_at, status, source)
+             VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'advisor')`
+          )
+            .bind(
+              card.id,
+              cents,
+              date,
+              merchant,
+              category,
+              categorySource,
+              category ? 0 : 1,
+              b.mcc ?? null,
+              channel,
+              expected.miles,
+              expected.cashback_cents,
+              program,
+              expected.rule_set_id,
+              today(env)
+            )
+            .run();
+
+          return json({
+            ok: true,
+            id: ins.meta.last_row_id,
+            status: 'pending',
+            card: { id: card.id, nickname: card.nickname, product: card.product },
+            occurred_at: date,
+            amount_cents: cents,
+            category,
+            needs_review: category ? 0 : 1,
+            expected: { miles: expected.miles, cashback_cents: expected.cashback_cents },
+          });
         }
 
         if (url.pathname === '/api/settings' && req.method === 'GET') {
@@ -1850,7 +1939,7 @@ export default {
             `SELECT t.id, t.card_id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant,
                     t.category, t.category_source, t.needs_review, t.source,
                     t.mcc, t.channel, t.expected_miles, t.expected_cashback_cents,
-                    t.actual_miles, t.actual_cashback_cents,
+                    t.actual_miles, t.actual_cashback_cents, t.status,
                     c.nickname, c.product
              FROM transactions t JOIN cards c ON c.id = t.card_id
              ${clause}

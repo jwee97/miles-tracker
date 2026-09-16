@@ -163,6 +163,110 @@ const CATALOG_ONE = {
   overlaps: [],
 };
 
+const ACTIONS = {
+  as_of: '2026-09-18',
+  actions: [
+    {
+      kind: 'minimum_spend',
+      subject: 'one',
+      title: 'Spend another $164.00 on one',
+      detail: 'By 2026-09-30. $20.50 a day from here.',
+      amount_cents: 16400,
+      deadline: '2026-09-30',
+      days_left: 8,
+      urgency: 'soon',
+      target: 'cards',
+      priority: 10,
+      count: 1,
+    },
+    {
+      kind: 'cap_nearly_gone',
+      subject: 'wwmc',
+      title: "Only $83.00 of wwmc's bonus allowance remains",
+      detail: '4 mpd on the first $1,000. Spend past it earns the base rate.',
+      amount_cents: 8300,
+      deadline: '2026-09-30',
+      days_left: 12,
+      urgency: 'watch',
+      target: 'cards',
+      priority: 40,
+      count: 1,
+    },
+    {
+      kind: 'unknown_code',
+      subject: 'Codes',
+      title: '3 merchants have no code yet',
+      detail: 'A card whose bonus turns on the code cannot be judged without it.',
+      amount_cents: null,
+      deadline: null,
+      days_left: null,
+      urgency: 'watch',
+      target: 'codes',
+      priority: 70,
+      count: 3,
+    },
+  ],
+};
+
+const TRANSACTIONS = {
+  transactions: [
+    {
+      id: 1,
+      amount_cents: 8320,
+      occurred_at: '2026-09-18',
+      posted_at: null,
+      merchant: 'FairPrice',
+      category: 'groceries',
+      needs_review: 0,
+      source: 'advisor',
+      nickname: 'wwmc',
+      product: "Woman's World Card",
+      mcc: '5411',
+      expected_miles: 333,
+      expected_cashback_cents: 0,
+      actual_miles: null,
+      actual_cashback_cents: null,
+      status: 'pending',
+    },
+    {
+      id: 2,
+      amount_cents: 2470,
+      occurred_at: '2026-09-17',
+      posted_at: '2026-09-17',
+      merchant: 'Grab',
+      category: 'transport',
+      needs_review: 1,
+      source: 'sms',
+      nickname: 'crw',
+      product: 'Rewards Card',
+      mcc: null,
+      expected_miles: 99,
+      expected_cashback_cents: 0,
+      actual_miles: null,
+      actual_cashback_cents: null,
+      status: 'posted',
+    },
+  ],
+  range: { from: null, to: null, label: 'recent' },
+  total_count: 2,
+  total_cents: 10790,
+  page: 1,
+  pages: 1,
+  per_page: 8,
+};
+
+const USED = {
+  ok: true,
+  id: 99,
+  status: 'pending',
+  card: { id: 1, nickname: 'wwmc', product: "Woman's World Card" },
+  occurred_at: '2026-09-18',
+  amount_cents: 12000,
+  expected: { miles: 480, cashback_cents: 0 },
+};
+
+let usedCalls = 0;
+
 async function serve(): Promise<{ url: string; close: () => Promise<void> }> {
   const server = createServer(async (req, res) => {
     const path = (req.url ?? '/').split('?')[0];
@@ -191,6 +295,12 @@ async function stub(page: Page) {
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
 
     if (u.pathname === '/api/recommend') return send(RECOMMENDATION);
+    if (u.pathname === '/api/actions') return send(ACTIONS);
+    if (u.pathname === '/api/transactions') return send(TRANSACTIONS);
+    if (u.pathname === '/api/tx/used') {
+      usedCalls++;
+      return send(USED);
+    }
     if (u.pathname === '/api/catalog/cards') return send(CATALOG);
     if (u.pathname.startsWith('/api/catalog/cards/')) return send(CATALOG_ONE);
     return send({});
@@ -206,8 +316,36 @@ async function main() {
     await stub(page);
     await page.goto(`${server.url}/#t=test-token`);
 
+    // --- home: the advisor is the first thing on the screen --------------
+    await page.locator('.advisor').waitFor();
+    check('the app opens on the advisor', await page.locator('.advisor h2').isVisible());
+    check(
+      'the navigation is five everyday things, not eleven',
+      (await page.locator('nav.tabs.primary button').count()) === 5,
+      String(await page.locator('nav.tabs.primary button').count())
+    );
+
+    const actions = page.locator('.actions .action');
+    await actions.first().waitFor();
+    check('the action centre leads with the deadline', (await actions.first().innerText()).includes('Spend another $164.00'));
+    check('and how long is left', (await actions.first().innerText()).includes('8d'));
+    check(
+      'the allowance sits below it',
+      (await actions.nth(1).innerText()).includes('bonus allowance remains'),
+      await actions.nth(1).innerText()
+    );
+    check('and the housekeeping below that', (await actions.nth(2).innerText()).includes('no code yet'));
+
+    const activity = page.locator('.activity-list li').first();
+    check('recent activity shows what a purchase earned', (await activity.innerText()).includes('333 miles'));
+    check('and how sure that is', (await activity.innerText()).includes('probable'));
+    check('a purchase the bank has not confirmed says pending', (await activity.innerText()).includes('pending'));
+    check(
+      'a transaction with no code is not called probable',
+      (await page.locator('.activity-list li').nth(1).innerText()).includes('uncertain')
+    );
+
     // --- the advisor ----------------------------------------------------
-    await page.getByRole('button', { name: 'Use' }).click();
     await page.locator('#adv-merchant').fill('Shopee');
     await page.locator('#adv-amount').fill('120');
     await page.getByRole('button', { name: 'Check cards' }).click();
@@ -257,7 +395,18 @@ async function main() {
       (await page.locator('.rec-foot').innerText()).includes('never verified')
     );
 
+    // --- taking the recommendation --------------------------------------
+    await page.getByRole('button', { name: 'I used this card' }).click();
+    await page.locator('.ok-text').waitFor();
+    check('the recommendation can be logged in one tap', usedCalls === 1, String(usedCalls));
+    check(
+      'and it says the bank has not confirmed it yet',
+      (await page.locator('.ok-text').innerText()).includes('pending'),
+      await page.locator('.ok-text').innerText()
+    );
+
     // --- the catalogue --------------------------------------------------
+    await page.getByRole('button', { name: /^More/ }).click();
     await page.getByRole('button', { name: 'Catalogue' }).click();
     await page.locator('.catalog-list').waitFor();
     check('every product is listed', (await page.locator('.catalog-list > li').count()) === 2);

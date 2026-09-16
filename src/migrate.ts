@@ -40,6 +40,11 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
     ddl: 'ALTER TABLE requirements ADD COLUMN prorate_first INTEGER NOT NULL DEFAULT 0',
   },
   { table: 'transactions', column: 'posted_at', ddl: 'ALTER TABLE transactions ADD COLUMN posted_at TEXT' },
+  {
+    table: 'transactions',
+    column: 'status',
+    ddl: "ALTER TABLE transactions ADD COLUMN status TEXT NOT NULL DEFAULT 'posted'",
+  },
   { table: 'conversions', column: 'verified_at', ddl: 'ALTER TABLE conversions ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
   { table: 'conversions', column: 'note', ddl: 'ALTER TABLE conversions ADD COLUMN note TEXT' },

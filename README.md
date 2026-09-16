@@ -147,6 +147,23 @@ When a bonus cap will run out mid-purchase it also says what to put where and
 what the split is worth; under `SPLIT_MIN_GAIN_CENTS` (default $1.50) it keeps
 quiet, because two taps at the counter should be worth something.
 
+## The home screen
+
+One question at the top — which card should I use — and the answer to it gets
+the screen. Below it, *things to take care of*: the minimums, deadlines,
+allowances and expiries that can still be acted on, ordered by what it costs to
+ignore them, with the housekeeping grouped into one line each rather than
+listed. Then what you have actually spent, with what it earned and how sure that
+is.
+
+Under the recommendation, one button — **I used this card** — logs that purchase
+against that card as **pending**, because the bank has not confirmed it and a
+posting date the app invented would be counted as a fact by every window that
+judges by posting date.
+
+Five tabs: Home, Activity, Cards, Rewards, More. The catalogue, codes, audit,
+trends and the rest are management tools and now live under More.
+
 ## What it leads with
 
 Minimum spend, not the credit limit.

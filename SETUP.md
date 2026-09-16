@@ -1523,6 +1523,59 @@ the card data behind it is, and it is honest about a product that has never been
 verified. Each pick also carries the `rule_set_id` that produced its numbers, so
 an old answer can be re-read against the version it actually used.
 
+## Home, and what it leads with
+
+The app opens on one question — which card should I use — and the answer to it
+gets the screen. Underneath, in this order:
+
+**Things to take care of.** Not a dashboard. A dashboard reports numbers and
+leaves you to work out which of them is a problem; every row here is a situation
+with an action attached, and the ordering is by what it costs to ignore:
+
+```
+1  a minimum-spend deadline at risk
+2  a sign-up deadline at risk
+3  a transaction count still short
+4  a bonus allowance nearly gone
+5  points about to expire
+6  transactions imported without a category
+7  merchants with no code yet
+```
+
+The two housekeeping queues at the bottom are grouped, not listed: forty
+unreviewed rows are one job, and listing them one by one would bury every
+deadline above them. A minimum that is met drops off; so does one whose window
+is already lost, for the opposite reason and with the same consequence —
+spending there cannot change what the window pays.
+
+**Recent activity.** Merchant, amount, card, what it earned, and how sure that
+is: `confirmed` once the bank has credited it, `probable` when the code is
+known, `uncertain` when it is not.
+
+Credit utilisation is still on the Cards tab. It is a number the app knows, not
+a thing to do about it.
+
+### I used this card
+
+Under the recommendation there is one button. It logs the purchase the advisor
+was just asked about — merchant, amount, card, code, category, channel and the
+reward the engine predicted — and marks it **pending**.
+
+Pending because that is what it is. The bank has not confirmed the purchase, and
+a posting date the app invented would be counted as fact by every window that
+judges by posting date. It becomes posted when a statement says so.
+
+### Five tabs, not eleven
+
+```
+Home   Activity   Cards   Rewards   More
+```
+
+Everything else moved under **More**: the advisor on its own, the catalogue,
+off-card spending, expiry, trends, the reward audit, merchant codes, offers and
+settings. They are management tools, and they had top-level tabs because the app
+was built in that order, not because the everyday product needs them there.
+
 ## Verify end to end
 
 ```

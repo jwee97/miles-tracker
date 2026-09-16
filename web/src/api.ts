@@ -207,6 +207,14 @@ export interface Txn {
   source: string;
   nickname: string;
   product: string;
+  mcc?: string | null;
+  channel?: string | null;
+  expected_miles?: number | null;
+  expected_cashback_cents?: number | null;
+  actual_miles?: number | null;
+  actual_cashback_cents?: number | null;
+  /** pending | posted | reversed | refunded */
+  status?: string;
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -577,6 +585,54 @@ export const recommendV2 = (b: {
   objective?: string;
   occurred_at?: string;
 }) => post<RecommendationV2>('/api/recommend', b);
+
+/* --- the action centre --------------------------------------------------- */
+
+export type ActionKind =
+  | 'minimum_spend'
+  | 'signup_deadline'
+  | 'transaction_count'
+  | 'cap_nearly_gone'
+  | 'points_expiring'
+  | 'unreviewed_import'
+  | 'unknown_code';
+
+export interface ActionItem {
+  kind: ActionKind;
+  subject: string;
+  title: string;
+  detail: string;
+  amount_cents: number | null;
+  deadline: string | null;
+  days_left: number | null;
+  urgency: 'now' | 'soon' | 'watch';
+  target: string;
+  priority: number;
+  count: number;
+}
+
+export const fetchActions = () => get<{ actions: ActionItem[]; as_of: string }>('/api/actions');
+
+/** "I used this card": the recommendation, taken, as a pending transaction. */
+export const logUsed = (b: {
+  card_id?: number;
+  nickname?: string;
+  amount_cents?: number | null;
+  merchant?: string | null;
+  mcc?: string | null;
+  category?: string | null;
+  channel?: string | null;
+  occurred_at?: string;
+}) =>
+  post<{
+    ok: true;
+    id: number;
+    status: string;
+    card: { id: number; nickname: string; product: string };
+    occurred_at: string;
+    amount_cents: number;
+    expected: { miles: number; cashback_cents: number };
+  }>('/api/tx/used', b);
 
 /* --- the card catalogue -------------------------------------------------- */
 

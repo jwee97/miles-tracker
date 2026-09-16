@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import Advisor from './Advisor';
 import Catalog from './Catalog';
+import Home from './Home';
 import Audit from './Audit';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
@@ -1856,8 +1857,30 @@ function PointsTab() {
   );
 }
 
+/**
+ * Everything that is not the everyday product.
+ *
+ * These are management tools — the ledger of merchant codes, the Cloudflare
+ * meters, the reward audit. They earned top-level tabs while the app was being
+ * built and kept them out of habit, which left the screen that answers "which
+ * card?" competing with eleven siblings.
+ */
+const MORE: [string, string][] = [
+  ['use', 'Advisor'],
+  ['catalog', 'Catalogue'],
+  ['other', 'Off-card'],
+  ['expiry', 'Expiry'],
+  ['trends', 'Trends'],
+  ['audit', 'Audit'],
+  ['codes', 'Codes'],
+  ['offers', 'Offers'],
+  ['settings', 'Settings'],
+];
+
 export default function App() {
+  const [more, setMore] = useState(false);
   const [tab, setTab] = useState<
+    | 'home'
     | 'use'
     | 'cards'
     | 'catalog'
@@ -1870,7 +1893,7 @@ export default function App() {
     | 'codes'
     | 'offers'
     | 'settings'
-  >('use');
+  >('home');
   const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
@@ -1933,48 +1956,45 @@ export default function App() {
     refresh();
   }
 
-  if (error && tab !== 'use') return <main className="pad"><p className="error">{error}</p></main>;
+  if (error && tab !== 'use' && tab !== 'home') return <main className="pad"><p className="error">{error}</p></main>;
 
   return (
     <main>
-      <nav className="tabs">
-        <button className={tab === 'use' ? 'on' : ''} onClick={() => setTab('use')}>
-          Use
+      <nav className="tabs primary">
+        <button className={tab === 'home' ? 'on' : ''} onClick={() => setTab('home')}>
+          Home
+        </button>
+        <button className={tab === 'ledger' ? 'on' : ''} onClick={() => setTab('ledger')}>
+          Activity
         </button>
         <button className={tab === 'cards' ? 'on' : ''} onClick={() => setTab('cards')}>
           Cards
         </button>
-        <button className={tab === 'catalog' ? 'on' : ''} onClick={() => setTab('catalog')}>
-          Catalogue
-        </button>
-        <button className={tab === 'ledger' ? 'on' : ''} onClick={() => setTab('ledger')}>
-          Ledger
-        </button>
-        <button className={tab === 'other' ? 'on' : ''} onClick={() => setTab('other')}>
-          Off-card
-        </button>
-        <button className={tab === 'trends' ? 'on' : ''} onClick={() => setTab('trends')}>
-          Trends
-        </button>
-        <button className={tab === 'audit' ? 'on' : ''} onClick={() => setTab('audit')}>
-          Audit
-        </button>
         <button className={tab === 'points' ? 'on' : ''} onClick={() => setTab('points')}>
-          Points
+          Rewards
         </button>
-        <button className={tab === 'expiry' ? 'on' : ''} onClick={() => setTab('expiry')}>
-          Expiry
-        </button>
-        <button className={tab === 'codes' ? 'on' : ''} onClick={() => setTab('codes')}>
-          Codes
-        </button>
-        <button className={tab === 'offers' ? 'on' : ''} onClick={() => setTab('offers')}>
-          Offers{offers?.length ? ` (${offers.length})` : ''}
-        </button>
-        <button className={tab === 'settings' ? 'on' : ''} onClick={() => setTab('settings')}>
-          Settings
+        <button className={more || MORE.some(([k]) => k === tab) ? 'on' : ''} onClick={() => setMore((v) => !v)}>
+          More{offers?.length ? ` (${offers.length})` : ''}
         </button>
       </nav>
+
+      {more && (
+        <nav className="tabs secondary">
+          {MORE.map(([k, label]) => (
+            <button
+              key={k}
+              className={tab === k ? 'on' : ''}
+              onClick={() => {
+                setTab(k as typeof tab);
+                setMore(false);
+              }}
+            >
+              {label}
+              {k === 'offers' && offers?.length ? ` (${offers.length})` : ''}
+            </button>
+          ))}
+        </nav>
+      )}
 
       {tab === 'cards' &&
         (summary ? (
@@ -2037,6 +2057,8 @@ export default function App() {
         ) : (
           <p className="pad sub">Loading…</p>
         ))}
+
+      {tab === 'home' && <Home onGo={(t) => setTab(t as typeof tab)} />}
 
       {tab === 'use' && <Advisor />}
 

@@ -137,6 +137,11 @@ CREATE TABLE IF NOT EXISTS transactions (
   credited_at  TEXT,                              -- when you accepted it into the wallet
   credited_tranche_id INTEGER,                    -- which balance tranche took it
   source       TEXT    NOT NULL DEFAULT 'manual',-- manual | sms | import
+  -- Where the row is in its life: pending | posted | reversed | refunded.
+  -- A purchase logged the moment it is made is pending until the bank confirms
+  -- it; the default is 'posted' so every row that predates this column keeps
+  -- the meaning it was written with.
+  status       TEXT    NOT NULL DEFAULT 'posted',
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 -- Every window query filters on the effective date, so index that expression.

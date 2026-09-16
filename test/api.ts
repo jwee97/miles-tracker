@@ -1402,6 +1402,44 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('the previous endpoint still answers', (await authed('/api/recommend?merchant=kopi&amount=45')).status === 200, '');
 }
 
+// --- the action centre, and taking a recommendation ---------------------------
+{
+  const res = await authed('/api/actions');
+  const a = (await res.json()) as any;
+  check('the app can ask what needs doing', res.status === 200, String(res.status));
+  check('and gets a list it can act on', Array.isArray(a.actions), JSON.stringify(Object.keys(a)));
+  check('dated, so the deadlines mean something', typeof a.as_of === 'string', a.as_of);
+  if (a.actions.length) {
+    const first = a.actions[0];
+    check('each item says what kind of problem it is', typeof first.kind === 'string', JSON.stringify(first));
+    check('where to go about it', typeof first.target === 'string', first.target);
+    check('and how pressing it is', ['now', 'soon', 'watch'].includes(first.urgency), first.urgency);
+  }
+
+  // "I used this card" — the recommendation, taken.
+  const used = await authed('/api/tx/used', {
+    nickname: 'crw',
+    amount_cents: 8320,
+    merchant: 'FairPrice',
+    mcc: '5411',
+    channel: 'offline',
+  });
+  const u = (await used.json()) as any;
+  check('a recommendation can be logged in one tap', used.status === 200, JSON.stringify(u).slice(0, 200));
+  check('and starts pending, because the bank has not confirmed it', u.status === 'pending', u.status);
+  check('with the reward the engine predicted', typeof u.expected.miles === 'number', JSON.stringify(u.expected));
+
+  const row = rowFor(u.id);
+  check('the row is pending in the database too', row.status === 'pending', row.status);
+  check('with no posting date invented for it', row.posted_at === null, String(row.posted_at));
+  check('the merchant is kept', row.merchant === 'FairPrice', row.merchant);
+  check('the code is kept', row.mcc === '5411', row.mcc);
+  check('and the rule version that priced it', row.evaluated_rule_set_id !== null, String(row.evaluated_rule_set_id));
+
+  check('an unknown card is refused', (await authed('/api/tx/used', { nickname: 'nope', amount_cents: 100 })).status === 404, '');
+  check('and so is a nonsense amount', (await authed('/api/tx/used', { nickname: 'crw', amount_cents: 0 })).status === 400, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

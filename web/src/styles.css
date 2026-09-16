@@ -858,3 +858,32 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .catalog-detail h4 { margin: 14px 0 0; font-size: 13px; color: var(--dim); }
 .versions .version-rules { list-style: none; padding: 0; margin: 6px 0 0; }
 .versions .version-rules li { padding: 2px 0 2px 12px; border-left: 2px solid var(--line); }
+
+/* --- home: what to do about it ------------------------------------------ */
+.tabs.primary button { font-size: 13.5px; }
+.tabs.secondary { border-top: none; padding-top: 0; opacity: .95; }
+
+.actions { list-style: none; padding: 0; margin: 12px 0 10px; }
+.action { display: flex; gap: 12px; align-items: flex-start; padding: 11px 0; border-top: 1px solid var(--line); }
+.action:first-child { border-top: none; }
+.action-icon { width: 18px; text-align: center; color: var(--dim); font-size: 13px; line-height: 1.5; flex: none; }
+.action.now .action-icon { color: var(--bad); }
+.action.soon .action-icon { color: var(--mid); }
+.action-body { flex: 1; min-width: 0; }
+.action-title { margin: 0; font-size: 14px; font-weight: 600; }
+.action.now .action-title { color: var(--bad); }
+.action-detail { margin: 2px 0 0; font-size: 12.5px; color: var(--dim); }
+.action-side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; }
+.action-amount { font-size: 13.5px; font-weight: 600; }
+
+.used-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+.ok-text { font-size: 12.5px; color: var(--ok); }
+
+.activity-day + .activity-day { margin-top: 12px; }
+.activity-date { margin: 0 0 4px; font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); }
+.activity-list { list-style: none; padding: 0; margin: 0; }
+.activity-list li { padding: 8px 0; border-top: 1px solid var(--line); }
+.activity-list li:first-child { border-top: none; }
+.activity-main { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; }
+.activity-merchant { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-meta { display: flex; gap: 4px 12px; flex-wrap: wrap; align-items: baseline; font-size: 12.5px; color: var(--dim); margin-top: 2px; }
