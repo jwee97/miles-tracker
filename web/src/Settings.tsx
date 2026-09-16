@@ -206,7 +206,15 @@ export default function Settings() {
   );
 }
 
-const WINDOWS = [7, 14, 30];
+// Today is its own question — "is the thing I just deployed working" — and it
+// is the one window a weekly view cannot answer.
+const WINDOWS: { days: number; label: string }[] = [
+  { days: 1, label: 'today' },
+  { days: 2, label: 'today and yesterday' },
+  { days: 7, label: 'last 7 days' },
+  { days: 14, label: 'last 14 days' },
+  { days: 30, label: 'last 30 days' },
+];
 
 /** A number against its daily allowance, with the number said out loud. */
 function Allowance({ label, used, cap, unit }: { label: string; used: number | null; cap: number; unit: string }) {
@@ -262,9 +270,9 @@ function Platform() {
           <p className="sub">What the platform itself says this app costs</p>
         </div>
         <select className="range-select" value={days} onChange={(e) => setDays(Number(e.target.value))}>
-          {WINDOWS.map((d) => (
-            <option key={d} value={d}>
-              last {d} days
+          {WINDOWS.map((w) => (
+            <option key={w.days} value={w.days}>
+              {w.label}
             </option>
           ))}
         </select>
@@ -295,7 +303,8 @@ function Platform() {
       {data && data.configured && (
         <>
           <p className="sub mono">
-            {data.from} → {data.to} · {data.script} · {data.days} days
+            {data.from === data.to ? data.from : `${data.from} → ${data.to}`} · {data.script} ·{' '}
+            {data.days} day{data.days === 1 ? '' : 's'}
           </p>
 
           <h3 className="panel-h">Worker</h3>
@@ -311,7 +320,7 @@ function Platform() {
                 </div>
                 <div className="stat">
                   <span className="stat-label">errors</span>
-                  <span className={`stat-value ${data.worker.errors > 0 ? 'bad-text' : ''}`}>
+                  <span className={`stat-value ${data.worker.errors > 0 ? 'bad' : ''}`}>
                     {data.worker.errors.toLocaleString()}
                   </span>
                   <span className="stat-sub">{data.worker.error_percent.toFixed(2)}% of requests</span>
@@ -339,6 +348,22 @@ function Platform() {
                   By outcome: {data.worker.by_status.map((s) => `${s.status} ${s.requests.toLocaleString()}`).join(' · ')}
                 </p>
               )}
+              {/* The count says 17 exceptions; only the logs say which line
+                  threw. Empty here is a real state with a real cause, so it
+                  reports the cause rather than showing nothing. */}
+              {data.worker.errors > 0 &&
+                (data.worker.errors_seen.length > 0 ? (
+                  <ul className="notes errors-seen">
+                    {data.worker.errors_seen.slice(0, 5).map((e) => (
+                      <li key={e.message}>
+                        <span className="count">{e.count}×</span> <code>{e.message}</code>
+                        {e.last_seen && <span className="sub"> last {e.last_seen}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  data.worker.errors_error && <p className="sub">Messages: {data.worker.errors_error}</p>
+                ))}
               {data.worker.totals_only ? (
                 <p className="sub">Your account does not break these down by day, so only the totals are shown.</p>
               ) : (
@@ -412,6 +437,47 @@ function Platform() {
                   label="rows read"
                   overlayLabel="rows written"
                 />
+              )}
+
+              {/* Rows read is never spread evenly: one statement missing an
+                  index reads more in a week than everything else together.
+                  D1 keeps the SQL, minus bound parameters, so the answer can
+                  be named instead of guessed at. */}
+              <h3 className="panel-h">Where the rows go</h3>
+              {data.d1.heavy.length > 0 ? (
+                <ol className="heavy">
+                  {data.d1.heavy.map((q, i) => (
+                    <li key={i}>
+                      <div className="heavy-head">
+                        <span className="mono">
+                          {q.rows_read.toLocaleString()} read · {q.share_percent.toFixed(0)}%
+                        </span>
+                        <span className="sub">
+                          {q.runs.toLocaleString()} run{q.runs === 1 ? '' : 's'} · {q.rows_per_run.toLocaleString()} a run
+                          {q.rows_written > 0 && ` · ${q.rows_written.toLocaleString()} written`}
+                          {q.duration_ms !== null && ` · ${q.duration_ms.toLocaleString()}ms`}
+                        </span>
+                      </div>
+                      <div className="meter">
+                        <span
+                          className={`fill ${q.share_percent >= 40 ? 'bad' : q.share_percent >= 15 ? 'mid' : 'ok'}`}
+                          style={{ width: `${Math.min(100, q.share_percent)}%` }}
+                        />
+                      </div>
+                      <code className="sql">{q.sql}</code>
+                      {q.rows_per_run > 1000 && (
+                        <p className="cap">
+                          {q.rows_per_run.toLocaleString()} rows for one run — this is walking a table. An index on what
+                          it filters by would turn that into single figures.
+                        </p>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="sub">
+                  {data.d1.heavy_error ?? 'No per-query breakdown for this window.'}
+                </p>
               )}
             </>
           )}

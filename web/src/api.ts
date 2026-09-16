@@ -1136,6 +1136,8 @@ export interface PlatformReport {
     per_day: number;
     error: string | null;
     totals_only: boolean;
+    errors_seen: { message: string; count: number; last_seen: string | null }[];
+    errors_error: string | null;
   };
   d1: {
     days: {
@@ -1156,6 +1158,16 @@ export interface PlatformReport {
     latency_p90_ms: number | null;
     size_bytes: number | null;
     size_change_bytes: number | null;
+    heavy: {
+      sql: string;
+      runs: number;
+      rows_read: number;
+      rows_written: number;
+      rows_per_run: number;
+      duration_ms: number | null;
+      share_percent: number;
+    }[];
+    heavy_error: string | null;
     error: string | null;
   };
   free_tier: {

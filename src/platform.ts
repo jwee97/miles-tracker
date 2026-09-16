@@ -37,6 +37,27 @@ export interface D1Day {
   response_bytes: number;
 }
 
+/** One SQL statement and what it cost, as D1 recorded it. */
+export interface HeavyQuery {
+  /** The SQL, with bound parameters already stripped by D1. */
+  sql: string;
+  runs: number;
+  rows_read: number;
+  rows_written: number;
+  /** Rows read per run — a big number here means a scan, not a lookup. */
+  rows_per_run: number;
+  duration_ms: number | null;
+  /** This query's share of all rows read in the window, 0-100. */
+  share_percent: number;
+}
+
+/** An exception the Worker actually threw, as Workers Logs recorded it. */
+export interface WorkerError {
+  message: string;
+  count: number;
+  last_seen: string | null;
+}
+
 /** One query shape tried, and what Cloudflare said to it. */
 export interface Attempt {
   query: string;
@@ -76,6 +97,9 @@ export interface PlatformReport {
     per_day: number;
     error: string | null;
     totals_only: boolean;
+    /** What the exceptions actually were, when Workers Logs is on. */
+    errors_seen: WorkerError[];
+    errors_error: string | null;
   };
   d1: {
     days: D1Day[];
@@ -92,6 +116,9 @@ export interface PlatformReport {
     size_bytes: number | null;
     /** How the database has grown across the window, when there is a series. */
     size_change_bytes: number | null;
+    /** The statements doing the most work, heaviest first. */
+    heavy: HeavyQuery[];
+    heavy_error: string | null;
     error: string | null;
   };
   free_tier: {
@@ -146,6 +173,86 @@ async function cfGraph(
 }
 
 const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+/**
+ * Recent exceptions, grouped by message.
+ *
+ * A different API from everything else here — Workers Logs is REST, not
+ * GraphQL — and it returns nothing at all unless `[observability] enabled` is
+ * set on the Worker, which is the likeliest reason for an empty list. Failures
+ * are returned rather than thrown: one panel going quiet must not take the
+ * numbers beside it down.
+ */
+async function readWorkerErrors(
+  env: Env,
+  account: string,
+  script: string,
+  from: number,
+  to: number,
+  out: WorkerError[],
+  log: Attempt[]
+): Promise<string | null> {
+  let res: Response;
+  try {
+    res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${account}/workers/observability/telemetry/query`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.CF_API_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queryId: 'miles-tracker-errors',
+          timeframe: { from, to },
+          limit: 50,
+          parameters: {
+            datasets: [],
+            filters: [
+              { key: '$metadata.service', operation: 'eq', type: 'string', value: script },
+              { key: '$metadata.error', operation: 'exists', type: 'string' },
+            ],
+            calculations: [{ operator: 'count' }],
+            groupBys: [{ type: 'string', value: '$metadata.error' }],
+          },
+          view: 'calculations',
+        }),
+        signal: AbortSignal.timeout(20_000),
+      }
+    );
+  } catch (e) {
+    log.push({ query: 'worker errors', ok: false, error: (e as Error).message });
+    return `could not reach Workers Logs (${(e as Error).message})`;
+  }
+
+  const body = (await res.json().catch(() => null)) as any;
+  if (!res.ok || body?.success === false) {
+    const why =
+      (body?.errors ?? []).map((e: any) => e?.message).filter(Boolean).join('; ') || `Cloudflare returned ${res.status}`;
+    log.push({ query: 'worker errors', ok: false, error: why });
+    return why;
+  }
+  log.push({ query: 'worker errors', ok: true, error: null });
+
+  // The response shape varies with `view`, so several plausible places are
+  // checked rather than one assumed.
+  const groups: any[] =
+    body?.result?.calculations?.[0]?.aggregates ??
+    body?.result?.calculations?.[0]?.data ??
+    body?.result?.events?.events ??
+    [];
+  for (const g of groups) {
+    const message = String(g?.groups?.[0]?.value ?? g?.$metadata?.error ?? g?.message ?? '').trim();
+    if (!message) continue;
+    const found = out.find((x) => x.message === message);
+    if (found) found.count += Number(g?.value ?? g?.count ?? 1) || 1;
+    else
+      out.push({
+        message: message.slice(0, 300),
+        count: Number(g?.value ?? g?.count ?? 1) || 1,
+        last_seen: g?.timestamp ? new Date(Number(g.timestamp)).toISOString().slice(0, 16).replace('T', ' ') : null,
+      });
+  }
+  out.sort((a, b) => b.count - a.count);
+  return out.length ? null : 'nothing recorded — Workers Logs needs [observability] enabled in wrangler.toml, and keeps three days';
+}
 
 /**
  * Cloudflare's GraphQL is not one schema but many, and which fields a node
@@ -235,6 +342,39 @@ const d1Shape = (extra: boolean): Shape => ({
 });
 
 const D1_SHAPES: Shape[] = [d1Shape(true), d1Shape(false)];
+
+/**
+ * The queries doing the work, by rows touched.
+ *
+ * Rows read is where a free tier is actually spent, and it is never spread
+ * evenly: one query with a missing index reads more in a week than everything
+ * else put together. D1 keeps the SQL text (without bound parameters, so
+ * nothing sensitive is in it), which makes the answer nameable rather than a
+ * shrug about the total.
+ *
+ * The exact field names on this node are not in the published docs — wrangler
+ * reads it through its own client — so three shapes are tried, richest first.
+ */
+const d1QueryShape = (fields: string, label: string): Shape => ({
+  label: `intensive queries, ${label}`,
+  query: `query Q($account: string, $db: string, $start: Date, $end: Date) {
+  viewer { accounts(filter: { accountTag: $account }) {
+    d1QueriesAdaptiveGroups(
+      limit: 20
+      filter: { date_geq: $start, date_leq: $end, databaseId: $db }
+    ) {
+      ${fields}
+      dimensions { query }
+    }
+  }}}`,
+  pick: (d) => d?.viewer?.accounts?.[0]?.d1QueriesAdaptiveGroups ?? [],
+});
+
+const D1_QUERY_SHAPES: Shape[] = [
+  d1QueryShape('count\n      sum { rowsRead rowsWritten queryDurationMs }\n      avg { rowsRead rowsWritten queryDurationMs }', 'with timings'),
+  d1QueryShape('count\n      sum { rowsRead rowsWritten }\n      avg { rowsRead rowsWritten }', 'rows only'),
+  d1QueryShape('count\n      sum { rowsRead rowsWritten }', 'totals only'),
+];
 
 const D1_STORAGE: Shape = {
   label: 'storage',
@@ -331,6 +471,8 @@ export async function platformReport(env: Env, days = 7): Promise<PlatformReport
       per_day: 0,
       error: null,
       totals_only: false,
+      errors_seen: [],
+      errors_error: null,
     },
     d1: {
       days: [],
@@ -344,6 +486,8 @@ export async function platformReport(env: Env, days = 7): Promise<PlatformReport
       latency_p90_ms: null,
       size_bytes: null,
       size_change_bytes: null,
+      heavy: [],
+      heavy_error: null,
       error: null,
     },
     free_tier: {
@@ -405,6 +549,14 @@ export async function platformReport(env: Env, days = 7): Promise<PlatformReport
     }
   }
 
+  // --- what the exceptions actually were ----------------------------------
+  //
+  // The counts above say 17 exceptions; they cannot say which line threw. That
+  // lives in Workers Logs, behind its own permission and its own API, and only
+  // when [observability] is enabled on the Worker — so a blank here is a real
+  // state with a real cause, and it is reported rather than left empty.
+  blank.worker.errors_error = await readWorkerErrors(env, account!, script!, start, end, blank.worker.errors_seen, attempts);
+
   // --- D1 -----------------------------------------------------------------
   const dVars = { account, db: database, start: from, end: to };
   const d = await firstThatWorks(env, D1_SHAPES, dVars, attempts);
@@ -436,6 +588,36 @@ export async function platformReport(env: Env, days = 7): Promise<PlatformReport
     blank.d1.latency_avg_ms = avgs.length ? Math.round((avgs.reduce((a, b) => a + b, 0) / avgs.length) * 100) / 100 : null;
     const p90 = g.map((x) => x.quantiles?.queryBatchTimeMsP90).filter((x) => typeof x === 'number');
     blank.d1.latency_p90_ms = p90.length ? Math.round(Math.max(...p90) * 100) / 100 : null;
+  }
+
+  // Which statements are doing the work. Rows read is where a free tier is
+  // actually spent, and it is never spread evenly.
+  const heavy = await firstThatWorks(env, D1_QUERY_SHAPES, dVars, attempts);
+  if (!heavy) {
+    blank.d1.heavy_error = attempts.filter((a) => !a.ok).pop()?.error ?? null;
+  } else {
+    const rows = heavy.groups
+      .map((g) => {
+        const runs = num(g.count);
+        const read = num(g.sum?.rowsRead);
+        return {
+          sql: String(g.dimensions?.query ?? '').replace(/\s+/g, ' ').trim(),
+          runs,
+          rows_read: read,
+          rows_written: num(g.sum?.rowsWritten),
+          rows_per_run: runs ? Math.round(read / runs) : read,
+          duration_ms:
+            typeof g.sum?.queryDurationMs === 'number' ? Math.round(g.sum.queryDurationMs) : null,
+          share_percent: 0,
+        };
+      })
+      .filter((r) => r.sql);
+
+    // Share of the window's total, so "142,000 rows" becomes "22% of everything
+    // this database read" — which is the sentence that decides whether to care.
+    const total = blank.d1.rows_read || rows.reduce((n, r) => n + r.rows_read, 0);
+    for (const r of rows) r.share_percent = total ? (r.rows_read / total) * 100 : 0;
+    blank.d1.heavy = rows.sort((a, b) => b.rows_read - a.rows_read).slice(0, 10);
   }
 
   const storage = await cfGraph(env, D1_STORAGE.query, dVars);

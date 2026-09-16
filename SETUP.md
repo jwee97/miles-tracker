@@ -1260,11 +1260,55 @@ across the window*. Also **rows read per read query**, which is the one number
 that says whether a query found its rows by index or walked the table to reach
 them; past a thousand, the panel says so.
 
+**Where the rows go** — the statements doing the work, heaviest by rows read,
+with the SQL D1 kept (bound parameters are stripped, so nothing sensitive is in
+it). This is the panel that pays for itself: rows read is where a free tier is
+actually spent and it is never spread evenly — one query missing an index reads
+more in a week than everything else together. Each row shows its share of the
+window, how many rows it touches *per run*, and says so in words when that
+number means it is walking a table rather than using an index.
+
 **Against the free tier** — each daily allowance measured on the **busiest day
 of the window**. The allowance resets daily, so an average across a quiet week
 would hide the one day that nearly ran out.
 
+The window offers **today** as well as 7, 14 and 30 days. Today is its own
+question — is the thing I just deployed working — and it is the one a weekly
+view cannot answer.
+
 Cloudflare keeps about 30 days of this, and the most recent hours lag.
+
+### What the exceptions actually were
+
+The counts say *17 scriptThrewException*; only the logs say which line threw. If
+your token carries **Workers Observability Read**, the panel lists the messages
+under the error count, commonest first.
+
+That needs Workers Logs switched on, which this repo now does:
+
+```toml
+[observability]
+enabled = true
+head_sampling_rate = 1
+```
+
+It is free — 200,000 events a day, three days of retention — and this app uses a
+fraction of that. Without it the permission is dead weight, and the panel says
+so rather than showing an empty list.
+
+### Permissions, and what each one buys
+
+| Permission | What it adds |
+|---|---|
+| Account Analytics → Read | everything above: invocations, CPU, D1 rows, storage |
+| D1 → Read | the per-query breakdown under *Where the rows go* |
+| Workers Observability → Read | the exception messages, with `[observability]` on |
+| Workers Metadata → Read-Only | not used yet |
+| Zone Analytics / Logs → Read | nothing here: this Worker has no zone, it runs on workers.dev |
+| Network Quality → Read | nothing here: it measures your connection, not the app |
+
+A token with only the first line still works; the extra panels report what they
+are missing instead of going blank.
 
 ## Verify end to end
 

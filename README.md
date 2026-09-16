@@ -274,6 +274,12 @@ database size and how fast it is growing; each against the free tier's *daily*
 allowance measured on the busiest day of the window — an average across a quiet
 week would hide the day that nearly ran out.
 
+It also names **where the rows go** — the statements doing the most reading,
+with the SQL and each one's share of the window — because rows read is never
+spread evenly, and one query missing an index costs more than everything else
+together. With `Workers Observability Read` on the token it lists what the
+exceptions actually were, not just how many.
+
 Which fields a Cloudflare dataset offers varies by plan, so the panel tries
 several query shapes and uses the first that is accepted. **What was asked**
 lists every attempt and Cloudflare's reply to each, so an empty panel can be

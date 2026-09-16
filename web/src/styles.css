@@ -243,6 +243,8 @@ table.pts tbody tr:last-child td { border-bottom: none; }
 .stat-label { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); }
 .stat-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .stat-value.ok { color: var(--ok); }
+.stat-value.bad { color: var(--bad); }
+.stat-value.mid { color: var(--mid); }
 .stat-sub { font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
 
 .insights h2 { font-size: 15px; margin: 0 0 8px; }
@@ -805,3 +807,19 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .ladder .pays { font-variant-numeric: tabular-nums; }
 .ladder .state { grid-column: 2 / -1; font-size: 11.5px; color: var(--dim); }
 .ladder li.ok .state { color: var(--ok); }
+
+/* The statements doing the work, and what each one costs. */
+.heavy { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.heavy li { padding-top: 10px; border-top: 1px solid var(--line); }
+.heavy li:first-child { border-top: none; padding-top: 0; }
+.heavy-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; margin-bottom: 5px; }
+.heavy-head .mono { font-variant-numeric: tabular-nums; }
+.heavy .meter { margin: 0 0 6px; }
+.sql {
+  display: block; font-size: 11.5px; line-height: 1.5; color: var(--dim);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 9px; white-space: pre-wrap; word-break: break-word;
+}
+.errors-seen li { display: block; }
+.errors-seen .count { color: var(--bad); font-weight: 600; font-variant-numeric: tabular-nums; }
+.errors-seen code { font-size: 12px; word-break: break-word; }

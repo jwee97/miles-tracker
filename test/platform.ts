@@ -15,12 +15,20 @@ const CONFIG = {
 } as unknown as Env;
 
 /** Stands in for Cloudflare. Records what was asked and answers what it is told. */
-function cloudflare(reply: (query: string, vars: any) => { status?: number; body: unknown }) {
-  const seen: { query: string; vars: any; auth: string | null }[] = [];
+function cloudflare(
+  reply: (query: string, vars: any) => { status?: number; body: unknown },
+  logs?: (body: any) => { status?: number; body: unknown }
+) {
+  const seen: { query: string; vars: any; auth: string | null; url: string }[] = [];
   globalThis.fetch = (async (input: any, init: any) => {
+    const url = String(input);
     const body = JSON.parse(init.body);
-    seen.push({ query: body.query, vars: body.variables, auth: init.headers?.Authorization ?? null });
-    const r = reply(body.query, body.variables);
+    seen.push({ query: body.query, vars: body.variables, auth: init.headers?.Authorization ?? null, url });
+    // Workers Logs is a different API from the rest of this panel, so the stub
+    // has to be able to answer it separately.
+    const r = url.includes('/observability/')
+      ? (logs ?? (() => ({ status: 404, body: { success: false, errors: [{ message: 'not enabled' }] } })))(body)
+      : reply(body.query, body.variables);
     return new Response(JSON.stringify(r.body), { status: r.status ?? 200 });
   }) as typeof fetch;
   return seen;
@@ -43,13 +51,27 @@ const d1Groups = (days: [string, number, number][]) =>
     dimensions: { date },
   }));
 
-const ok = (worker: unknown[], d1: unknown[], sizes: [string, number][] | null = [['2026-09-15', 12_000_000]]) => ({
+const heavyGroups = (rows: [string, number, number, number][]) =>
+  rows.map(([query, count, rowsRead, rowsWritten]) => ({
+    count,
+    sum: { rowsRead, rowsWritten, queryDurationMs: count * 3 },
+    avg: { rowsRead: Math.round(rowsRead / count) },
+    dimensions: { query },
+  }));
+
+const ok = (
+  worker: unknown[],
+  d1: unknown[],
+  sizes: [string, number][] | null = [['2026-09-15', 12_000_000]],
+  heavy: unknown[] = []
+) => ({
   data: {
     viewer: {
       accounts: [
         {
           workersInvocationsAdaptive: worker,
           d1AnalyticsAdaptiveGroups: d1,
+          d1QueriesAdaptiveGroups: heavy,
           d1StorageAdaptiveGroups: (sizes ?? []).map(([date, bytes]) => ({
             max: { databaseSizeBytes: bytes },
             dimensions: { date },
@@ -80,7 +102,7 @@ const ok = (worker: unknown[], d1: unknown[], sizes: [string, number][] | null =
   check('the token is sent as a bearer', seen[0].auth === 'Bearer tok', String(seen[0].auth));
   check('and never comes back in the report', !JSON.stringify(r).includes('tok'), '');
   check('it asks about the right worker', seen[0].vars.script === 'miles-tracker', JSON.stringify(seen[0].vars));
-  check('and the right database', seen.some((c) => c.vars.db === 'db-uuid'), JSON.stringify(seen.map((c) => c.vars)));
+  check('and the right database', seen.some((c) => c.vars?.db === 'db-uuid'), JSON.stringify(seen.map((c) => c.vars ?? c.url)));
 
   check('worker requests are totalled', r.worker.requests === 460, String(r.worker.requests));
   check('so are errors', r.worker.errors === 1, String(r.worker.errors));
@@ -166,7 +188,95 @@ const ok = (worker: unknown[], d1: unknown[], sizes: [string, number][] | null =
   check('and growth across the window comes with it', r.d1.size_change_bytes === 3_000_000, String(r.d1.size_change_bytes));
 }
 
-// --- the window --------------------------------------------------------------
+// --- which statements are doing the work -------------------------------------
+{
+  // Rows read is where a free tier is actually spent, and it is never spread
+  // evenly. Naming the statement is the difference between a number to worry
+  // about and a thing to fix.
+  cloudflare(() => ({
+    body: ok([], d1Groups([['2026-09-15', 200_000, 10]]), null, heavyGroups([
+      ['SELECT * FROM transactions WHERE card_id = ?', 40, 160_000, 0],
+      ['SELECT k, v FROM settings', 900, 3_600, 0],
+      ['INSERT INTO transactions (card_id) VALUES (?)', 12, 0, 12],
+    ])),
+  }));
+  const r = await platformReport(CONFIG, 7);
+
+  check('the statements are listed', r.d1.heavy.length === 3, String(r.d1.heavy.length));
+  check('heaviest by rows read first', r.d1.heavy[0].sql.includes('FROM transactions WHERE'), r.d1.heavy[0].sql);
+  check('with the SQL D1 kept', /SELECT \* FROM transactions/.test(r.d1.heavy[0].sql), r.d1.heavy[0].sql);
+  check('rows per run is what says a query scans', r.d1.heavy[0].rows_per_run === 4000, String(r.d1.heavy[0].rows_per_run));
+  check('a busy but cheap query is not mistaken for a heavy one', r.d1.heavy[1].rows_per_run === 4, String(r.d1.heavy[1].rows_per_run));
+  check('each is a share of the window, not a bare count', Math.abs(r.d1.heavy[0].share_percent - 80) < 0.01, String(r.d1.heavy[0].share_percent));
+  check('writes are reported too', r.d1.heavy[2].rows_written === 12, String(r.d1.heavy[2].rows_written));
+  check('and time, when the account has it', r.d1.heavy[0].duration_ms === 120, String(r.d1.heavy[0].duration_ms));
+}
+
+{
+  // The field names on this node are not published, so a rejection has to fall
+  // through to a simpler shape rather than losing the panel.
+  const seen = cloudflare((q) => {
+    if (/d1QueriesAdaptiveGroups/.test(q) && /queryDurationMs/.test(q))
+      return { body: { errors: [{ message: 'Unknown field "queryDurationMs"' }] } };
+    if (/d1QueriesAdaptiveGroups/.test(q))
+      return { body: ok([], [], null, heavyGroups([['SELECT 1', 5, 50, 0]])) };
+    return { body: ok([], d1Groups([['2026-09-15', 50, 1]])) };
+  });
+  const r = await platformReport(CONFIG, 7);
+  check('a rejected field falls through to a simpler query', r.d1.heavy.length === 1, String(r.d1.heavy.length));
+  check('and the simpler one still names the statement', r.d1.heavy[0].sql === 'SELECT 1', r.d1.heavy[0].sql);
+  check('the rejection is recorded', r.attempts.some((a) => !a.ok && /queryDurationMs/.test(a.error ?? '')), JSON.stringify(r.attempts));
+  check('the rest of the panel is unaffected', r.d1.rows_read === 50, String(r.d1.rows_read));
+  check('and it did try more than one shape', seen.filter((c) => /d1QueriesAdaptiveGroups/.test(c.query ?? '')).length === 2, String(seen.length));
+}
+
+// --- what the exceptions actually were ---------------------------------------
+{
+  cloudflare(
+    () => ({ body: ok([], []) }),
+    () => ({
+      body: {
+        success: true,
+        result: {
+          calculations: [
+            {
+              aggregates: [
+                { groups: [{ value: 'TypeError: Cannot read properties of null' }], value: 12 },
+                { groups: [{ value: 'D1_ERROR: no such column: tier' }], value: 5 },
+              ],
+            },
+          ],
+        },
+      },
+    })
+  );
+  const r = await platformReport(CONFIG, 7);
+  check('the exceptions are named, not just counted', r.worker.errors_seen.length === 2, JSON.stringify(r.worker.errors_seen));
+  check('commonest first', r.worker.errors_seen[0].count === 12, JSON.stringify(r.worker.errors_seen[0]));
+  check('with the message itself', /Cannot read properties of null/.test(r.worker.errors_seen[0].message), '');
+  check('and nothing is reported as wrong', r.worker.errors_error === null, String(r.worker.errors_error));
+}
+
+{
+  // Workers Logs returns nothing at all unless [observability] is on, which is
+  // a real state with a real cause and has to say so.
+  cloudflare(
+    () => ({ body: ok([], []) }),
+    () => ({ status: 403, body: { success: false, errors: [{ message: 'Workers Observability Read required' }] } })
+  );
+  const r = await platformReport(CONFIG, 7);
+  check('a refused logs call is explained', /Workers Observability Read required/.test(r.worker.errors_error ?? ''), String(r.worker.errors_error));
+  check('and does not take the numbers down with it', r.worker.error === null, String(r.worker.error));
+
+  cloudflare(
+    () => ({ body: ok([], []) }),
+    () => ({ body: { success: true, result: { calculations: [{ aggregates: [] }] } } })
+  );
+  const empty = await platformReport(CONFIG, 7);
+  check('an empty log says what would fill it', /observability/.test(empty.worker.errors_error ?? ''), String(empty.worker.errors_error));
+}
+
+// --- the window --------------------------------------------------------------// --- the window --------------------------------------------------------------
 {
   const seen = cloudflare(() => ({ body: ok([], []) }));
   const r = await platformReport(CONFIG, 90);
@@ -174,6 +284,9 @@ const ok = (worker: unknown[], d1: unknown[], sizes: [string, number][] | null =
   check('and the dates asked for match it', seen[0].vars.start.startsWith(r.from), `${seen[0].vars.start} vs ${r.from}`);
   const one = await platformReport(CONFIG, 0);
   check('a nonsense window becomes one day, not zero', one.days === 1 && one.from === one.to, JSON.stringify([one.days, one.from, one.to]));
+  // "Today" is its own question and the one a weekly view cannot answer.
+  const today = await platformReport(CONFIG, 1);
+  check('a one-day window is today alone', today.days === 1 && today.from === today.to, JSON.stringify([today.from, today.to]));
 }
 
 // --- the network is not there ------------------------------------------------
