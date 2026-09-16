@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { confirmMcc, fetchRecommend, money, type Evaluation, type Recommendation } from './api';
+import { confirmMcc, money, recommendV2, type RecommendationV2 } from './api';
+import ConfidenceBadge from './components/ConfidenceBadge';
+import { AlternativePick, TopRecommendation } from './components/RecommendationCard';
 
 const OBJECTIVES = [
   ['balanced', 'Balanced'],
@@ -8,78 +10,31 @@ const OBJECTIVES = [
   ['minspend', 'Hit minimums'],
 ];
 
-const rate = (e: Evaluation) =>
-  e.reward_type === 'cashback' ? `${e.effective_rate.toFixed(2)}% back` : `${e.effective_rate} mpd`;
+const CHANNELS = [
+  ['', 'Auto'],
+  ['online', 'Online'],
+  ['in_store', 'In store'],
+  ['contactless', 'Contactless'],
+];
 
-function Pick({ e, rank }: { e: Evaluation; rank: number }) {
-  const [why, setWhy] = useState(false);
-  const medal = ['🥇', '🥈', '🥉'][rank] ?? '  ';
-
-  return (
-    <li className={`pick ${rank === 0 && !e.excluded ? 'best' : ''} ${e.excluded ? 'excluded' : ''}`}>
-      <div className="pick-top">
-        <span className="pick-name">
-          <span className="medal">{medal}</span>
-          {e.card.product}
-        </span>
-        <span className="pick-earn mono">
-          {e.excluded ? (
-            <span className="bad-text">earns nothing</span>
-          ) : (
-            <>
-              {e.reward_type === 'cashback'
-                ? `$${money(e.cashback_cents)}`
-                : `${e.miles.toLocaleString()} mi`}
-            </>
-          )}
-        </span>
-      </div>
-      <div className="pick-meta">
-        <span>{e.excluded ? (e.exclusion_reason ?? 'excluded') : rate(e)}</span>
-        {!e.excluded && e.headroom_cents !== null && (
-          <span className={e.headroom_cents === 0 ? 'warn-num' : ''}>
-            {e.headroom_cents === 0
-              ? 'bonus cap used up'
-              : `$${money(e.headroom_cents)} bonus allowance left`}
-          </span>
-        )}
-        {e.min_spend_short_cents > 0 && (
-          <span className="warn-num">
-            ${money(e.min_spend_short_cents)} short of its minimum
-            {e.min_spend_days_left !== null && `, ${e.min_spend_days_left}d`}
-          </span>
-        )}
-      </div>
-      {e.base_portion_cents > 0 && e.bonus_portion_cents > 0 && (
-        <p className="pick-split">
-          ${money(e.bonus_portion_cents)} at the bonus rate · ${money(e.base_portion_cents)} at the base rate
-        </p>
-      )}
-      <button type="button" className="link-btn why" onClick={() => setWhy((w) => !w)}>
-        {why ? 'Hide' : 'Why?'}
-      </button>
-      {why && (
-        <ol className="trace">
-          {e.trace.map((s, i) => (
-            <li key={i} className={s.pass === true ? 'ok' : s.pass === false ? 'no' : 'info'}>
-              <span className="trace-check">{s.check}</span>
-              <span className="trace-detail">{s.detail}</span>
-            </li>
-          ))}
-        </ol>
-      )}
-    </li>
-  );
-}
-
-export default function Advisor() {
+/**
+ * Which card to use.
+ *
+ * The answer is one card, so one card gets the page. Everything else —
+ * runners-up, the cards that cannot be used, the arithmetic, what was assumed
+ * — is available underneath without being in the way.
+ */
+export default function Advisor({ action }: { action?: (r: RecommendationV2) => React.ReactNode }) {
   const [merchant, setMerchant] = useState('');
   const [amount, setAmount] = useState('');
+  const [channel, setChannel] = useState('');
   const [objective, setObjective] = useState('');
-  const [rec, setRec] = useState<Recommendation | null>(null);
+  const [rec, setRec] = useState<RecommendationV2 | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [fixMcc, setFixMcc] = useState('');
+  const [showConf, setShowConf] = useState(false);
+  const [showIneligible, setShowIneligible] = useState(false);
 
   async function run(e?: React.FormEvent) {
     e?.preventDefault();
@@ -87,7 +42,7 @@ export default function Advisor() {
     setBusy(true);
     setErr(null);
     try {
-      setRec(await fetchRecommend({ merchant, amount, objective }));
+      setRec(await recommendV2({ merchant, amount, channel: channel || null, objective }));
     } catch (x) {
       setErr((x as Error).message);
     } finally {
@@ -95,18 +50,19 @@ export default function Advisor() {
     }
   }
 
-  // Re-rank when the objective changes, without retyping.
+  // Re-rank when the objective or channel changes, without retyping.
   useEffect(() => {
     if (rec) run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [objective]);
+  }, [objective, channel]);
 
   const g = rec?.merchant;
+  const top = rec?.recommendation ?? null;
 
   return (
     <>
       <form className="card advisor" onSubmit={run}>
-        <h2>Where are you spending?</h2>
+        <h2>Which card should I use?</h2>
         <input
           id="adv-merchant"
           className="big-search"
@@ -121,11 +77,18 @@ export default function Advisor() {
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             inputMode="decimal"
-            placeholder="Amount (optional)"
+            placeholder="Amount (optional, but caps need it)"
           />
           <button type="submit" disabled={busy || !merchant.trim()}>
-            {busy ? '…' : 'Check'}
+            {busy ? '…' : 'Check cards'}
           </button>
+        </div>
+        <div className="seg wrap" role="group" aria-label="Purchase type">
+          {CHANNELS.map(([k, label]) => (
+            <button key={k || 'auto'} type="button" className={channel === k ? 'on' : ''} onClick={() => setChannel(k)}>
+              {label}
+            </button>
+          ))}
         </div>
         <div className="seg wrap" role="group" aria-label="Optimise for">
           {OBJECTIVES.map(([k, label]) => (
@@ -139,7 +102,7 @@ export default function Advisor() {
 
       {rec && (
         <>
-          <section className="card">
+          <section className="card merchant-head">
             <header>
               <div>
                 <h2>{g?.merchant ?? merchant}</h2>
@@ -156,6 +119,13 @@ export default function Advisor() {
                 </p>
               </div>
             </header>
+
+            <ConfidenceBadge
+              confidence={rec.confidence}
+              assumptions={rec.assumptions}
+              open={showConf}
+              onToggle={() => setShowConf((v) => !v)}
+            />
 
             {g?.confidence !== 'confirmed' && (
               <details className="batches">
@@ -186,13 +156,17 @@ export default function Advisor() {
                 </p>
               </details>
             )}
-
-            <ul className="picks-list">
-              {rec.picks.map((p, i) => (
-                <Pick key={p.card.id} e={p} rank={i} />
-              ))}
-            </ul>
           </section>
+
+          {top ? (
+            <TopRecommendation p={top} action={action?.(rec)} />
+          ) : (
+            <section className="card">
+              <p className="sub">
+                No card can be used for this purchase. The cards that were considered are below, each with the reason.
+              </p>
+            </section>
+          )}
 
           {rec.split_advice && (
             <section className="card missed">
@@ -203,13 +177,54 @@ export default function Advisor() {
                 </div>
               </header>
               <p>
-                Put the first <b>${money(rec.split_advice.bonus_cents)}</b> on{' '}
-                <b>{rec.picks[0].card.product}</b>, and the remaining{' '}
-                <b>${money(rec.split_advice.remainder_cents)}</b> on <b>{rec.split_advice.use}</b> — that part earns{' '}
-                {rec.split_advice.earns} instead of the base rate.
+                Put the first <b>${money(rec.split_advice.bonus_cents)}</b> on <b>{top?.card.product}</b>, and the
+                remaining <b>${money(rec.split_advice.remainder_cents)}</b> on <b>{rec.split_advice.use}</b> — that part
+                earns {rec.split_advice.earns} instead of the base rate.
               </p>
+              <p className="sub">Worth ${money(rec.split_advice.gain_cents)} more than leaving it all on one card.</p>
             </section>
           )}
+
+          {rec.alternatives.length > 0 && (
+            <section className="card">
+              <header>
+                <div>
+                  <h2>Other options</h2>
+                </div>
+              </header>
+              <ul className="picks-list">
+                {rec.alternatives.map((p, i) => (
+                  <AlternativePick key={p.card.id} p={p} rank={i + 2} />
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {rec.ineligible.length > 0 && (
+            <section className="card">
+              <div className="section-head" style={{ marginTop: 0 }}>
+                <h2>Cannot be used here ({rec.ineligible.length})</h2>
+                <button className="secondary" onClick={() => setShowIneligible((v) => !v)}>
+                  {showIneligible ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              <p className="sub">
+                Not merely behind — an excluded code, a closed card or no rules in force means the card cannot earn on
+                this purchase at all, however good its rate.
+              </p>
+              {showIneligible && (
+                <ul className="picks-list">
+                  {rec.ineligible.map((p) => (
+                    <AlternativePick key={p.card.id} p={p} rank={0} />
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+
+          <p className="pad sub rec-foot">
+            Worked out on {rec.evaluated_at} · card data: {rec.data_version}
+          </p>
         </>
       )}
     </>

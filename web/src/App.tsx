@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Advisor from './Advisor';
+import Catalog from './Catalog';
 import Audit from './Audit';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
@@ -1859,6 +1860,7 @@ export default function App() {
   const [tab, setTab] = useState<
     | 'use'
     | 'cards'
+    | 'catalog'
     | 'ledger'
     | 'other'
     | 'trends'
@@ -1941,6 +1943,9 @@ export default function App() {
         </button>
         <button className={tab === 'cards' ? 'on' : ''} onClick={() => setTab('cards')}>
           Cards
+        </button>
+        <button className={tab === 'catalog' ? 'on' : ''} onClick={() => setTab('catalog')}>
+          Catalogue
         </button>
         <button className={tab === 'ledger' ? 'on' : ''} onClick={() => setTab('ledger')}>
           Ledger
@@ -2034,6 +2039,8 @@ export default function App() {
         ))}
 
       {tab === 'use' && <Advisor />}
+
+      {tab === 'catalog' && <Catalog />}
 
       {tab === 'ledger' && <Ledger />}
 

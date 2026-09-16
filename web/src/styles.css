@@ -824,3 +824,37 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .errors-seen .count { color: var(--bad); font-weight: 600; font-variant-numeric: tabular-nums; }
 .errors-seen code { font-size: 12px; word-break: break-word; }
 .qpattern { margin-top: 4px; font-size: 11.5px; }
+
+/* --- the V2 recommendation ---------------------------------------------- */
+.rec-top { border-color: rgba(74, 222, 128, .35); }
+.rec-kicker { margin: 0; font-size: 11.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--ok); }
+.rec-name { margin: 4px 0 0; font-size: 22px; line-height: 1.2; }
+.rec-sub { margin: 3px 0 0; font-size: 12.5px; color: var(--dim); }
+.rec-reward { display: flex; align-items: baseline; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.rec-amount { font-size: 28px; font-weight: 700; color: var(--ok); }
+.rec-rate { font-size: 14px; color: var(--mid); }
+.rec-cap { margin: 4px 0 0; font-size: 13px; color: var(--dim); }
+.rec-actions { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
+.rec-foot { font-size: 12px; }
+
+.score-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12.5px; }
+.score-table td { padding: 4px 0; color: var(--dim); }
+.score-table td + td { text-align: right; color: var(--text); }
+.score-total td { border-top: 1px solid var(--line); font-weight: 600; color: var(--text); padding-top: 7px; }
+
+.confidence { margin-top: 10px; }
+.conf-chip { cursor: pointer; }
+.conf-why { font-size: 12.5px; color: var(--dim); margin-left: 8px; }
+.conf-detail { margin-top: 10px; }
+.conf-reasons, .assumptions { list-style: none; padding: 0; margin: 0 0 8px; font-size: 12.5px; }
+.conf-reasons li, .assumptions li { padding: 4px 0 4px 12px; border-left: 2px solid var(--line); color: var(--dim); }
+.assumptions li.material { border-left-color: var(--bad); color: var(--text); }
+.assumptions li b { color: var(--text); }
+
+/* --- the catalogue ------------------------------------------------------- */
+.catalog-list li p.sub { margin: 3px 0 0; }
+.catalog-detail { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.catalog-detail h3 { margin: 0; font-size: 15px; }
+.catalog-detail h4 { margin: 14px 0 0; font-size: 13px; color: var(--dim); }
+.versions .version-rules { list-style: none; padding: 0; margin: 6px 0 0; }
+.versions .version-rules li { padding: 2px 0 2px 12px; border-left: 2px solid var(--line); }

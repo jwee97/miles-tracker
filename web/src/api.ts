@@ -531,6 +531,98 @@ export const fetchRecommend = (p: { merchant?: string; amount?: string; mcc?: st
   return get<Recommendation>(`/api/recommend?${q}`);
 };
 
+/* --- the V2 engine ------------------------------------------------------ */
+
+export interface ScoreComponents {
+  reward_value: number;
+  objective_bonus: number;
+  minimum_spend_bonus: number;
+  urgency_bonus: number;
+  uncertainty_penalty: number;
+  exhausted_cap_penalty: number;
+}
+
+export interface RecommendationPick {
+  card: { id: number; nickname: string; issuer: string; product: string; product_id: number | null };
+  reward: { type: 'miles' | 'cashback'; amount: number; effective_rate: number; value_cents: number };
+  cap: { applies: boolean; cap_cents: number | null; used_cents: number; remaining_cents: number | null };
+  minimum_spend: { remaining_cents: number; days_left: number | null; urgent: boolean } | null;
+  rule_set_id: number | null;
+  reasons: { pass: boolean | null; text: string }[];
+  score_components: ScoreComponents;
+  score: number;
+  disqualified: { reason: string; detail: string } | null;
+}
+
+export interface RecommendationV2 {
+  purchase: { amount_cents: number | null; mcc?: string | null; category?: string | null; channel?: string | null; resolved_from: string | null };
+  merchant: MerchantGuess | null;
+  objective: string;
+  confidence: { level: 'high' | 'medium' | 'low'; reasons: string[] };
+  recommendation: RecommendationPick | null;
+  alternatives: RecommendationPick[];
+  ineligible: RecommendationPick[];
+  split_advice: { bonus_cents: number; remainder_cents: number; use: string; earns: string; gain_cents: number } | null;
+  assumptions: { what: string; because: string; weight: 'material' | 'minor' }[];
+  evaluated_at: string;
+  data_version: string;
+}
+
+export const recommendV2 = (b: {
+  merchant?: string;
+  amount?: string;
+  mcc?: string | null;
+  category?: string | null;
+  channel?: string | null;
+  objective?: string;
+  occurred_at?: string;
+}) => post<RecommendationV2>('/api/recommend', b);
+
+/* --- the card catalogue -------------------------------------------------- */
+
+export interface CatalogProduct {
+  id: number;
+  product_key: string;
+  issuer: string;
+  product_name: string;
+  network: string | null;
+  reward_type: string | null;
+  program_key: string | null;
+  base_mpd: number | null;
+  base_cashback_pct: number | null;
+  annual_fee_cents: number | null;
+  official_url: string | null;
+  source: string;
+  verification_status: string;
+  last_verified_at: string | null;
+  stale: boolean;
+  current_rule_set: { id: number; version: number; effective_from: string } | null;
+  rules: number;
+  held_by: string[];
+}
+
+export interface CatalogRuleSet {
+  id: number;
+  version: number;
+  status: string;
+  effective_from: string;
+  effective_until: string | null;
+  notes: string | null;
+  rules: { id: number; category: string; mpd: number; reward_type: string; cap_cents: number | null; mcc_list: string | null; channel: string | null }[];
+  exclusions: { id: number; mcc: string; reason: string | null }[];
+}
+
+export interface CatalogDetail {
+  product: CatalogProduct;
+  versions: CatalogRuleSet[];
+  sources: { id: number; source_type: string; source_url: string; title: string | null; retrieved_at: string }[];
+  overlaps: { a: number; b: number; from: string; until: string | null }[];
+}
+
+export const fetchCatalog = (q = '') => get<{ products: CatalogProduct[] }>(`/api/catalog/cards?q=${encodeURIComponent(q)}`);
+
+export const fetchCatalogCard = (key: string) => get<CatalogDetail>(`/api/catalog/cards/${encodeURIComponent(key)}`);
+
 export const confirmMcc = (merchant: string, mcc: string, channel?: string) =>
   post<{ ok: true; merchant: MerchantGuess }>('/api/mcc/merchant', { merchant, mcc, channel, confirmed: true });
 
