@@ -135,7 +135,15 @@ export default {
               quarter: p.quarter,
               months: p.months,
               tiers: p.tiers,
+              // The ladder decides the minimum; the months already closed
+              // decide how high this one is still worth taking.
+              floor_cents: p.floor_cents,
               tier: p.tier,
+              ceiling_tier: p.ceiling_tier,
+              ceiling_reason: p.ceiling_reason,
+              target_cents: p.target_cents,
+              to_target_cents: p.to_target_cents,
+              beyond_target_cents: p.beyond_target_cents,
               quarter_tier: p.quarter_tier,
               thirds: p.thirds,
               projected_reward_cents: p.projected_reward_cents,
@@ -871,6 +879,11 @@ export default {
               return json({ error: 'each tier needs a spend and what it pays' }, 400);
           }
 
+          // With a ladder, the lowest rung IS the minimum, so that is what gets
+          // stored. Keeping a different number would have the app and the row
+          // disagreeing about the same card.
+          const lowestRung = tiers.length ? Math.min(...tiers.map((t) => t.min_spend!)) : null;
+
           const ins = await env.DB.prepare(
             `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, min_txns,
                bonus_cap_cents, reward_note, anchor_at, per_month, prorate_first, active)
@@ -879,7 +892,7 @@ export default {
             .bind(
               card.id,
               kind,
-              amount,
+              lowestRung ?? amount,
               window,
               deadline,
               starts,
@@ -899,7 +912,12 @@ export default {
               .bind(ins.meta.last_row_id, t.min_spend, t.reward, t.label)
               .run();
           }
-          return json({ ok: true, id: ins.meta.last_row_id, tiers: tiers.length });
+          return json({
+            ok: true,
+            id: ins.meta.last_row_id,
+            tiers: tiers.length,
+            amount_cents: lowestRung ?? amount,
+          });
         }
 
         if (url.pathname === '/api/card/requirement/delete' && req.method === 'POST') {

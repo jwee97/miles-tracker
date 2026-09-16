@@ -328,8 +328,38 @@ export interface Progress {
   /** Every statement month in that quarter, so a missed one is visible. */
   months: MonthSlice[];
   tiers: RequirementTier[];
+  /**
+   * The minimum that actually has to be hit this window.
+   *
+   * With tiers, that is the LOWEST rung — clear it and the quarter pays
+   * something, miss it and it pays nothing. The amount stored on the
+   * requirement is ignored when a ladder exists, because a card with rungs at
+   * $600/$1,000/$2,000 has a minimum of $600 whatever number was typed in when
+   * the requirement was created.
+   */
+  floor_cents: number;
   /** The tier THIS window's spend has reached — what you are on right now. */
   tier: RequirementTier | null;
+  /**
+   * The best tier the quarter can still pay, given the months already closed.
+   *
+   * The quarter pays at its weakest month, so a month that closed at $700 caps
+   * the whole quarter at the $600 rung however much is spent afterwards. Null
+   * while nothing is decided, when every rung is still reachable.
+   */
+  ceiling_tier: RequirementTier | null;
+  /** Which month set that ceiling, and at what, in a few words. */
+  ceiling_reason: string | null;
+  /** What to spend this window to hold the best tier still available. */
+  target_cents: number | null;
+  /** Still to spend to reach that target. */
+  to_target_cents: number;
+  /**
+   * Spend past the target that buys no more cashback this quarter. Not wasted
+   * money — it still earns the base rate — but it earns nothing *extra*, which
+   * is the moment to put the next purchase on another card.
+   */
+  beyond_target_cents: number;
   /**
    * What the quarter pays if it ends the way it stands: the LOWEST tier across
    * the months that have qualified, because the reward is for sustaining the
@@ -402,9 +432,15 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
   else if (req.window === 'statement_cycle') window = statementCycle(card.statement_day, env);
   else window = { start: req.starts_at ?? card.opened_at ?? now, end: req.deadline ?? now };
 
+  // With a ladder, the lowest rung IS the minimum. Any other figure stored on
+  // the requirement predates the tiers, and believing it reports a perfectly
+  // good month as a miss: a card with rungs at $600/$1,000/$2,000 has a
+  // minimum of $600 whatever number was typed in when it was created.
+  const floor = tiers.length ? tiers[0].min_spend_cents : req.amount_cents;
+
   const { spend, excluded, excluded_count, spent } = await countedSpend(env, card.id, window.start, window.end);
   const confirmed = spent - spend.at_risk_cents;
-  const remaining = Math.max(0, req.amount_cents - spent);
+  const remaining = Math.max(0, floor - spent);
   const daysLeft = Math.max(0, daysBetween(now, window.end));
   const cap = req.bonus_cap_cents ?? 0;
 
@@ -428,7 +464,7 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
         confirmed_cents: c.spent - c.spend.at_risk_cents,
         at_risk_cents: c.spend.at_risk_cents,
         txn_count: txns,
-        qualified: c.spent >= req.amount_cents && txns >= txnsRequired,
+        qualified: c.spent >= floor && txns >= txnsRequired,
         tier_index: tierFor(tiers, c.spent),
         state: m.end < now ? 'past' : m.start > now ? 'future' : 'current',
       });
@@ -442,6 +478,35 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
   // and it goes to null the moment a closed month failed, because then there is
   // nothing left to pay.
   const tier = tiers.length ? (tierFor(tiers, spent) !== null ? tiers[tierFor(tiers, spent)!] : null) : null;
+
+  // The quarter pays at its weakest month, so a month that closed one rung down
+  // caps every month after it. Spending past that rung this month buys nothing
+  // more THIS quarter — which is the difference between a useful target and a
+  // number that just says "spend more".
+  let ceilingTier: RequirementTier | null = null;
+  let ceilingReason: string | null = null;
+  if (tiers.length) {
+    let lowest: number | null = null;
+    let by: MonthSlice | null = null;
+    for (const m of months) {
+      if (m.state !== 'past' || !m.qualified || m.tier_index === null) continue;
+      if (lowest === null || m.tier_index < lowest) {
+        lowest = m.tier_index;
+        by = m;
+      }
+    }
+    if (lowest !== null && by) {
+      ceilingTier = tiers[lowest];
+      ceilingReason = `month ${by.index} closed at $${money(by.spent_cents)}`;
+    }
+  }
+
+  // Aim at the ceiling when there is one. Without one — the first month of a
+  // quarter — nothing is decided yet and every rung is still reachable, so the
+  // app declines to invent an aspiration and shows the ladder instead.
+  const targetCents = ceilingTier ? ceilingTier.min_spend_cents : null;
+  const toTarget = targetCents === null ? 0 : Math.max(0, targetCents - spent);
+  const beyondTarget = targetCents === null ? 0 : Math.max(0, spent - targetCents);
   let thirds: number | null = null;
   let quarterTier: RequirementTier | null = null;
   let projected = 0;
@@ -501,7 +566,7 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
     at_risk_count: spend.at_risk_count,
     excluded_cents: excluded,
     excluded_count,
-    met_only_with_at_risk: remaining === 0 && confirmed < req.amount_cents,
+    met_only_with_at_risk: remaining === 0 && confirmed < floor,
     remaining_cents: remaining,
     days_left: daysLeft,
     per_day_cents: daysLeft > 0 ? Math.ceil(remaining / daysLeft) : remaining,
@@ -514,7 +579,13 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
     quarter,
     months,
     tiers,
+    floor_cents: floor,
     tier,
+    ceiling_tier: ceilingTier,
+    ceiling_reason: ceilingReason,
+    target_cents: targetCents,
+    to_target_cents: toTarget,
+    beyond_target_cents: beyondTarget,
     quarter_tier: quarterTier,
     thirds,
     projected_reward_cents: projected,
@@ -571,8 +642,8 @@ export async function standings(env: Env): Promise<Standing[]> {
     }
     const headline = headlineOf(requirements);
     const percent = headline
-      ? headline.requirement.amount_cents > 0
-        ? Math.min(100, (headline.spent_cents / headline.requirement.amount_cents) * 100)
+      ? headline.floor_cents > 0
+        ? Math.min(100, (headline.spent_cents / headline.floor_cents) * 100)
         : 100
       : utilization_.percent;
 

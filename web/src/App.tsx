@@ -148,7 +148,10 @@ function RequirementRow({ p, nickname }: { p: Progress; nickname: string }) {
       : p.quarter
         ? `Month ${p.months.find((m) => m.state === 'current')?.index ?? 3} of Q${p.quarter.index}`
         : 'Monthly minimum';
-  const pct = (p.spent_cents / p.amount_cents) * 100;
+  // The ladder decides the minimum: a card with rungs at $600/$1,000/$2,000 has
+  // a minimum of $600, whatever number the requirement was created with.
+  const floor = p.floor_cents || p.amount_cents;
+  const pct = (p.spent_cents / floor) * 100;
   const urgent = !p.met && p.days_left <= 7;
 
   return (
@@ -156,7 +159,7 @@ function RequirementRow({ p, nickname }: { p: Progress; nickname: string }) {
       <div className="req-head">
         <span>{label}</span>
         <span className="mono">
-          ${money(p.spent_cents)} / ${money(p.amount_cents)}
+          ${money(p.spent_cents)} / ${money(floor)}
           {p.txns_required > 0 && ` · ${p.txn_count}/${p.txns_required} txns`}
         </span>
       </div>
@@ -222,8 +225,11 @@ function QuarterStrip({ p }: { p: Progress }) {
     m.qualified ? 'ok' : m.state === 'past' ? 'bad' : m.state === 'current' ? 'now' : 'ahead';
   // Urging more spend into a quarter that already pays nothing is the opposite
   // of useful, so the next rung is only offered while there is one to earn.
+  // Urging more spend into a quarter that already pays nothing is the opposite
+  // of useful — and so is urging a rung the quarter can no longer reach.
   const dead = p.months_missed > 0 && !p.thirds;
-  const next = dead ? undefined : p.tiers.find((t) => t.min_spend_cents > p.spent_cents);
+  const tiers = p.tiers;
+  const next = dead || p.ceiling_tier ? undefined : tiers.find((t) => t.min_spend_cents > p.spent_cents);
 
   return (
     <div className="quarter">
@@ -257,13 +263,70 @@ function QuarterStrip({ p }: { p: Progress }) {
           {p.months_missed} statement month{p.months_missed === 1 ? '' : 's'} closed short — this quarter pays nothing.
           The next one starts after {p.quarter.end}.
         </p>
-      ) : p.quarter_tier && p.thirds ? (
-        <p className="sub">
-          On course for <strong>${money(p.projected_reward_cents)}</strong> at the ${money(p.quarter_tier.min_spend_cents)}{' '}
-          tier{p.thirds < 3 ? ` · pro-rated to ${p.thirds}/3` : ''} — a projection, not a promise: the months ahead have
-          to hold.
-        </p>
-      ) : null}
+      ) : (
+        <>
+          {p.quarter_tier && p.thirds ? (
+            <p className="sub">
+              On course for <strong>${money(p.projected_reward_cents)}</strong> at the $
+              {money(p.quarter_tier.min_spend_cents)} tier{p.thirds < 3 ? ` · pro-rated to ${p.thirds}/3` : ''} — a
+              projection, not a promise: the months ahead have to hold.
+            </p>
+          ) : null}
+
+          {/* The thing that was missing. The quarter pays at its weakest month,
+              so once one has closed a rung down, spending to a higher rung in
+              the months after it buys nothing more that quarter. */}
+          {p.ceiling_tier ? (
+            <p className="sub">
+              <strong>Aim for ${money(p.ceiling_tier.min_spend_cents)} this month.</strong> {p.ceiling_reason}, and a
+              quarter pays at its weakest month — so anything above $
+              {money(p.ceiling_tier.min_spend_cents)} still pays ${money(p.ceiling_tier.reward_cents)} this quarter.
+              {p.to_target_cents > 0 ? (
+                <> ${money(p.to_target_cents)} to go.</>
+              ) : p.beyond_target_cents > 0 ? (
+                <> You are ${money(p.beyond_target_cents)} past it — further spend here earns only the base rate.</>
+              ) : null}
+            </p>
+          ) : (
+            tiers.length > 0 && (
+              <p className="sub">
+                Nothing is capped yet — every rung is still reachable. Whichever one you hold in all three months is
+                what the quarter pays.
+              </p>
+            )
+          )}
+
+          {/* The ladder, with the rung this month sits on. A tier table is
+              unreadable as prose and this is the card's whole reward shape. */}
+          {tiers.length > 0 && (
+            <ul className="ladder">
+              {tiers.map((t, i) => {
+                const reached = p.spent_cents >= t.min_spend_cents;
+                const ruled = p.ceiling_tier ? t.min_spend_cents > p.ceiling_tier.min_spend_cents : false;
+                const here = reached && p.spent_cents < (tiers[i + 1]?.min_spend_cents ?? Infinity);
+                return (
+                  <li key={t.id} className={ruled ? 'ruled' : reached ? 'ok' : ''}>
+                    <span className="mark" aria-hidden="true">
+                      {ruled ? '✕' : reached ? '✓' : '·'}
+                    </span>
+                    <span className="mono">${money(t.min_spend_cents)} a month</span>
+                    <span className="pays">${money(t.reward_cents)} a quarter</span>
+                    <span className="state">
+                      {ruled
+                        ? 'out of reach this quarter'
+                        : here
+                          ? 'where you are'
+                          : reached
+                            ? 'cleared'
+                            : `$${money(t.min_spend_cents - p.spent_cents)} more`}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
+      )}
       {next && (
         <p className="sub">
           ${money(next.min_spend_cents - p.spent_cents)} more this month reaches the ${money(next.min_spend_cents)} tier,

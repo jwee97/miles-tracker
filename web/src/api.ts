@@ -82,8 +82,17 @@ export interface Progress {
   quarter: { start: string; end: string; index: number; months: { start: string; end: string }[] } | null;
   months: MonthSlice[];
   tiers: Tier[];
+  /** The minimum that actually has to be hit — the lowest rung, when there are rungs. */
+  floor_cents: number;
   /** The tier this window's spend has reached. */
   tier: Tier | null;
+  /** The best tier the quarter can still pay, given the months already closed. */
+  ceiling_tier: Tier | null;
+  ceiling_reason: string | null;
+  /** What to spend this window to hold that tier. Null while nothing is decided. */
+  target_cents: number | null;
+  to_target_cents: number;
+  beyond_target_cents: number;
   /** What the quarter pays if it ends as it stands — the lowest month's tier. */
   quarter_tier: Tier | null;
   thirds: number | null;

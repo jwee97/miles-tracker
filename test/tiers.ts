@@ -195,6 +195,123 @@ at('2026-05-15');
   check('and no tiers', p.tiers.length === 0 && p.tier === null, '');
 }
 
+// --- the ladder IS the minimum, and the target follows the weakest month -----
+//
+// UOB One's real shape: S$600 / S$1,000 / S$2,000 a statement month, sustained
+// across three, paying S$60 / S$100 / S$200 a quarter. The quarter pays at its
+// weakest month, so once a month has closed one rung down, spending to a higher
+// rung in the months after it buys nothing more that quarter.
+{
+  sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at,base_mpd)
+       VALUES ('UOB','One Real','uob_real','real',1000000,18,'2026-02-10',0)`);
+  const real = db.prepare(`SELECT * FROM cards WHERE nickname='real'`).get() as Card;
+
+  // Deliberately stored with the MIDDLE rung as the amount, which is the state
+  // that reported a $900 month as a miss.
+  sql(
+    `INSERT INTO requirements (card_id,kind,amount_cents,window,min_txns,anchor_at,per_month,prorate_first)
+     VALUES (?,'monthly_min',100000,'statement_quarter',10,'2026-02-10',1,0)`,
+    real.id
+  );
+  const rr = db.prepare(`SELECT * FROM requirements WHERE card_id = ?`).get(real.id) as Requirement;
+  for (const [min, reward] of [[60000, 6000], [100000, 10000], [200000, 20000]] as [number, number][]) {
+    sql(`INSERT INTO requirement_tiers (requirement_id,min_spend_cents,reward_cents) VALUES (?,?,?)`, rr.id, min, reward);
+  }
+
+  const put = (date: string, cents: number, n = 10) => {
+    for (let i = 0; i < n; i++)
+      sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,merchant) VALUES (?,?,?,'shop')`, real.id, Math.round(cents / n), date);
+  };
+
+  // Month 1 of Q3 (19 Aug - 18 Sep): $900. Short of the stored $1,000, but well
+  // clear of the real minimum.
+  put('2026-09-01', 90000);
+  at('2026-09-10');
+  {
+    const p = await requirementProgress(env, real, rr);
+    check('the lowest rung is the minimum, not the number stored', p.floor_cents === 60000, String(p.floor_cents));
+    check('so a $900 month is met, not missed', p.met === true, JSON.stringify({ spent: p.spent_cents, remaining: p.remaining_cents }));
+    check('and nothing is reported as still to spend', p.remaining_cents === 0, String(p.remaining_cents));
+    check('$900 sits on the $600 rung, not the $1,000 one', p.tier?.min_spend_cents === 60000, JSON.stringify(p.tier));
+    check('with nothing decided, no rung is ruled out yet', p.ceiling_tier === null, JSON.stringify(p.ceiling_tier));
+    check('so no target is invented', p.target_cents === null, String(p.target_cents));
+  }
+
+  // Month 2 (19 Sep - 18 Oct): another $900. Month 1 has now closed at the
+  // bottom rung, which caps the whole quarter there.
+  put('2026-10-01', 90000);
+  at('2026-10-10');
+  {
+    const p = await requirementProgress(env, real, rr);
+    check('a closed month at the bottom rung caps the quarter', p.ceiling_tier?.min_spend_cents === 60000, JSON.stringify(p.ceiling_tier));
+    check('and says which month did it', /month 1 closed at \$900\.00/.test(p.ceiling_reason ?? ''), String(p.ceiling_reason));
+    check('the target for this month is that rung, not the one above', p.target_cents === 60000, String(p.target_cents));
+    check('which is already cleared', p.to_target_cents === 0, String(p.to_target_cents));
+    check('and the overshoot is named', p.beyond_target_cents === 30000, String(p.beyond_target_cents));
+    check('the quarter is tracking the $600 tier', p.quarter_tier?.reward_cents === 6000, JSON.stringify(p.quarter_tier));
+  }
+
+  // Month 3 (19 Oct - 18 Nov): $100 so far. The number that matters is $600 —
+  // reaching $1,000 would pay exactly the same, because month 1 already capped it.
+  put('2026-11-01', 10000, 2);
+  at('2026-11-05');
+  {
+    const p = await requirementProgress(env, real, rr);
+    check('the aim in the last month is the capped rung', p.target_cents === 60000, String(p.target_cents));
+    check('and what is left to it is the actionable number', p.to_target_cents === 50000, String(p.to_target_cents));
+    check('the minimum still to go agrees with it', p.remaining_cents === 50000, String(p.remaining_cents));
+    check('the transaction count is still short', p.txns_remaining === 8, String(p.txns_remaining));
+  }
+
+  // Finish month 3 at exactly the floor: the quarter pays the bottom tier.
+  put('2026-11-06', 50000, 8);
+  {
+    const p = await requirementProgress(env, real, rr);
+    check('all three months qualify', p.months.every((m) => m.qualified), JSON.stringify(p.months.map((m) => [m.index, m.spent_cents, m.qualified])));
+    check('and the quarter pays the rung its weakest month held', p.quarter_tier?.min_spend_cents === 60000, JSON.stringify(p.quarter_tier));
+    check('which is $60, not $100', p.projected_reward_cents === 6000, String(p.projected_reward_cents));
+  }
+}
+
+// --- what the bot says about a capped quarter --------------------------------
+{
+  at('2026-10-10');
+  const text = await buildDigest(env);
+  check('the digest names the rung to aim at', /aim for \$600\.00 this month/.test(text), '');
+  check('and why it is that one', /month 1 closed at \$900\.00/.test(text), '');
+  check('and that spending higher pays no more', /still pays \$60\.00/.test(text), '');
+  check('the minimum shown is the lowest rung', /\$600\.00 met/.test(text) || /\/ \$600\.00/.test(text), '');
+  check('it does not urge the next rung up', !/reaches the \$1,000\.00 tier/.test(text), '');
+}
+
+// --- a quarter held at the top rung ------------------------------------------
+{
+  sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at,base_mpd)
+       VALUES ('UOB','One Big','uob_big','big',1000000,18,'2026-02-10',0)`);
+  const big = db.prepare(`SELECT * FROM cards WHERE nickname='big'`).get() as Card;
+  sql(
+    `INSERT INTO requirements (card_id,kind,amount_cents,window,min_txns,anchor_at,per_month,prorate_first)
+     VALUES (?,'monthly_min',60000,'statement_quarter',10,'2026-02-10',1,0)`,
+    big.id
+  );
+  const br = db.prepare(`SELECT * FROM requirements WHERE card_id = ?`).get(big.id) as Requirement;
+  for (const [min, reward] of [[60000, 6000], [100000, 10000], [200000, 20000]] as [number, number][]) {
+    sql(`INSERT INTO requirement_tiers (requirement_id,min_spend_cents,reward_cents) VALUES (?,?,?)`, br.id, min, reward);
+  }
+  const put = (date: string, cents: number) => {
+    for (let i = 0; i < 10; i++)
+      sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,merchant) VALUES (?,?,?,'shop')`, big.id, Math.round(cents / 10), date);
+  };
+
+  put('2026-09-01', 250000); // month 1 at the top rung
+  at('2026-10-10');
+  const p = await requirementProgress(env, big, br);
+  check('a strong first month leaves the top rung reachable', p.ceiling_tier?.min_spend_cents === 200000, JSON.stringify(p.ceiling_tier));
+  check('and the target is that rung', p.target_cents === 200000, String(p.target_cents));
+  check('with the full gap to it reported', p.to_target_cents === 200000, String(p.to_target_cents));
+  check('while the minimum to not lose the quarter stays the floor', p.remaining_cents === 60000, String(p.remaining_cents));
+}
+
 // --- the status report leads with minimum spend ------------------------------
 {
   // A card with nothing to hit still has to render, and sorts last: there is

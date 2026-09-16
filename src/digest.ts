@@ -30,14 +30,30 @@ function quarterLine(p: Progress): string[] {
   const dead = p.months_missed > 0 && !p.thirds;
   if (dead) {
     out.push(`  🛑 ${p.months_missed} month(s) short — this quarter pays nothing`);
-  } else if (p.quarter_tier && p.thirds) {
+    return out;
+  }
+  if (p.quarter_tier && p.thirds) {
     const share = p.thirds === 3 ? '' : ` (${p.thirds}/3 pro-rated)`;
     out.push(`  💰 on course for $${money(p.projected_reward_cents)}${share} at the $${money(p.quarter_tier.min_spend_cents)} tier`);
   }
-  // The next rung up is the one piece of advice a tier table can give — but
-  // only while there is still a quarter to earn. Urging more spend into a
-  // quarter that already pays nothing is the opposite of useful.
-  const next = dead ? undefined : p.tiers.find((t) => t.min_spend_cents > p.spent_cents);
+
+  // A quarter pays at its weakest month, so once one has closed a rung down,
+  // spending to a higher rung in the months after it buys nothing more. Saying
+  // "spend more" then would be advice that costs money and returns none.
+  if (p.ceiling_tier) {
+    out.push(
+      `  🎯 aim for $${money(p.ceiling_tier.min_spend_cents)} this month — ${p.ceiling_reason}, so anything above it still pays $${money(p.ceiling_tier.reward_cents)}` +
+        (p.to_target_cents > 0
+          ? `\n  ↗ $${money(p.to_target_cents)} to go`
+          : p.beyond_target_cents > 0
+            ? `\n  ✋ $${money(p.beyond_target_cents)} past it — further spend here earns only the base rate`
+            : '')
+    );
+    return out;
+  }
+
+  // Nothing capped yet, so the next rung up is genuinely worth naming.
+  const next = p.tiers.find((t) => t.min_spend_cents > p.spent_cents);
   if (next) {
     out.push(`  ↗ $${money(next.min_spend_cents - p.spent_cents)} more this month reaches the $${money(next.min_spend_cents)} tier ($${money(next.reward_cents)}/quarter)`);
   }
@@ -75,10 +91,9 @@ export async function buildDigest(env: Env): Promise<string> {
     lines.push(`*${card.product}* (${card.nickname})${flag}`);
 
     if (headline) {
-      const req = headline.requirement;
       const txns = headline.txns_required > 0 ? ` · ${headline.txn_count}/${headline.txns_required} tx` : '';
       lines.push(
-        `${bar(percent)} ${percent.toFixed(0)}% · $${money(headline.spent_cents)} / $${money(req.amount_cents)}${txns}`
+        `${bar(percent)} ${percent.toFixed(0)}% · $${money(headline.spent_cents)} / $${money(headline.floor_cents)}${txns}`
       );
       lines.push(
         lost
@@ -107,20 +122,24 @@ export async function buildDigest(env: Env): Promise<string> {
       met += p.met ? 1 : 0;
       stillNeeded += p.remaining_cents;
 
+      // The ladder decides the minimum, not whatever number the requirement was
+      // created with.
+      const floor = p.floor_cents;
+
       if (p.met && p.met_only_with_at_risk) {
         // The dangerous case: counting spend that may not post in time reads as
         // "met", and you stop spending on a minimum you have not actually hit.
         lines.push(
-          `  ⏳ ${label} $${money(req.amount_cents)} met only if $${money(p.at_risk_cents)} posts in time` +
-            `\n  ↳ confirmed $${money(p.confirmed_cents)} — spend $${money(req.amount_cents - p.confirmed_cents)} more to be safe`
+          `  ⏳ ${label} $${money(floor)} met only if $${money(p.at_risk_cents)} posts in time` +
+            `\n  ↳ confirmed $${money(p.confirmed_cents)} — spend $${money(floor - p.confirmed_cents)} more to be safe`
         );
       } else if (p.met) {
-        lines.push(`  ✅ ${label} $${money(req.amount_cents)} met ($${money(p.spent_cents)}${txns})`);
+        lines.push(`  ✅ ${label} $${money(floor)} met ($${money(p.spent_cents)}${txns})`);
       } else {
         const urgent = p.days_left <= warnDays ? '⚠️ ' : '';
         const amountPart =
           p.remaining_cents > 0
-            ? `$${money(p.spent_cents)} / $${money(req.amount_cents)} · $${money(p.remaining_cents)} to go`
+            ? `$${money(p.spent_cents)} / $${money(floor)} · $${money(p.remaining_cents)} to go`
             : `$${money(p.spent_cents)} ✓`;
         lines.push(`  ${urgent}${label}: ${amountPart}${txns}, ${p.days_left}d` +
           (p.remaining_cents > 0 && p.days_left > 0 ? ` (~$${money(p.per_day_cents)}/day)` : ''));

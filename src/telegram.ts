@@ -345,17 +345,24 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             .run();
         }
 
+        // The ladder IS the minimum, so the requirement is brought into line
+        // rather than left disagreeing with it.
         const lowest = parsed[0].spend;
+        const moved = lowest !== req.amount_cents;
+        if (moved) {
+          await env.DB.prepare(`UPDATE requirements SET amount_cents = ? WHERE id = ?`).bind(lowest, req.id).run();
+        }
+
         return send(
           env,
           chatId,
           `*${card.product}* — ${parsed.length} tier(s)\n` +
             parsed.map((t) => `$${money(t.spend)} a month → $${money(t.pays)} a quarter`).join('\n') +
-            (lowest !== req.amount_cents
-              ? `\n\n⚠️ The minimum on this card is $${money(req.amount_cents)}, but the lowest tier starts at $${money(lowest)}. ` +
-                'Hitting the minimum without reaching a tier pays nothing.'
+            (moved
+              ? `\n\nThe monthly minimum is now $${money(lowest)}, the lowest rung — it was $${money(req.amount_cents)}.`
               : '') +
-            '\n\n_The quarter pays at the lowest tier held across its three statement months._'
+            '\n\n_The quarter pays at the lowest tier held across its three statement months, so once a month closes ' +
+            'a rung down, spending higher in the months after it buys nothing more that quarter._'
         );
       }
 

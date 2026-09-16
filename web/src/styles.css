@@ -773,3 +773,35 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .counted { margin-top: 8px; padding: 10px; border: 1px dashed var(--line); border-radius: 10px; }
 .txns.counted-list li { grid-template-columns: 44px 1fr auto; gap: 8px; font-size: 13px; }
 .counted .txns { max-height: 320px; overflow-y: auto; }
+
+/* The tier ladder: spend a month on the left, what the quarter pays on the
+   right, and which rungs this quarter can still reach. */
+.ladder { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.ladder li {
+  display: grid; grid-template-columns: 14px 1fr auto; gap: 2px 8px;
+  align-items: baseline; font-size: 13px; padding: 5px 0; border-top: 1px solid var(--line);
+}
+.ladder li:first-child { border-top: none; }
+.ladder .mark { font-weight: 700; color: var(--dim); }
+.ladder li.ok .mark { color: var(--ok); }
+.ladder li.ruled .mark { color: var(--bad); }
+.ladder li.ruled .mono, .ladder li.ruled .pays { color: var(--dim); text-decoration: line-through; }
+.ladder .pays { font-variant-numeric: tabular-nums; }
+.ladder .state { grid-column: 2 / -1; font-size: 11.5px; color: var(--dim); }
+.ladder li.ok .state { color: var(--ok); }
+
+/* The tier ladder: spend a month on the left, what the quarter pays on the
+   right, and which rungs this quarter can still reach. */
+.ladder { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.ladder li {
+  display: grid; grid-template-columns: 14px 1fr auto; gap: 2px 8px;
+  align-items: baseline; font-size: 13px; padding: 5px 0; border-top: 1px solid var(--line);
+}
+.ladder li:first-child { border-top: none; }
+.ladder .mark { font-weight: 700; color: var(--dim); }
+.ladder li.ok .mark { color: var(--ok); }
+.ladder li.ruled .mark { color: var(--bad); }
+.ladder li.ruled .mono, .ladder li.ruled .pays { color: var(--dim); text-decoration: line-through; }
+.ladder .pays { font-variant-numeric: tabular-nums; }
+.ladder .state { grid-column: 2 / -1; font-size: 11.5px; color: var(--dim); }
+.ladder li.ok .state { color: var(--ok); }

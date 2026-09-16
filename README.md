@@ -156,6 +156,12 @@ one big month does not carry two thin ones. The first quarter pro-rates: hit the
 minimum in the last two months only and two thirds is paid; in the last month
 only, a third.
 
+The ladder is the minimum: with rungs at $600/$1,000/$2,000 the monthly minimum
+is **$600**, not whatever figure the requirement was created with. And because
+the quarter pays at its weakest month, a month that closes at $900 caps the
+whole quarter at the $600 rung — so the target for the remaining months is $600,
+and the app says so rather than urging spend that buys nothing.
+
 Same thing in the app: **Cards → Add a minimum → every statement month of a
 rolling quarter**, then add the tiers. Every card shows its three months with a
 tick, a cross or the one in progress, so a month that closed short is visible

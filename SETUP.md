@@ -378,6 +378,35 @@ one of the three months**. One thin month and the quarter pays nothing.
 quarter pays at the **lowest** tier held across its three months — the reward is
 for sustaining the spend, so one big month does not carry two thin ones.
 
+Two things follow from that, and the app now says both out loud.
+
+*The lowest rung is the minimum.* A card with rungs at S$600 / S$1,000 /
+S$2,000 has a monthly minimum of **S$600**. Whatever figure a requirement was
+created with is ignored once it has tiers, and is corrected in the row when you
+save the ladder — otherwise a perfectly good S$900 month reads as a miss.
+
+*Once a month closes a rung down, that is the rung for the quarter.* Spend
+S$900 in month 1 and the quarter can pay at most the S$600 tier, however much
+goes on the card in months 2 and 3. So the target for those months is S$600, not
+S$1,000 — and the app says so, names the month that capped it, strikes the
+unreachable rungs off the ladder, and tells you when you are past the point
+where more spend adds anything.
+
+The ladder is shown on the card with the rung you are on marked:
+
+```
+✓ $600.00 a month     $60.00 a quarter
+  where you are
+✕ $1,000.00 a month  $100.00 a quarter
+  out of reach this quarter
+✕ $2,000.00 a month  $200.00 a quarter
+  out of reach this quarter
+```
+
+In the first month of a quarter nothing is decided, so nothing is struck off and
+no target is invented — every rung is still reachable and the app says that
+instead.
+
 **The first quarter.** It pro-rates on a trailing run: meet the minimum in the
 3rd month only and a third is paid; in the 2nd and 3rd, two thirds. Every later
 quarter is all three or nothing.

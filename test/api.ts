@@ -1136,6 +1136,7 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   const body = (await res.json()) as any;
   check('a rolling-quarter minimum can be added from the app', res.status === 200, String(res.status));
   check('with its tiers', body.tiers === 2, JSON.stringify(body));
+  check('and the lowest rung becomes the minimum', body.amount_cents === 60000, JSON.stringify(body));
 
   const row = db.prepare(`SELECT * FROM requirements WHERE id = ?`).get(body.id) as any;
   check('the quarter is anchored to the card', row.per_month === 1 && row.window === 'statement_quarter', JSON.stringify(row));
@@ -1155,7 +1156,12 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('and says what is missing', /issued|anchor/i.test(((await bad.json()) as any).error ?? ''), '');
 
   // The bot writes the same ladder.
+  // A ladder whose lowest rung is below the stored minimum must move the
+  // minimum down: that mismatch is what reported a good month as a miss.
+  db.prepare(`UPDATE requirements SET amount_cents = 100000 WHERE id = ?`).run(body.id);
   await tg('/tiers one 600=50 1000=110 2000=300');
+  const fixed = db.prepare(`SELECT amount_cents FROM requirements WHERE id = ?`).get(body.id) as any;
+  check('the bot brings the minimum into line with the ladder', fixed.amount_cents === 60000, String(fixed.amount_cents));
   const tiers = db.prepare(`SELECT * FROM requirement_tiers WHERE requirement_id = ? ORDER BY min_spend_cents`).all(body.id) as any[];
   check('the bot replaces the ladder rather than appending to it', tiers.length === 3, String(tiers.length));
   check('and stores it in cents', tiers[2].min_spend_cents === 200000 && tiers[2].reward_cents === 30000, JSON.stringify(tiers[2]));
@@ -1184,6 +1190,8 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('the bar tracks the minimum, not the limit', Math.abs(card.percent - (headline.spent_cents / headline.amount_cents) * 100) < 0.01, JSON.stringify({ p: card.percent, h: headline.spent_cents }));
   check('utilization is still reported alongside it', typeof card.util_percent === 'number', String(card.util_percent));
   check('the quarter comes with it', headline.quarter?.index >= 1 && headline.months.length === 3, JSON.stringify(headline.quarter));
+  check('the real minimum is reported, not the stored number', headline.floor_cents === 60000, String(headline.floor_cents));
+  check('and the ceiling and target come with it', 'ceiling_tier' in headline && 'target_cents' in headline, JSON.stringify(Object.keys(headline)));
 
   // Most at risk first: that is the whole point of the reordering.
   const unmet = s.cards.filter((c: any) => c.headline_id !== null);
