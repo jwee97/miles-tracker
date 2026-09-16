@@ -188,7 +188,46 @@ export interface UnknownMerchant {
  * no code cannot be judged against a card's MCC rules at all, so these are the
  * gaps that make the earn engine guess.
  */
-export async function unknownMerchants(env: Env, limit = 50): Promise<UnknownMerchant[]> {
+export interface UnknownPage {
+  merchants: UnknownMerchant[];
+  page: number;
+  pages: number;
+  per: number;
+  /** Merchants with no code, before ignores are taken out. */
+  total: number;
+  /** How many you have told it to stop asking about. */
+  ignored: number;
+}
+
+/** The shared shape of "spend whose merchant has no code", minus the ignored. */
+const UNKNOWN_FROM = `FROM transactions t
+       LEFT JOIN merchant_ignored g ON g.merchant = LOWER(TRIM(t.merchant))
+      WHERE t.mcc IS NULL AND t.merchant IS NOT NULL AND TRIM(t.merchant) <> ''
+        AND g.merchant IS NULL`;
+
+/**
+ * Merchants you have spent at whose code is still unknown, biggest spend first.
+ *
+ * Paged, because this list only grows: every statement import adds names, and a
+ * to-do list nobody can reach the bottom of is not a to-do list. Ignored
+ * merchants are left out but still counted, so the number never silently
+ * disagrees with what you remember deciding.
+ */
+export async function unknownMerchants(
+  env: Env,
+  opts: { page?: number; per?: number } = {}
+): Promise<UnknownPage> {
+  const per = Math.min(200, Math.max(1, Math.round(opts.per ?? 25)));
+
+  const counts = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM (SELECT LOWER(TRIM(t.merchant)) AS m ${UNKNOWN_FROM} GROUP BY m)`
+  ).first<{ n: number }>();
+  const total = counts?.n ?? 0;
+  const ignoredRow = await env.DB.prepare(`SELECT COUNT(*) AS n FROM merchant_ignored`).first<{ n: number }>();
+
+  const pages = Math.max(1, Math.ceil(total / per));
+  const page = Math.min(Math.max(1, Math.round(opts.page ?? 1)), pages);
+
   const { results } = await env.DB.prepare(
     `SELECT LOWER(TRIM(t.merchant)) AS merchant,
             COUNT(*) AS txn_count,
@@ -197,16 +236,46 @@ export async function unknownMerchants(env: Env, limit = 50): Promise<UnknownMer
             m.mcc AS suggested_mcc,
             c.description AS suggested_description,
             m.source AS suggested_source
-       FROM transactions t
-       LEFT JOIN merchant_mcc m ON m.merchant = LOWER(TRIM(t.merchant))
-       LEFT JOIN mcc_codes c ON c.code = m.mcc
-      WHERE t.mcc IS NULL AND t.merchant IS NOT NULL AND TRIM(t.merchant) <> ''
+       ${UNKNOWN_FROM.replace('FROM transactions t', 'FROM transactions t\n       LEFT JOIN merchant_mcc m ON m.merchant = LOWER(TRIM(t.merchant))\n       LEFT JOIN mcc_codes c ON c.code = m.mcc')}
       GROUP BY LOWER(TRIM(t.merchant))
       ORDER BY spend_cents DESC
-      LIMIT ?`
+      LIMIT ? OFFSET ?`
   )
-    .bind(limit)
+    .bind(per, (page - 1) * per)
     .all<UnknownMerchant>();
+
+  return { merchants: results ?? [], page, pages, per, total, ignored: ignoredRow?.n ?? 0 };
+}
+
+/**
+ * Stop asking about a merchant, or start again.
+ *
+ * Some spend has no code to find — a hawker stall, a transfer to a friend — and
+ * the honest answer is not a guess, it is to take it off the list.
+ */
+export async function ignoreMerchant(
+  env: Env,
+  merchant: string,
+  opts: { reason?: string | null; undo?: boolean } = {}
+): Promise<{ merchant: string; ignored: boolean }> {
+  const name = merchant.trim().toLowerCase();
+  if (opts.undo) {
+    await env.DB.prepare(`DELETE FROM merchant_ignored WHERE merchant = ?`).bind(name).run();
+    return { merchant: name, ignored: false };
+  }
+  await env.DB.prepare(
+    `INSERT INTO merchant_ignored (merchant, reason) VALUES (?, ?)
+     ON CONFLICT(merchant) DO UPDATE SET reason = excluded.reason`
+  )
+    .bind(name, opts.reason?.trim() || null)
+    .run();
+  return { merchant: name, ignored: true };
+}
+
+export async function ignoredMerchants(env: Env): Promise<{ merchant: string; reason: string | null }[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT merchant, reason FROM merchant_ignored ORDER BY merchant`
+  ).all<{ merchant: string; reason: string | null }>();
   return results ?? [];
 }
 

@@ -22,13 +22,21 @@ import {
 import { balances, categoryForMerchant, planRoutes, rankCards, ratesReview, rememberMerchant } from './points';
 import { buildAnalytics } from './analytics';
 import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from './settings';
+import { platformReport } from './platform';
 import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
 import { buildAudit } from './audit';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
 import { runMigrations, runSeed } from './migrate';
 import { defaultCardPossible, METHODS, monthOfOther, otherMonths } from './other';
-import { assignMerchantCode, importMerchantCodes, lookupMerchantOnline, unknownMerchants } from './mccscan';
+import {
+  assignMerchantCode,
+  ignoredMerchants,
+  ignoreMerchant,
+  importMerchantCodes,
+  lookupMerchantOnline,
+  unknownMerchants,
+} from './mccscan';
 import { scanCardPage } from './cardscan';
 import { markDuplicates, parseStatement, type ParsedRow } from './statement';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
@@ -194,7 +202,16 @@ export default {
         // Merchants in your own spend whose code is still unknown — the gaps
         // that stop the earn engine seeing a card's MCC rules at all.
         if (url.pathname === '/api/mcc/unknown') {
-          return json({ merchants: await unknownMerchants(env) });
+          const page = parseInt(url.searchParams.get('page') ?? '1', 10) || 1;
+          const per = parseInt(url.searchParams.get('per') ?? '25', 10) || 25;
+          return json({ ...(await unknownMerchants(env, { page, per })), ignored_list: await ignoredMerchants(env) });
+        }
+
+        // Stop asking about a merchant that has no code to find, or start again.
+        if (url.pathname === '/api/mcc/ignore' && req.method === 'POST') {
+          const b = (await req.json()) as { merchant?: string; reason?: string; undo?: boolean };
+          if (!b.merchant?.trim()) return json({ error: 'a merchant is required' }, 400);
+          return json({ ok: true, ...(await ignoreMerchant(env, b.merchant, { reason: b.reason, undo: b.undo })) });
         }
 
         // One merchant, looked up by name. Ours first, then the directory's
@@ -367,6 +384,14 @@ export default {
 
         if (url.pathname === '/api/seed' && req.method === 'POST') {
           return json(await runSeed(env));
+        }
+
+        // What Cloudflare's own meters say this app costs. Read-only, and the
+        // token never leaves the Worker — the response carries numbers, never
+        // credentials.
+        if (url.pathname === '/api/platform') {
+          const days = parseInt(url.searchParams.get('days') ?? '7', 10) || 7;
+          return json(await platformReport(env, days));
         }
 
         if (url.pathname === '/api/usage') {
@@ -1636,7 +1661,11 @@ export default {
         }
 
         if (url.pathname === '/api/transactions' && req.method === 'GET') {
+          // `limit` is how many rows to return; `page` walks through them. The
+          // ledger used to only ever grow its limit, which meant scrolling past
+          // everything already read to reach anything new.
           const limit = Math.min(500, parseInt(url.searchParams.get('limit') ?? '25', 10) || 25);
+          const wanted = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
 
           // Named ranges are resolved in spend.ts rather than in the browser,
           // so they follow the app's configured timezone, not the device's.
@@ -1662,7 +1691,7 @@ export default {
           // The ledger edits these in place, so every editable column has to
           // come back — category especially: without it every row reads as
           // uncategorised and the whole table highlights as needing review.
-          const { results } = await env.DB.prepare(
+          const rows = env.DB.prepare(
             `SELECT t.id, t.card_id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant,
                     t.category, t.category_source, t.needs_review, t.source,
                     t.mcc, t.channel, t.expected_miles, t.expected_cashback_cents,
@@ -1670,10 +1699,8 @@ export default {
                     c.nickname, c.product
              FROM transactions t JOIN cards c ON c.id = t.card_id
              ${clause}
-             ORDER BY COALESCE(t.posted_at, t.occurred_at) DESC, t.id DESC LIMIT ?`
-          )
-            .bind(...binds, limit)
-            .all<any>();
+             ORDER BY COALESCE(t.posted_at, t.occurred_at) DESC, t.id DESC LIMIT ? OFFSET ?`
+          );
 
           // A total, so the view can say whether you are seeing everything.
           const totals = await env.DB.prepare(
@@ -1683,11 +1710,20 @@ export default {
             .bind(...binds)
             .first<{ n: number; cents: number }>();
 
+          // Clamp the page to what exists: narrowing the range while on page 7
+          // would otherwise show an empty table rather than the rows.
+          const pages = Math.max(1, Math.ceil((totals?.n ?? 0) / limit));
+          const page = Math.min(wanted, pages);
+          const { results } = await rows.bind(...binds, limit, (page - 1) * limit).all<any>();
+
           return json({
             transactions: results ?? [],
             range: { from, to, label: rangeLabel },
             total_count: totals?.n ?? 0,
             total_cents: totals?.cents ?? 0,
+            page,
+            pages,
+            per_page: limit,
           });
         }
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import Pager, { PageSize } from './Pager';
 import Statement from './Statement';
 import {
   addTransaction,
@@ -109,11 +110,19 @@ export default function Ledger() {
   const [cats, setCats] = useState<string[]>([]);
   const [review, setReview] = useState<{ ready: ReviewRow[]; waiting: ReviewRow[] } | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [limit, setLimit] = useState(50);
+  const [limit, setLimit] = useState(25);
+  const [page, setPage] = useState(1);
   const [range, setRange] = useState('30d');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [meta, setMeta] = useState<{ total_count: number; total_cents: number; from: string | null; to: string | null } | null>(null);
+  const [meta, setMeta] = useState<{
+    total_count: number;
+    total_cents: number;
+    from: string | null;
+    to: string | null;
+    page: number;
+    pages: number;
+  } | null>(null);
 
   // New-row draft
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -127,10 +136,20 @@ export default function Ledger() {
     // A custom range only applies once both ends are set; until then keep the
     // named range so the table never silently empties mid-edit.
     const custom = range === 'custom' && from && to;
-    fetchTransactions(limit, custom ? { from, to } : { range })
+    fetchTransactions(limit, { ...(custom ? { from, to } : { range }), page })
       .then((d) => {
         setRows(d.transactions);
-        setMeta({ total_count: d.total_count, total_cents: d.total_cents, from: d.range.from, to: d.range.to });
+        setMeta({
+          total_count: d.total_count,
+          total_cents: d.total_cents,
+          from: d.range.from,
+          to: d.range.to,
+          page: d.page,
+          pages: d.pages,
+        });
+        // Narrowing the range while deep in the list would otherwise leave an
+        // empty table; the server clamps and the view follows it back.
+        if (d.page !== page) setPage(d.page);
       })
       .catch((e) => setErr(e.message));
     fetchReview().then(setReview).catch(() => void 0);
@@ -146,7 +165,9 @@ export default function Ledger() {
     fetchCategories().then((d) => setCats(d.categories)).catch(() => void 0);
   }, []);
 
-  useEffect(load, [limit, range, from, to]);
+  useEffect(load, [limit, page, range, from, to]);
+  // A new range or page size renumbers everything, so start from the top.
+  useEffect(() => setPage(1), [limit, range, from, to]);
 
   async function save(id: number, field: Field, value: string) {
     try {
@@ -294,7 +315,12 @@ export default function Ledger() {
             <b>{meta.total_count.toLocaleString()}</b> transaction{meta.total_count === 1 ? '' : 's'}
             {' · '}
             <b>${money(meta.total_cents)}</b>
-            {meta.total_count > rows.length && <> · showing the most recent {rows.length}</>}
+            {meta.pages > 1 && (
+              <>
+                {' '}
+                · page <b>{meta.page}</b> of {meta.pages}
+              </>
+            )}
           </p>
         )}
 
@@ -365,13 +391,10 @@ export default function Ledger() {
             {range === 'custom' && (!from || !to) ? 'Pick both ends of the range.' : 'Nothing in this period.'}
           </p>
         )}
-        {rows.length >= limit && (
-          <div className="entry-foot">
-            <button type="button" onClick={() => setLimit((l) => l + 50)}>
-              Load 50 more
-            </button>
-          </div>
-        )}
+        <div className="list-foot">
+          <PageSize per={limit} onChange={setLimit} label="Rows per page" />
+          {meta && meta.pages > 1 && <Pager page={meta.page} pages={meta.pages} onGo={setPage} />}
+        </div>
         <p className="sub" style={{ marginTop: 10 }}>
           A dotted category was inferred from the merchant. A highlighted row has none at all.
         </p>

@@ -32,3 +32,39 @@ export default function Pager({ page, pages, onGo }: { page: number; pages: numb
     </nav>
   );
 }
+
+export const PER_PAGE = [10, 25, 50, 100] as const;
+
+/**
+ * How many rows to show at once.
+ *
+ * Every long list in the app grows without a ceiling — spend, merchant codes,
+ * off-card entries — and a list that renders all of it is unreadable long
+ * before it is slow. Changing the size resets to page one, because staying on
+ * page 7 of a list that just became four pages long shows nothing.
+ */
+export function PageSize({
+  per,
+  onChange,
+  label = 'Per page',
+  total,
+}: {
+  per: number;
+  onChange: (n: number) => void;
+  label?: string;
+  total?: number;
+}) {
+  return (
+    <label className="per-page">
+      <span>{label}</span>
+      <select className="range-select" value={per} onChange={(e) => onChange(Number(e.target.value))}>
+        {PER_PAGE.map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+        {total !== undefined && total > 0 && <option value={total}>all ({total})</option>}
+      </select>
+    </label>
+  );
+}

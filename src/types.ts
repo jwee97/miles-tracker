@@ -19,6 +19,15 @@ export interface Env {
   OFFER_RETENTION_DAYS: string;
   /** 'true' to count spend on excluded codes toward a minimum anyway. */
   MIN_SPEND_COUNTS_EXCLUDED: string;
+
+  // --- reading Cloudflare's own meters (all optional) ---------------------
+  /** A secret, like the others: `wrangler secret put CF_API_TOKEN`. */
+  CF_API_TOKEN: string;
+  CF_ACCOUNT_ID: string;
+  /** The Worker's name, as in wrangler.toml. */
+  CF_SCRIPT_NAME: string;
+  /** The D1 database's id, as in wrangler.toml. */
+  CF_DATABASE_ID: string;
 }
 
 export interface Card {

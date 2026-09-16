@@ -841,6 +841,20 @@ teaches both. One thing to watch: if you top up PayLah with a card, the top-up
 is already card spend — record what you buy here, not the top-up, or it counts
 twice.
 
+### Long lists
+
+Four lists in the app grow without a ceiling: spend, merchant codes, merchants
+with no code yet, and off-card entries. Each now has a **page size** (10, 25, 50
+or 100) next to its pager, and the off-card list offers *all* as well, since one
+month's entries arrive together anyway. Changing the size returns to page one —
+staying on page 7 of a list that just became four pages long shows nothing.
+
+**Merchants with no code** also has an **Ignore** on every row. Some spend has
+no code to find — a hawker stall, a transfer to a friend — and taking it off the
+list is a better answer than inventing a code for it. Ignored merchants are
+counted, listed behind one button and can be put back. `/mccskip <merchant>` in
+the bot does the same, and `/mccskip` alone lists them.
+
 ### Merchant codes
 
 The **Codes** tab is the MCC table seen from your own cards — a grid of codes
@@ -1029,6 +1043,101 @@ deep scan fetches the article itself (at most 12 per scan, 10s timeout each,
 `uob.com.sg/…/apply` rather than the blog post — which is what gets stored as
 the offer's source. Tracking URLs are stripped and redirector links unwrapped,
 so the same article found through two sources is recognised as one item.
+
+## Reading Cloudflare's own meters
+
+The Settings tab counts the database from the inside: rows, bytes, what grows.
+This is the other half — Worker invocations, D1 queries and rows read, as
+Cloudflare's own meters record them. It is optional, and free: the GraphQL
+Analytics API costs nothing on the Workers free plan.
+
+Four things, and only one of them is a secret.
+
+**1. Create the API token.**
+
+Cloudflare dashboard → your profile picture (top right) → **My Profile** →
+**API Tokens** → **Create Token** → scroll past the templates to **Create
+Custom Token → Get started**.
+
+Give it a name you will recognise (`miles-tracker analytics`), then set one
+permission:
+
+| | | |
+|---|---|---|
+| **Account** | **Account Analytics** | **Read** |
+
+Under *Account Resources*, include the account this Worker is on. Leave
+*Zone Resources* alone — this token needs nothing from a zone. Set a TTL if you
+want one; the panel will simply report that the token expired.
+
+Create it, then **copy the token now** — Cloudflare shows it once.
+
+**2. Find the account id.**
+
+Cloudflare dashboard → **Workers & Pages** → open `miles-tracker`. The account
+id is the 32-character hex string in the URL:
+
+```
+https://dash.cloudflare.com/<this-part-is-the-account-id>/workers/services/view/miles-tracker
+```
+
+It is not a credential and grants nothing on its own.
+
+**3. Put the token in as a secret.**
+
+```
+wrangler secret put CF_API_TOKEN
+```
+
+Or, with no terminal: Cloudflare dashboard → **Workers & Pages** →
+`miles-tracker` → **Settings** → **Variables and Secrets** → **Add** → type
+**Secret**, name `CF_API_TOKEN`, paste the value → **Deploy**.
+
+It goes in as a secret for the same reason the Telegram token does: the app
+cannot read it back, no endpoint returns it, and it is not in the settings
+table. The panel reports numbers, never credentials.
+
+**4. Tell it which Worker and which database.**
+
+In the app: **Settings**, and fill in the three that are already listed there —
+
+| Setting | Where it comes from |
+|---|---|
+| Cloudflare account id | the URL in step 2 |
+| Worker name | `name` in `wrangler.toml` — `miles-tracker` unless you renamed it |
+| D1 database id | `database_id` under `[[d1_databases]]` in `wrangler.toml` |
+
+None of the three is sensitive; the database id is already committed to this
+repo.
+
+Open **Settings → Cloudflare**. It should fill in within a second or two.
+
+### If it does not
+
+The panel shows Cloudflare's own words rather than a blank box, so the error
+tells you which of the four is wrong:
+
+- **"Cloudflare refused the token (403)"** — the token is wrong, expired, or
+  missing *Account Analytics → Read*. Re-check step 1.
+- **Numbers that are all zero** — the Worker name or database id does not match
+  what you deployed. A wrong name reads as an idle Worker, not as an error,
+  because to Cloudflare it is simply a Worker with no traffic.
+- **An `unknown field` message** — that dataset is not available on your plan.
+  Workers and D1 are reported separately, so one failing does not hide the
+  other.
+- **"Your account does not break these down by day"** — the daily chart is
+  unavailable, so only the totals are shown. `workersInvocationsAdaptive` is
+  still beta and not every account exposes a date dimension on it.
+
+### What it shows
+
+Invocations, errors, subrequests and CPU p99 for the Worker; rows read, rows
+written, queries and database size for D1; and each against the **free tier's
+daily allowance measured on the busiest day of the window**. That last part
+matters: the allowance resets daily, so an average across a quiet week would
+hide the one day that nearly ran out.
+
+Cloudflare keeps about 30 days of this, and the most recent hours lag.
 
 ## Verify end to end
 

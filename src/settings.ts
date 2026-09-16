@@ -85,6 +85,31 @@ export const EDITABLE = [
     help: 'A route older than this is flagged in the daily rates check.',
     kind: 'number' as const,
   },
+  // The three things the Cloudflare panel needs to know WHICH Worker and
+  // database to ask about. None of them is a credential — the token is, and it
+  // is a secret, so it is deliberately absent from this list and can neither be
+  // read nor written through the app.
+  {
+    key: 'CF_ACCOUNT_ID',
+    label: 'Cloudflare account id',
+    unit: 'the 32-character id',
+    help: 'Found on any zone\u2019s overview page, or in the Workers dashboard URL. Needed to read your own usage; it is not a secret and grants nothing on its own.',
+    kind: 'text' as const,
+  },
+  {
+    key: 'CF_SCRIPT_NAME',
+    label: 'Worker name',
+    unit: 'as in wrangler.toml',
+    help: 'The `name` field in wrangler.toml — miles-tracker unless you renamed it. Usage is reported per Worker, so a wrong name reads as zero traffic rather than as an error.',
+    kind: 'text' as const,
+  },
+  {
+    key: 'CF_DATABASE_ID',
+    label: 'D1 database id',
+    unit: 'uuid',
+    help: 'The `database_id` under [[d1_databases]] in wrangler.toml. Same again: a wrong id reads as an idle database.',
+    kind: 'text' as const,
+  },
 ];
 
 const KEYS = new Set(EDITABLE.map((e) => e.key));

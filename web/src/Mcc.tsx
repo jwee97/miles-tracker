@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import Pager from './Pager';
+import Pager, { PageSize } from './Pager';
 import {
   assignMerchantCode,
   fetchMccMatrix,
   fetchUnknownMerchants,
+  ignoreMerchant as ignoreMerchantApi,
   lookupMerchant,
   money,
   saveExclusion,
@@ -14,6 +15,7 @@ import {
   type MccScanResult,
   type MerchantLookup,
   type UnknownMerchant,
+  type UnknownPage,
 } from './api';
 
 /**
@@ -171,7 +173,10 @@ function MerchantLookupBox() {
 }
 
 function MerchantScan() {
-  const [rows, setRows] = useState<UnknownMerchant[] | null>(null);
+  const [rows, setRows] = useState<UnknownPage | null>(null);
+  const [page, setPage] = useState(1);
+  const [per, setPer] = useState(10);
+  const [showIgnored, setShowIgnored] = useState(false);
   const [scan, setScan] = useState<MccScanResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -179,11 +184,28 @@ function MerchantScan() {
   const [msg, setMsg] = useState<string | null>(null);
 
   function load() {
-    fetchUnknownMerchants()
-      .then((d) => setRows(d.merchants))
+    fetchUnknownMerchants(page, per)
+      .then((d) => {
+        setRows(d);
+        // Clearing the last entry on page 5 leaves page 5 empty; follow the
+        // server back to a page that exists.
+        if (d.page !== page) setPage(d.page);
+      })
       .catch((e) => setErr((e as Error).message));
   }
-  useEffect(load, []);
+  useEffect(load, [page, per]);
+  useEffect(() => setPage(1), [per]);
+
+  async function skip(merchant: string, undo = false) {
+    setMsg(null);
+    try {
+      await ignoreMerchantApi(merchant, undo);
+      setMsg(undo ? `${merchant} is back on the list.` : `${merchant} will not be listed again.`);
+      load();
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
+  }
 
   async function run() {
     setBusy(true);
@@ -257,36 +279,83 @@ function MerchantScan() {
         </ul>
       )}
 
-      <h2 style={{ marginTop: 18 }}>Spend with no code yet</h2>
-      {rows && rows.length > 0 ? (
-        <ul className="txns codes-unknown">
-          {rows.map((m) => (
-            <li key={m.merchant}>
-              <span className="t-note">{m.merchant}</span>
-              <span className="t-card">
-                {m.txn_count}× · ${money(m.spend_cents)}
-              </span>
-              <input
-                className="t-posted-input"
-                inputMode="numeric"
-                placeholder={m.suggested_mcc ?? 'mcc'}
-                value={draft[m.merchant] ?? ''}
-                onChange={(e) => setDraft({ ...draft, [m.merchant]: e.target.value })}
-              />
-              <button
-                className="secondary"
-                disabled={!/^\d{4}$/.test(draft[m.merchant] ?? m.suggested_mcc ?? '')}
-                onClick={() => assign(m, draft[m.merchant] || m.suggested_mcc || '')}
-              >
-                {draft[m.merchant] ? 'Set' : m.suggested_mcc ? `Use ${m.suggested_mcc}` : 'Set'}
-              </button>
-            </li>
-          ))}
-        </ul>
+      <div className="section-head" style={{ marginTop: 18 }}>
+        <h2>Spend with no code yet</h2>
+        {rows && rows.total > 0 && (
+          <p className="sub" style={{ margin: 0 }}>
+            {rows.total.toLocaleString()} merchant{rows.total === 1 ? '' : 's'}
+            {rows.pages > 1 ? ` · page ${rows.page} of ${rows.pages}` : ''}
+          </p>
+        )}
+      </div>
+      {rows && rows.merchants.length > 0 ? (
+        <>
+          <ul className="txns codes-unknown">
+            {rows.merchants.map((m) => (
+              <li key={m.merchant}>
+                <span className="t-note">{m.merchant}</span>
+                <span className="t-card">
+                  {m.txn_count}× · ${money(m.spend_cents)}
+                </span>
+                <input
+                  className="t-posted-input"
+                  inputMode="numeric"
+                  placeholder={m.suggested_mcc ?? 'mcc'}
+                  value={draft[m.merchant] ?? ''}
+                  onChange={(e) => setDraft({ ...draft, [m.merchant]: e.target.value })}
+                />
+                <button
+                  className="secondary"
+                  disabled={!/^\d{4}$/.test(draft[m.merchant] ?? m.suggested_mcc ?? '')}
+                  onClick={() => assign(m, draft[m.merchant] || m.suggested_mcc || '')}
+                >
+                  {draft[m.merchant] ? 'Set' : m.suggested_mcc ? `Use ${m.suggested_mcc}` : 'Set'}
+                </button>
+                {/* Some spend has no code to find — a hawker stall, a transfer
+                    to a friend. Taking it off the list is the honest answer,
+                    and a better one than inventing a code for it. */}
+                <button className="secondary t-del" title="Stop asking about this one" onClick={() => skip(m.merchant)}>
+                  Ignore
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="list-foot">
+            <PageSize per={per} onChange={setPer} label="Per page" />
+            {rows.pages > 1 && <Pager page={rows.page} pages={rows.pages} onGo={setPage} />}
+          </div>
+        </>
       ) : (
         <p className="sub">
-          {rows ? 'Every merchant you have spent at has a code.' : 'Loading…'}
+          {rows
+            ? rows.total === 0 && rows.ignored === 0
+              ? 'Every merchant you have spent at has a code.'
+              : 'Nothing left to code here.'
+            : 'Loading…'}
         </p>
+      )}
+
+      {rows && rows.ignored > 0 && (
+        <>
+          <div className="entry-foot">
+            <button className="secondary" onClick={() => setShowIgnored((v) => !v)}>
+              {showIgnored ? 'Hide ignored' : `${rows.ignored} ignored`}
+            </button>
+          </div>
+          {showIgnored && (
+            <ul className="notes">
+              {rows.ignored_list.map((g) => (
+                <li key={g.merchant}>
+                  <strong>{g.merchant}</strong>
+                  {g.reason ? ` — ${g.reason}` : ''}{' '}
+                  <button className="secondary" onClick={() => skip(g.merchant, true)}>
+                    Put back
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
       {msg && <p className="sub">{msg}</p>}
       <p className="sub">
@@ -302,6 +371,7 @@ export default function Mcc() {
   const [filter, setFilter] = useState('all');
   const [category, setCategory] = useState('');
   const [page, setPage] = useState(1);
+  const [per, setPer] = useState(25);
   // 596 of the 923 codes are individual airlines and hotel chains. They are
   // real — a stay often posts as 3509 rather than 7011 — but they would bury
   // everything else, so they are opt-in.
@@ -317,15 +387,15 @@ export default function Mcc() {
 
   function load() {
     setErr(null);
-    fetchMccMatrix({ q, filter, category, page, carriers })
+    fetchMccMatrix({ q, filter, category, page, per, carriers })
       .then((d) => {
         setData(d);
         if (d.page !== page) setPage(d.page);
       })
       .catch((e) => setErr((e as Error).message));
   }
-  useEffect(load, [q, filter, category, page, carriers]);
-  useEffect(() => setPage(1), [q, filter, category, carriers]);
+  useEffect(load, [q, filter, category, page, per, carriers]);
+  useEffect(() => setPage(1), [q, filter, category, per, carriers]);
 
   if (err) return <p className="pad error">{err}</p>;
   if (!data) return <p className="pad sub">Loading…</p>;
@@ -464,7 +534,10 @@ export default function Mcc() {
         {data.cards.length > 2 && (
           <p className="sub">Swipe the table sideways for the rest of your cards. The code column stays put.</p>
         )}
-        {data.pages > 1 && <Pager page={data.page} pages={data.pages} onGo={setPage} />}
+        <div className="list-foot">
+          <PageSize per={per} onChange={setPer} label="Codes per page" />
+          {data.pages > 1 && <Pager page={data.page} pages={data.pages} onGo={setPage} />}
+        </div>
         {!data.rows.length && <p className="sub">No codes match. Widen the search or the filter.</p>}
         {!data.cards.length && <p className="sub">No open cards, so there is nothing to compare codes against.</p>}
 

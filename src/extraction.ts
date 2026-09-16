@@ -191,6 +191,8 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 *Merchant codes*
 /mccscan — refresh merchant codes from the public directory
 /mcc <merchant> [code] — look one up here or online, or record it
+/mccskip <merchant> — stop listing one as missing a code (a hawker stall,
+  a transfer); \`--undo\` puts it back, bare \`/mccskip\` lists them
 /codes — codes you have spent on, and what each card pays
 /codes <query> — search by code, description or category
 /exclude <mcc> [card] [reason] — record one that earns nothing

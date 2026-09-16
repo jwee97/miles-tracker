@@ -252,6 +252,19 @@ the line amber inside two weeks and red once it has passed. Ended offers are
 marked expired each night and deleted `OFFER_RETENTION_DAYS` (90) later —
 except ones you marked applied, which are your own record and are never swept.
 
+## What it costs to run
+
+**Settings → Cloudflare** reads Cloudflare's own meters: Worker invocations and
+errors, D1 rows read and written, database size, each against the free tier's
+*daily* allowance measured on the busiest day of the window — an average across
+a quiet week would hide the day that nearly ran out.
+
+It needs an API token with one permission (Account → Account Analytics → Read),
+which is free. The token goes in as a secret like the others; the account id,
+Worker name and database id go in Settings and are not credentials. Without
+them the panel says exactly what is missing rather than reporting a confident
+zero. Full walkthrough in SETUP.md.
+
 ## Keeping it small
 
 Scanning only looks at the current calendar month by default (`SCAN_WINDOW`);

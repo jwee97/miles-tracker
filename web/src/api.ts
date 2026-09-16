@@ -207,16 +207,20 @@ export interface TxnPage {
   range: { from: string | null; to: string | null; label: string };
   total_count: number;
   total_cents: number;
+  page: number;
+  pages: number;
+  per_page: number;
 }
 
 export const fetchTransactions = (
   limit = 25,
-  opts: { range?: string; from?: string; to?: string } = {}
+  opts: { range?: string; from?: string; to?: string; page?: number } = {}
 ) => {
   const p = new URLSearchParams({ limit: String(limit) });
   if (opts.range) p.set('range', opts.range);
   if (opts.from) p.set('from', opts.from);
   if (opts.to) p.set('to', opts.to);
+  if (opts.page) p.set('page', String(opts.page));
   return get<TxnPage>(`/api/transactions?${p}`);
 };
 
@@ -978,13 +982,14 @@ export interface MccMatrix {
 }
 
 export const fetchMccMatrix = (
-  opts: { q?: string; filter?: string; category?: string; page?: number; carriers?: boolean } = {}
+  opts: { q?: string; filter?: string; category?: string; page?: number; per?: number; carriers?: boolean } = {}
 ) => {
   const q = new URLSearchParams();
   if (opts.q) q.set('q', opts.q);
   if (opts.filter && opts.filter !== 'all') q.set('filter', opts.filter);
   if (opts.category) q.set('category', opts.category);
   if (opts.page) q.set('page', String(opts.page));
+  if (opts.per) q.set('per_page', String(opts.per));
   if (opts.carriers) q.set('carriers', '1');
   return get<MccMatrix>(`/api/mcc/matrix${q.toString() ? `?${q}` : ''}`);
 };
@@ -1030,7 +1035,22 @@ export interface MerchantLookup {
 /** Look one merchant up by name — ours first, then the public directory. */
 export const lookupMerchant = (q: string) => get<MerchantLookup>(`/api/mcc/lookup?q=${encodeURIComponent(q)}`);
 
-export const fetchUnknownMerchants = () => get<{ merchants: UnknownMerchant[] }>('/api/mcc/unknown');
+export interface UnknownPage {
+  merchants: UnknownMerchant[];
+  page: number;
+  pages: number;
+  per: number;
+  total: number;
+  ignored: number;
+  ignored_list: { merchant: string; reason: string | null }[];
+}
+
+export const fetchUnknownMerchants = (page = 1, per = 25) =>
+  get<UnknownPage>(`/api/mcc/unknown?page=${page}&per=${per}`);
+
+/** Stop asking about a merchant that has no code to find, or start again. */
+export const ignoreMerchant = (merchant: string, undo = false) =>
+  post<{ ok: true; merchant: string; ignored: boolean }>('/api/mcc/ignore', { merchant, undo });
 
 /** Read a published merchant-code directory and record what it says. */
 export const scanMccDirectory = () => post<MccScanResult>('/api/mcc/scan', {});
@@ -1067,6 +1087,49 @@ export const scanCardPage = (body: { nickname: string; url?: string; text?: stri
 
 export const saveExclusion = (body: { mcc: string; nickname?: string | null; reason?: string; active?: boolean }) =>
   post<{ ok: true }>('/api/exclusion', body);
+
+export interface PlatformReport {
+  configured: boolean;
+  missing: string[];
+  account_id: string | null;
+  script: string | null;
+  database_id: string | null;
+  from: string;
+  to: string;
+  days: number;
+  worker: {
+    days: { date: string; requests: number; errors: number; subrequests: number }[];
+    requests: number;
+    errors: number;
+    subrequests: number;
+    cpu_p50_ms: number | null;
+    cpu_p99_ms: number | null;
+    error: string | null;
+    totals_only: boolean;
+  };
+  d1: {
+    days: { date: string; read_queries: number; write_queries: number; rows_read: number; rows_written: number }[];
+    read_queries: number;
+    write_queries: number;
+    rows_read: number;
+    rows_written: number;
+    size_bytes: number | null;
+    error: string | null;
+  };
+  free_tier: {
+    worker_requests_per_day: number;
+    d1_rows_read_per_day: number;
+    d1_rows_written_per_day: number;
+    d1_storage_bytes: number;
+    worker_peak_percent: number | null;
+    d1_rows_read_peak_percent: number | null;
+    d1_rows_written_peak_percent: number | null;
+    storage_percent: number | null;
+  };
+}
+
+/** What Cloudflare's own meters say this app costs. */
+export const fetchPlatform = (days = 7) => get<PlatformReport>(`/api/platform?days=${days}`);
 
 export const money = (cents: number) =>
   (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

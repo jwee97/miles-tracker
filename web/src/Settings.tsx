@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react';
-import { fetchSettings, fetchUsage, runMigrate, runSeed, saveSetting, type SettingRow, type Usage } from './api';
+import {
+  fetchPlatform,
+  fetchSettings,
+  fetchUsage,
+  runMigrate,
+  runSeed,
+  saveSetting,
+  type PlatformReport,
+  type SettingRow,
+  type Usage,
+} from './api';
+import { CountBars } from './charts';
 
 const bytes = (n: number) => {
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
@@ -156,6 +167,8 @@ export default function Settings() {
 
           <Maintenance />
 
+          <Platform />
+
           <StorageNotes usage={usage} />
 
           <section className="card">
@@ -190,6 +203,220 @@ export default function Settings() {
         </>
       )}
     </>
+  );
+}
+
+const WINDOWS = [7, 14, 30];
+
+/** A number against its daily allowance, with the number said out loud. */
+function Allowance({ label, used, cap, unit }: { label: string; used: number | null; cap: number; unit: string }) {
+  const pct = used === null ? null : Math.min(100, (used / cap) * 100);
+  const tone = pct === null ? 'ok' : pct >= 80 ? 'bad' : pct >= 50 ? 'mid' : 'ok';
+  return (
+    <li className="allow">
+      <div className="allow-head">
+        <span>{label}</span>
+        <span className="mono">
+          {used === null ? '—' : used.toLocaleString()} / {cap.toLocaleString()} {unit}
+        </span>
+      </div>
+      <div className="meter">
+        <span className={`fill ${tone}`} style={{ width: `${pct ?? 0}%` }} />
+      </div>
+      <span className="sub">{pct === null ? 'no data for this window' : `${pct.toFixed(pct < 1 ? 2 : 0)}% of the daily free allowance on the busiest day`}</span>
+    </li>
+  );
+}
+
+/**
+ * What Cloudflare's own meters say.
+ *
+ * Everything above is counted from inside the database. This is the outside
+ * view — the numbers a bill would be based on. It is optional: without a token
+ * the panel says exactly what is missing rather than showing zeros, because a
+ * dashboard that reads "0 requests" when it simply cannot see is worse than one
+ * that admits it.
+ */
+function Platform() {
+  const [days, setDays] = useState(7);
+  const [data, setData] = useState<PlatformReport | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function load(d = days) {
+    setBusy(true);
+    setErr(null);
+    fetchPlatform(d)
+      .then(setData)
+      .catch((e) => setErr((e as Error).message))
+      .finally(() => setBusy(false));
+  }
+  useEffect(() => load(days), [days]);
+
+  return (
+    <section className="card">
+      <header>
+        <div>
+          <h2>Cloudflare</h2>
+          <p className="sub">What the platform itself says this app costs</p>
+        </div>
+        <select className="range-select" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          {WINDOWS.map((d) => (
+            <option key={d} value={d}>
+              last {d} days
+            </option>
+          ))}
+        </select>
+      </header>
+
+      {err && <p className="error">{err}</p>}
+      {!data && !err && <p className="sub">{busy ? 'Asking Cloudflare…' : 'Loading…'}</p>}
+
+      {data && !data.configured && (
+        <>
+          <p className="cap">Not set up yet. It needs four things, and one of them is a secret.</p>
+          <ul className="notes">
+            {data.missing.map((m) => (
+              <li key={m}>
+                <code>{m}</code>
+              </li>
+            ))}
+          </ul>
+          <p className="sub">
+            The three ids go in the settings above — none of them is a credential. The token is a secret and is set with{' '}
+            <code>wrangler secret put CF_API_TOKEN</code>, or in the Cloudflare dashboard under the Worker&rsquo;s
+            Settings → Variables. It needs one permission: <strong>Account → Account Analytics → Read</strong>. See
+            SETUP.md for the walkthrough.
+          </p>
+        </>
+      )}
+
+      {data && data.configured && (
+        <>
+          <p className="sub mono">
+            {data.from} → {data.to} · {data.script} · {data.days} days
+          </p>
+
+          {data.worker.error ? (
+            <p className="cap">Workers: {data.worker.error}</p>
+          ) : (
+            <>
+              <div className="stat-row">
+                <div className="stat">
+                  <span className="stat-label">invocations</span>
+                  <span className="stat-value">{data.worker.requests.toLocaleString()}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">errors</span>
+                  <span className={`stat-value ${data.worker.errors > 0 ? 'bad-text' : ''}`}>
+                    {data.worker.errors.toLocaleString()}
+                  </span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">subrequests</span>
+                  <span className="stat-value">{data.worker.subrequests.toLocaleString()}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">CPU p99</span>
+                  <span className="stat-value">{data.worker.cpu_p99_ms === null ? '—' : `${data.worker.cpu_p99_ms}ms`}</span>
+                </div>
+              </div>
+              {data.worker.totals_only ? (
+                <p className="sub">
+                  Your account does not break these down by day, so only the totals are shown.
+                </p>
+              ) : (
+                data.worker.days.length > 0 && (
+                  <CountBars
+                    data={data.worker.days.map((d) => ({ date: d.date, value: d.requests, overlay: d.errors }))}
+                    label="invocations"
+                    overlayLabel="errors"
+                  />
+                )
+              )}
+            </>
+          )}
+
+          {data.d1.error ? (
+            <p className="cap">D1: {data.d1.error}</p>
+          ) : (
+            <>
+              <div className="stat-row">
+                <div className="stat">
+                  <span className="stat-label">rows read</span>
+                  <span className="stat-value">{data.d1.rows_read.toLocaleString()}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">rows written</span>
+                  <span className="stat-value">{data.d1.rows_written.toLocaleString()}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">queries</span>
+                  <span className="stat-value">{(data.d1.read_queries + data.d1.write_queries).toLocaleString()}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">database</span>
+                  <span className="stat-value">{data.d1.size_bytes === null ? '—' : bytes(data.d1.size_bytes)}</span>
+                </div>
+              </div>
+              {data.d1.days.length > 0 && (
+                <CountBars
+                  data={data.d1.days.map((d) => ({ date: d.date, value: d.rows_read, overlay: d.rows_written }))}
+                  label="rows read"
+                  overlayLabel="rows written"
+                />
+              )}
+            </>
+          )}
+
+          {/* The free tier is a DAILY allowance, so the busiest day is the one
+              that decides whether it runs out — an average over a quiet week
+              would hide the day that did. */}
+          <ul className="allowances">
+            <Allowance
+              label="Worker invocations, busiest day"
+              used={
+                data.free_tier.worker_peak_percent === null
+                  ? null
+                  : Math.round((data.free_tier.worker_peak_percent / 100) * data.free_tier.worker_requests_per_day)
+              }
+              cap={data.free_tier.worker_requests_per_day}
+              unit="a day"
+            />
+            <Allowance
+              label="Rows read, busiest day"
+              used={
+                data.free_tier.d1_rows_read_peak_percent === null
+                  ? null
+                  : Math.round((data.free_tier.d1_rows_read_peak_percent / 100) * data.free_tier.d1_rows_read_per_day)
+              }
+              cap={data.free_tier.d1_rows_read_per_day}
+              unit="a day"
+            />
+            <Allowance
+              label="Rows written, busiest day"
+              used={
+                data.free_tier.d1_rows_written_peak_percent === null
+                  ? null
+                  : Math.round(
+                      (data.free_tier.d1_rows_written_peak_percent / 100) * data.free_tier.d1_rows_written_per_day
+                    )
+              }
+              cap={data.free_tier.d1_rows_written_per_day}
+              unit="a day"
+            />
+          </ul>
+          <div className="entry-foot">
+            <button className="secondary" onClick={() => load()} disabled={busy}>
+              {busy ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <span className="sub">
+              Cloudflare keeps about 30 days of this, and the most recent hours can lag.
+            </span>
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 

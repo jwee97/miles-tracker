@@ -74,3 +74,8 @@ OBJECTIVE = "balanced"
 #   TELEGRAM_SECRET      random string; Telegram echoes it on every webhook call
 #   OWNER_CHAT_ID        your numeric Telegram chat id (the bot tells you on /start)
 #   APP_SECRET           random string used to sign PWA magic-link tokens
+#   CF_API_TOKEN         optional; lets Settings show what Cloudflare's own
+#                        meters say this app costs. One permission:
+#                        Account -> Account Analytics -> Read. See SETUP.md.
+#                        The account id, worker name and database id that go
+#                        with it are ordinary settings, not secrets.

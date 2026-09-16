@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import Pager, { PageSize } from './Pager';
 import { RankedBars, SERIES, slotMap } from './charts';
 import {
   addOther,
@@ -24,7 +25,10 @@ export default function Other() {
   const [month, setMonth] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
+  const [page, setPage] = useState(1);
+  const [per, setPer] = useState(25);
+  // A different month, or a different page size, renumbers everything.
+  useEffect(() => setPage(1), [month, per]);
 
   const today = new Date().toISOString().slice(0, 10);
   const [f, setF] = useState({
@@ -76,7 +80,11 @@ export default function Other() {
 
   const methodColors = slotMap(data.by_method.map((m) => m.method));
   const catColors = slotMap(data.by_category.map((c) => c.category));
-  const rows = showAll ? data.rows : data.rows.slice(0, 12);
+  // One month's off-card entries arrive together, so the paging is done here
+  // rather than on the server — there is nothing to fetch again.
+  const pages = Math.max(1, Math.ceil(data.rows.length / per));
+  const shown = Math.min(page, pages);
+  const rows = data.rows.slice((shown - 1) * per, shown * per);
   const methodOf = (key: string) => data.methods.find((m) => m.key === key);
 
   return (
@@ -240,7 +248,9 @@ export default function Other() {
         <header>
           <div>
             <h2>Everything in {data.month}</h2>
-            <p className="sub">Click a cell to change it</p>
+            <p className="sub">
+              {data.rows.length} entr{data.rows.length === 1 ? 'y' : 'ies'} · click a cell to change it
+            </p>
           </div>
         </header>
         {rows.length ? (
@@ -276,11 +286,10 @@ export default function Other() {
         ) : (
           <p className="sub">Nothing recorded for {data.month}.</p>
         )}
-        {data.rows.length > 12 && (
-          <div className="entry-foot">
-            <button className="secondary" onClick={() => setShowAll((v) => !v)}>
-              {showAll ? 'Show fewer' : `Show all ${data.rows.length}`}
-            </button>
+        {data.rows.length > 0 && (
+          <div className="list-foot">
+            <PageSize per={per} onChange={setPer} label="Per page" total={data.rows.length} />
+            {pages > 1 && <Pager page={shown} pages={pages} onGo={setPage} />}
           </div>
         )}
         <p className="sub">A dimmed row is one where a card was never an option.</p>

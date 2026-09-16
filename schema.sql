@@ -86,6 +86,16 @@ CREATE TABLE IF NOT EXISTS requirement_tiers (
 );
 CREATE INDEX IF NOT EXISTS req_tier ON requirement_tiers(requirement_id, min_spend_cents);
 
+-- Merchants you have told the app to stop asking about. A cash-only hawker or
+-- a one-off transfer has no merchant code to find, and leaving it in the list
+-- of unknowns forever means the list stops being a to-do list. Kept rather
+-- than deleted so the decision survives re-import of the same statement.
+CREATE TABLE IF NOT EXISTS merchant_ignored (
+  merchant   TEXT PRIMARY KEY,               -- lowercased, trimmed, as merchant_mcc
+  reason     TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS offers (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   status            TEXT    NOT NULL DEFAULT 'pending', -- pending|tracked|dismissed|applied

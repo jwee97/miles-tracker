@@ -96,6 +96,86 @@ export function DailyBars({ data }: { data: { date: string; cents: number }[] })
   );
 }
 
+/**
+ * A plain count per day, for things measured in requests and rows rather than
+ * dollars. Same marks as DailyBars; the difference is the unit, and that a
+ * second series can ride on top of it — errors under requests, writes under
+ * reads — because the pair is always read together.
+ */
+export function CountBars({
+  data,
+  label,
+  overlayLabel,
+}: {
+  data: { date: string; value: number; overlay?: number }[];
+  label: string;
+  overlayLabel?: string;
+}) {
+  // Two series in one bar need saying which is which; colour alone would not.
+  const [hover, setHover] = useState<number | null>(null);
+  const W = 720;
+  const H = 150;
+  const pad = { t: 12, r: 6, b: 22, l: 6 };
+  const max = Math.max(1, ...data.map((d) => d.value));
+  const bw = (W - pad.l - pad.r) / Math.max(1, data.length);
+  const plotH = H - pad.t - pad.b;
+
+  return (
+    <div className="chart-wrap">
+      <p className="chart-key">
+        <i style={{ background: SERIES[0] }} /> {label}
+        {overlayLabel && (
+          <>
+            <i style={{ background: SERIES[1] }} /> {overlayLabel}
+          </>
+        )}
+      </p>
+      <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img" aria-label={`${label} by day`}>
+        <line x1={pad.l} y1={H - pad.b} x2={W - pad.r} y2={H - pad.b} className="axis-line" />
+        {data.map((d, i) => {
+          const h = (d.value / max) * plotH;
+          const x = pad.l + i * bw;
+          const y = H - pad.b - h;
+          // The overlay is always a subset of the value, so it is drawn inside
+          // the same bar rather than beside it. One error in three hundred
+          // requests is a sub-pixel sliver, and a sliver rounded away reads as
+          // none at all — so anything non-zero gets a floor it can be seen at.
+          const oh = d.overlay ? Math.max(2, (d.overlay / max) * plotH) : 0;
+          return (
+            <g key={d.date} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
+              <rect x={x} y={pad.t} width={bw} height={plotH} fill="transparent" />
+              <path d={vBar(x + 1, y, Math.max(1, bw - 2), h)} fill={hover === i ? '#7fb2f0' : SERIES[0]} />
+              {oh > 0 && (
+                <path d={vBar(x + 1, H - pad.b - oh, Math.max(1, bw - 2), oh)} fill={SERIES[1]} />
+              )}
+            </g>
+          );
+        })}
+        {data.map((d, i) =>
+          i === 0 || i === data.length - 1 || (i + 1) % 5 === 0 ? (
+            <text key={d.date} x={pad.l + i * bw + bw / 2} y={H - 7} className="tick" textAnchor="middle">
+              {Number(d.date.slice(8))}
+            </text>
+          ) : null
+        )}
+      </svg>
+      {hover !== null && (
+        <Tip
+          x={((hover + 0.5) / data.length) * 100}
+          y={8}
+          lines={[
+            `${data[hover].value.toLocaleString()} ${label}`,
+            ...(overlayLabel && data[hover].overlay !== undefined
+              ? [`${(data[hover].overlay ?? 0).toLocaleString()} ${overlayLabel}`]
+              : []),
+            data[hover].date,
+          ]}
+        />
+      )}
+    </div>
+  );
+}
+
 export function CumulativeLine({
   data,
   month,

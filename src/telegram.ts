@@ -11,7 +11,14 @@ import { runMigrations, runSeed } from './migrate';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
 import { defaultCardPossible, describeMissed, METHODS, monthOfOther } from './other';
-import { assignMerchantCode, importMerchantCodes, lookupMerchantOnline, unknownMerchants } from './mccscan';
+import {
+  assignMerchantCode,
+  ignoredMerchants,
+  ignoreMerchant,
+  importMerchantCodes,
+  lookupMerchantOnline,
+  unknownMerchants,
+} from './mccscan';
 import { evaluate, lookupMerchant } from './rules';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import type { Card, Env, Offer } from './types';
@@ -687,7 +694,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const lines = [...r.added, ...r.updated]
           .slice(0, 12)
           .map((a) => `${a.merchant} → ${a.mcc}${a.verified ? ' ✓' : ''}`);
-        const unknown = await unknownMerchants(env, 8);
+        const unknown = await unknownMerchants(env, { per: 8 });
         return send(
           env,
           chatId,
@@ -698,13 +705,40 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
               ? `\n\n⚠️ Disagrees with codes you confirmed (yours kept):\n` +
                 r.conflicts.map((c) => `${c.merchant}: you ${c.yours}, they ${c.theirs}`).join('\n')
               : '') +
-            (unknown.length
-              ? `\n\n*Still no code, by spend*\n` +
-                unknown
+            (unknown.merchants.length
+              ? `\n\n*Still no code, by spend* — ${unknown.total} left\n` +
+                unknown.merchants
                   .map((u) => `${u.merchant} — ${u.txn_count}× $${money(u.spend_cents)}${u.suggested_mcc ? ` (try ${u.suggested_mcc})` : ''}`)
                   .join('\n') +
-                '\n`/mcc <merchant> <code>` to set one.'
+                '\n`/mcc <merchant> <code>` to set one, `/mccskip <merchant>` to stop asking.' +
+                (unknown.ignored ? `\n_${unknown.ignored} ignored._` : '')
               : '\n\nEvery merchant you have spent at has a code.')
+        );
+      }
+
+      // Some spend has no code to find — a hawker stall, a transfer to a
+      // friend. The honest answer is not a guess, it is to take it off the list.
+      case '/mccskip': {
+        const name = args.trim().replace(/\s+--undo$/i, '').trim();
+        const undo = /\s--undo$/i.test(args.trim());
+        if (!name) {
+          const rows = await ignoredMerchants(env);
+          if (!rows.length) return send(env, chatId, 'Nothing ignored. `/mccskip <merchant>` stops asking about one.');
+          return send(
+            env,
+            chatId,
+            `*Ignored merchants* (${rows.length})\n` +
+              rows.map((r) => `${r.merchant}${r.reason ? ` — ${r.reason}` : ''}`).join('\n') +
+              '\n\n`/mccskip <merchant> --undo` puts one back.'
+          );
+        }
+        const r = await ignoreMerchant(env, name, { undo });
+        return send(
+          env,
+          chatId,
+          r.ignored
+            ? `*${r.merchant}* will no longer be listed as missing a code. \`/mccskip ${r.merchant} --undo\` to undo.`
+            : `*${r.merchant}* is back on the list of merchants with no code.`
         );
       }
 

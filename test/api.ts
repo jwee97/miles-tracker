@@ -1191,6 +1191,66 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('cards are ordered by how soon a minimum can be missed', days.every((d: number, i: number) => i === 0 || days[i - 1] <= d), JSON.stringify(days));
 }
 
+// --- paging the long lists ---------------------------------------------------
+{
+  const page = async (n: number, per: number) =>
+    (await (await authed(`/api/transactions?limit=${per}&page=${n}&range=all`)).json()) as any;
+
+  const first = await page(1, 2);
+  check('the ledger comes back paged', first.per_page === 2 && first.pages >= 1, JSON.stringify({ p: first.per_page, n: first.pages }));
+  check('a page holds no more than asked', first.transactions.length <= 2, String(first.transactions.length));
+  check('and the total still counts everything', first.total_count >= first.transactions.length, JSON.stringify(first.total_count));
+
+  if (first.pages > 1) {
+    const second = await page(2, 2);
+    check('page two is different rows', second.transactions[0]?.id !== first.transactions[0]?.id, '');
+    // Asking past the end must show the last page, not an empty table.
+    const far = await page(999, 2);
+    check('a page past the end clamps to the last one', far.page === far.pages && far.transactions.length > 0, JSON.stringify({ p: far.page, n: far.pages }));
+  }
+}
+
+// --- merchants with no code: paged, and ignorable ----------------------------
+{
+  const unknown = async (q = '') => (await (await authed(`/api/mcc/unknown${q}`)).json()) as any;
+
+  const all = await unknown();
+  check('the unknown-merchant list is paged', typeof all.pages === 'number' && typeof all.total === 'number', JSON.stringify(Object.keys(all)));
+  check('and says how many are ignored', typeof all.ignored === 'number', String(all.ignored));
+
+  if (all.total > 0) {
+    const one = await unknown('?per=1&page=1');
+    check('one per page returns one', one.merchants.length === 1, String(one.merchants.length));
+    check('and reports the rest as more pages', one.pages === one.total, JSON.stringify({ p: one.pages, t: one.total }));
+
+    const name = one.merchants[0].merchant;
+    const res = await authed('/api/mcc/ignore', { merchant: name });
+    check('a merchant can be ignored', res.status === 200, String(res.status));
+
+    const after = await unknown();
+    check('and drops out of the list', !after.merchants.some((m: any) => m.merchant === name), name);
+    check('while still being counted', after.ignored === all.ignored + 1, `${all.ignored} -> ${after.ignored}`);
+    check('and the total shrinks with it', after.total === all.total - 1, `${all.total} -> ${after.total}`);
+    check('the ignored one is listed so it can be found again', after.ignored_list.some((g: any) => g.merchant === name), JSON.stringify(after.ignored_list));
+
+    await authed('/api/mcc/ignore', { merchant: name, undo: true });
+    const back = await unknown();
+    check('putting it back restores it', back.total === all.total && back.ignored === all.ignored, `${back.total}/${back.ignored}`);
+
+    check('ignoring nothing is refused', (await authed('/api/mcc/ignore', { merchant: '  ' })).status === 400, '');
+  }
+}
+
+// --- Cloudflare's own meters -------------------------------------------------
+{
+  // Unconfigured is the state this will be in for most people, and it has to
+  // say so rather than reporting a confident zero.
+  const r = (await (await authed('/api/platform?days=7')).json()) as any;
+  check('the platform panel answers even with no token', r.configured === false, JSON.stringify(r.missing));
+  check('and names what is missing', Array.isArray(r.missing) && r.missing.length > 0, '');
+  check('without ever naming a token value', !JSON.stringify(r).includes('Bearer'), '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});
