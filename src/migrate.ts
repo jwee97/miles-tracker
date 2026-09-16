@@ -1,6 +1,8 @@
 import schemaSql from '../schema.sql';
 import seedSql from '../seed.sql';
 import { statements } from './sql';
+import { migrateCardsToProducts, type ProductMigrationReport } from './catalog/migrate-products';
+import { today } from './spend';
 import type { Env } from './types';
 
 /**
@@ -9,6 +11,21 @@ import type { Env } from './types';
  * EXISTS, so each is checked against PRAGMA table_info first.
  */
 const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
+  // --- the product layer (P0 phase 1) ---
+  { table: 'cards', column: 'product_id', ddl: 'ALTER TABLE cards ADD COLUMN product_id INTEGER' },
+  { table: 'earn_rules', column: 'rule_set_id', ddl: 'ALTER TABLE earn_rules ADD COLUMN rule_set_id INTEGER' },
+  {
+    table: 'earn_rules',
+    column: 'priority',
+    ddl: 'ALTER TABLE earn_rules ADD COLUMN priority INTEGER NOT NULL DEFAULT 0',
+  },
+  {
+    table: 'transactions',
+    column: 'evaluated_rule_set_id',
+    ddl: 'ALTER TABLE transactions ADD COLUMN evaluated_rule_set_id INTEGER',
+  },
+  { table: 'transactions', column: 'evaluation_version', ddl: 'ALTER TABLE transactions ADD COLUMN evaluation_version TEXT' },
+  { table: 'transactions', column: 'evaluated_at', ddl: 'ALTER TABLE transactions ADD COLUMN evaluated_at TEXT' },
   { table: 'requirements', column: 'min_txns', ddl: 'ALTER TABLE requirements ADD COLUMN min_txns INTEGER' },
   { table: 'requirements', column: 'anchor_at', ddl: 'ALTER TABLE requirements ADD COLUMN anchor_at TEXT' },
   {
@@ -83,6 +100,49 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   },
 ];
 
+/**
+ * Columns whose constraints had to change, which SQLite cannot alter in place.
+ *
+ * `earn_rules.card_id` was NOT NULL because a rule always belonged to one
+ * card. A rule now belongs to a product's versioned rule set instead, shared by
+ * everyone holding that product, so the column has to be nullable — and the
+ * only way to relax NOT NULL in SQLite is to rebuild the table.
+ *
+ * The rebuild copies every row by name, so a column added later is carried
+ * across without this list needing to know about it, and it runs only while the
+ * old constraint is still there.
+ */
+async function relaxEarnRuleCardId(env: Env, created: string[], errors: string[]): Promise<void> {
+  const { results } = await env.DB.prepare(`PRAGMA table_info(earn_rules)`).all<{ name: string; notnull: number }>();
+  const cols = results ?? [];
+  const cardId = cols.find((c) => c.name === 'card_id');
+  if (!cardId || cardId.notnull !== 1) return;
+
+  const names = cols.map((c) => c.name).filter((n) => n !== 'id');
+  try {
+    // A rebuild, not a migration of data: same rows, same ids, one constraint
+    // fewer. Ordered so a failure part-way leaves the original table intact.
+    await env.DB.prepare(`DROP TABLE IF EXISTS earn_rules_rebuild`).run();
+    await env.DB.prepare(
+      `CREATE TABLE earn_rules_rebuild (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         ${cols
+           .filter((c) => c.name !== 'id')
+           .map((c) => `${c.name} ${c.name === 'card_id' ? 'INTEGER' : 'TEXT'}`)
+           .join(', ')}
+       )`
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO earn_rules_rebuild (id, ${names.join(', ')}) SELECT id, ${names.join(', ')} FROM earn_rules`
+    ).run();
+    await env.DB.prepare(`DROP TABLE earn_rules`).run();
+    await env.DB.prepare(`ALTER TABLE earn_rules_rebuild RENAME TO earn_rules`).run();
+    created.push('earn_rules (rebuilt so a rule can belong to a product, not a card)');
+  } catch (e) {
+    errors.push(`relaxing earn_rules.card_id — ${(e as Error).message}`);
+  }
+}
+
 async function tableExists(env: Env, table: string): Promise<boolean> {
   const row = await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name = ?`)
     .bind(table)
@@ -100,6 +160,8 @@ export interface MigrationReport {
   altered: string[];
   alreadyCurrent: boolean;
   errors: string[];
+  /** Moving existing cards onto the product and rule-set model. */
+  products?: ProductMigrationReport;
 }
 
 /** Brings the database up to the schema the deployed code expects. Idempotent. */
@@ -145,6 +207,10 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
     }
   }
 
+  // After the columns, before the indexes: the rebuild recreates the table, so
+  // its indexes have to be laid down again afterwards.
+  await relaxEarnRuleCardId(env, created, errors);
+
   for (const stmt of all.filter(isIndex)) {
     try {
       await env.DB.prepare(stmt).run();
@@ -153,7 +219,23 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
     }
   }
 
-  return { created, altered, alreadyCurrent: !created.length && !altered.length, errors };
+  // Now the data half: existing cards onto the product model. It is idempotent,
+  // so it runs every time and reports nothing when there is nothing to do.
+  let products: ProductMigrationReport | undefined;
+  try {
+    products = await migrateCardsToProducts(env, today(env));
+  } catch (e) {
+    errors.push(`linking cards to products — ${(e as Error).message}`);
+  }
+
+  const movedData = !!products && !products.alreadyDone;
+  return {
+    created,
+    altered,
+    alreadyCurrent: !created.length && !altered.length && !movedData,
+    errors,
+    products,
+  };
 }
 
 /** Loads the default feeds, programmes and transfer routes. INSERT OR IGNORE, so safe to repeat. */

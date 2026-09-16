@@ -97,6 +97,21 @@ change and drops the ones that did.
 
 Both end up in the same place, and you can use both.
 
+## How it is put together
+
+Four things, deliberately separate:
+
+**Card products** are what a card *is* — the rates, the programme, the caps.
+**Your cards** are what you hold — the limit, the statement day, the nickname.
+**Rule sets** are what a product paid *and when*, versioned with effective
+dates. **Transactions** are what actually happened.
+
+A bank changing a rate in October does not rewrite what August earned: the old
+version is closed the day before the new one opens, and every calculation picks
+the version in force on the day it is asking about. Two published versions may
+never cover the same day, and every evaluation records which version produced
+its numbers. See SETUP.md for the detail.
+
 ## What it leads with
 
 Minimum spend, not the credit limit.

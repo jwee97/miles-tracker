@@ -1321,6 +1321,79 @@ so rather than showing an empty list.
 A token with only the first line still works; the extra panels report what they
 are missing instead of going blank.
 
+## The product model
+
+Under the app there are now four things rather than two, and the separation is
+what makes almost everything else easier:
+
+| | |
+|---|---|
+| **Card products** | what a card IS. "4 mpd on online spend" is a fact about the DBS Woman's World Card, the same for everyone holding one. |
+| **Your cards** | what you hold. The limit, the statement day, the nickname, the opening date. |
+| **Rule sets** | what a product paid, *and when*. Versioned, with dates. |
+| **Transactions** | what actually happened. |
+
+Mixed together, as they were, a reward rate could never be shared between
+holders, corrected in one place, or given a date.
+
+### Why the dates matter
+
+A bank cutting a rate in October must not rewrite what August earned. So a
+published rule set is **never edited** when the economics change — it is closed
+off on the day before the new one opens:
+
+```
+version 1   2025-06-01 → 2026-09-30   superseded
+version 2   2026-10-01 → (current)    published
+```
+
+A purchase dated 30 September finds version 1 and earns the old rate; one dated
+1 October finds version 2. Every evaluation records which version produced its
+numbers, so an audit can say what the app believed and why.
+
+Two invariants are enforced rather than hoped for:
+
+- **No two published versions may cover the same day.** An overlap is not a
+  smaller problem than a gap — it is an ambiguous answer to "what did this card
+  pay on the 14th", and the calculation would pick one silently. Publishing one
+  fails with `RULE_VERSION_OVERLAP`, naming the version it clashes with.
+- **At most one version is open-ended.** Publishing a new current version closes
+  the one it replaces.
+
+Drafts never apply to anything, and a version dated in the future does not apply
+early.
+
+### What the migration did
+
+It runs inside `/migrate`, is idempotent, and deletes nothing:
+
+1. one product per distinct card product;
+2. every card linked to its product;
+3. each product's existing rules wrapped in **version 1**, published, effective
+   from the card's opening date;
+4. card-scoped exclusions versioned alongside them. Global exclusions stay
+   global rather than being copied into every product.
+
+The effective date is the honest weak point: the real start of a card's terms is
+recorded nowhere, so the card's opening date is used and the product is marked
+`migrated_unverified`. That lowers a recommendation's confidence later rather
+than pretending the date was checked. Nothing else is invented — a card with no
+opening date gets an explicitly early one rather than a guess.
+
+`earn_rules.card_id` was `NOT NULL`, which a product-scoped rule cannot satisfy,
+so the migration rebuilds that table to make it nullable. Every row is copied by
+name, ids included, and the rebuild only runs while the old constraint is there.
+
+### Looking at it
+
+```
+GET /api/catalog/cards            every product, who holds it, which version is live
+GET /api/catalog/cards/:key       one product: all versions, their rules, sources, overlaps
+```
+
+Read-only for now. Nothing in the interface depends on the catalogue yet — this
+phase deliberately left the UI alone so the model could be proved underneath it.
+
 ## Verify end to end
 
 ```

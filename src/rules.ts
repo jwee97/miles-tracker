@@ -1,4 +1,5 @@
 import { calendarMonth, calendarQuarter, currentTierCents, money, statementCycle, today, EFFECTIVE_DATE } from './spend';
+import { ruleSetOn, rulesIn } from './catalog/rulesets';
 import type { Card, Env } from './types';
 
 export type Channel = 'online' | 'offline' | 'contactless';
@@ -22,6 +23,10 @@ export interface EarnRule {
    * rate changes with the tier. Null means it always applies.
    */
   min_tier_cents: number | null;
+  /** The versioned set this rule belongs to; null on rules not yet migrated. */
+  rule_set_id: number | null;
+  /** Higher wins among rules that are otherwise equal. */
+  priority: number;
   note: string | null;
 }
 
@@ -115,6 +120,36 @@ export async function lookupMerchant(env: Env, query: string): Promise<MerchantG
   };
 }
 
+/**
+ * The rules in force for a card on a given day.
+ *
+ * Reward rules belong to a versioned set on the card's product, so which rules
+ * apply is a question about a DATE: a purchase from August has to find the
+ * rules that were in force in August, not the ones the bank published in
+ * October. Cards not yet on the product model fall back to their own rules,
+ * which is what every card looks like until the migration has run.
+ */
+export async function rulesForCard(
+  env: Env,
+  card: Card,
+  on: string
+): Promise<{ rules: EarnRule[]; rule_set_id: number | null }> {
+  const productId = (card as unknown as { product_id?: number | null }).product_id ?? null;
+  if (productId) {
+    const set = await ruleSetOn(env, productId, on);
+    if (set) return { rules: await rulesIn(env, set.id), rule_set_id: set.id };
+    // A product with no version covering that day earns nothing extra — the
+    // honest answer, rather than quietly reaching for a version that had not
+    // started or had already ended.
+    return { rules: [], rule_set_id: null };
+  }
+
+  const { results } = await env.DB.prepare(`SELECT * FROM earn_rules WHERE card_id = ? AND active = 1`)
+    .bind(card.id)
+    .all<EarnRule>();
+  return { rules: results ?? [], rule_set_id: null };
+}
+
 export interface Purchase {
   amount_cents: number | null;
   mcc?: string | null;
@@ -144,6 +179,10 @@ export interface Evaluation {
   min_spend_days_left: number | null;
   trace: RuleStep[];
   score: number;
+  /** The versioned rule set these numbers came from, when there is one. */
+  rule_set_id: number | null;
+  /** The date the rules were judged on. */
+  evaluated_on: string;
 }
 
 function windowFor(w: string | null, card: Card, env: Env) {
@@ -256,16 +295,30 @@ export async function evaluate(
     exclusions?: { card_id: number | null; mcc: string; reason: string | null }[];
     /** The spend rung this card is holding; looked up when not supplied. */
     tier_cents?: number | null;
+    /** The date to judge the rules on. Defaults to today. */
+    on?: string;
   } = {}
 ): Promise<Evaluation> {
   const trace: RuleStep[] = [];
   const mileValue = parseFloat(env.MILE_VALUE_CENTS || '1.5');
 
-  const rules =
-    opts.rules ??
-    ((await env.DB.prepare(`SELECT * FROM earn_rules WHERE card_id = ? AND active = 1`).bind(card.id).all<EarnRule>())
-      .results ?? []);
-  const mine = rules.filter((r) => r.card_id === card.id);
+  // Which rules applied is a question about a date. `on` is the purchase's own
+  // date when it has one, so a recalculation of an August transaction finds
+  // August's rules rather than today's.
+  const on = opts.on ?? today(env);
+  let ruleSetId: number | null = null;
+  let rules: EarnRule[];
+  if (opts.rules) {
+    rules = opts.rules;
+  } else {
+    const resolved = await rulesForCard(env, card, on);
+    rules = resolved.rules;
+    ruleSetId = resolved.rule_set_id;
+  }
+  // Rules resolved through a product are already this card's; the legacy path
+  // returns only this card's too. The filter keeps a caller-supplied list from
+  // leaking another card's rules in.
+  const mine = rules.filter((r) => r.rule_set_id != null || r.card_id === card.id);
 
   const exclusions =
     opts.exclusions ??
@@ -274,6 +327,8 @@ export async function evaluate(
   const amount = p.amount_cents ?? 0;
   const blank: Omit<Evaluation, 'trace' | 'score'> = {
     card,
+    rule_set_id: ruleSetId,
+    evaluated_on: on,
     rule: null,
     excluded: false,
     exclusion_reason: null,

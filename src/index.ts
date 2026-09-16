@@ -28,6 +28,9 @@ import { buildAudit } from './audit';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
 import { runMigrations, runSeed } from './migrate';
+import { currentRuleSetFor } from './catalog/migrate-products';
+import { isStale, listProducts, productByKey, productKeyOf } from './catalog/products';
+import { exclusionsIn, overlaps, ruleSetOn, rulesIn, versionsOf } from './catalog/rulesets';
 import { defaultCardPossible, METHODS, monthOfOther, otherMonths } from './other';
 import {
   assignMerchantCode,
@@ -646,6 +649,53 @@ export default {
           return json({ ok: true, imported, expected_miles: miles });
         }
 
+        // --- the catalogue -----------------------------------------------
+        // Read-only this phase. Nothing in the UI depends on it yet; it exists
+        // so the product model can be inspected before anything is built on it.
+        if (url.pathname === '/api/catalog/cards') {
+          const products = await listProducts(env, url.searchParams.get('q') ?? '');
+          const out = [];
+          for (const p of products) {
+            const set = await ruleSetOn(env, p.id, today(env));
+            out.push({
+              ...p,
+              stale: isStale(p, today(env)),
+              current_rule_set: set ? { id: set.id, version: set.version, effective_from: set.effective_from } : null,
+              rules: set ? (await rulesIn(env, set.id)).length : 0,
+              held_by: (
+                await env.DB.prepare(`SELECT nickname FROM cards WHERE product_id = ? ORDER BY nickname`)
+                  .bind(p.id)
+                  .all<{ nickname: string }>()
+              ).results?.map((c) => c.nickname) ?? [],
+            });
+          }
+          return json({ products: out });
+        }
+
+        if (url.pathname.startsWith('/api/catalog/cards/')) {
+          const key = decodeURIComponent(url.pathname.slice('/api/catalog/cards/'.length));
+          const product = await productByKey(env, key);
+          if (!product) return json({ error: 'no such product' }, 404);
+          const sets = await versionsOf(env, product.id);
+          const versions = [];
+          for (const set of sets) {
+            versions.push({ ...set, rules: await rulesIn(env, set.id), exclusions: await exclusionsIn(env, set.id) });
+          }
+          const { results: sources } = await env.DB.prepare(
+            `SELECT * FROM product_sources WHERE product_id = ? AND active = 1 ORDER BY retrieved_at DESC`
+          )
+            .bind(product.id)
+            .all<any>();
+          return json({
+            product: { ...product, stale: isStale(product, today(env)) },
+            versions,
+            sources: sources ?? [],
+            // The invariant, checked rather than assumed: no day may be covered
+            // by two published versions.
+            overlaps: await overlaps(env, product.id),
+          });
+        }
+
         // --- cards and their earn rules, from the app --------------------
         if (url.pathname === '/api/cards') {
           const { results: cards } = await env.DB.prepare(
@@ -738,7 +788,7 @@ export default {
             .bind(
               issuer,
               product,
-              `${issuer}_${product}`.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+              productKeyOf(issuer, product),
               nickname,
               parseMoney(String(b.limit ?? '0')) ?? 0,
               day,
@@ -796,13 +846,18 @@ export default {
               return json({ error: 'MCC lists must be four-digit codes, comma separated' }, 400);
           }
 
+          // A rule added after the migration has to land in a version too, or
+          // the product model quietly stops being the whole picture.
+          const ruleSetId = await currentRuleSetFor(env, card.id, today(env));
+
           const ins = await env.DB.prepare(
-            `INSERT INTO earn_rules (card_id, category, mpd, reward_type, mcc_include, mcc_exclude, channel,
+            `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, mcc_exclude, channel,
                min_txn_cents, min_tier_cents, program_key, cap_cents, cap_group, cap_window, note)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
             .bind(
               card.id,
+              ruleSetId,
               category,
               rate,
               rewardType,

@@ -5,6 +5,7 @@ import { decideRule, evaluateOffer } from './eligibility';
 import { daysUntil, OFFER_STATUSES, parseExtraction, saveExtraction, sweepExpiredOffers, type OfferStatus } from './offers';
 import { feedStorage, ignoreFeedItem, purgeFeedItems, retentionDays, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import type { ScanResult } from './rss';
+import { currentRuleSetFor } from './catalog/migrate-products';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
 import { runMigrations, runSeed } from './migrate';
@@ -1410,13 +1411,17 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         if (include.some((x) => !/^\d{4}$/.test(x)))
           return send(env, chatId, `\`mcc\` takes four-digit codes, comma separated — got "${mccList}".`);
 
+        // Same as the app: a rule added now belongs to the card's current
+        // version, not loose beside it.
+        const botRuleSet = await currentRuleSetFor(env, card.id, today(env));
         await env.DB.prepare(
-          `INSERT INTO earn_rules (card_id, category, mpd, reward_type, mcc_include, min_tier_cents,
+          `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, min_tier_cents,
              cap_cents, cap_window, cap_group, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             card.id,
+            botRuleSet,
             cat.toLowerCase(),
             rate,
             isCashback ? 'cashback' : 'miles',

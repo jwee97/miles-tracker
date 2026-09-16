@@ -1348,12 +1348,45 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('the bot understands the tier keyword too', botRule?.min_tier_cents === 200000, JSON.stringify(botRule));
 }
 
+// --- the catalogue, once the migration has run --------------------------------
+{
+  // The first migrate does the linking; everything after it must find nothing
+  // left to do, which is asserted under maintenance below.
+  const first_run = (await (await authed('/api/migrate', {})).json()) as any;
+  check('the migration links existing cards to products', first_run.products.cards_linked > 0, JSON.stringify(first_run.products));
+  check('and versions their rules', first_run.products.rule_sets_created > 0, JSON.stringify(first_run.products));
+  check('skipping nothing silently', first_run.products.skipped.length === 0, JSON.stringify(first_run.products.skipped));
+
+  const list = (await (await authed('/api/catalog/cards')).json()) as any;
+  check('the catalogue lists the products behind the cards', list.products.length > 0, JSON.stringify(list).slice(0, 200));
+  const first = list.products[0];
+  check('each says who holds it', Array.isArray(first.held_by), JSON.stringify(first.held_by));
+  check('and which version is in force', first.current_rule_set !== null, JSON.stringify(first.current_rule_set));
+  check('a migrated product is flagged as unverified', list.products.every((p: any) => p.stale === true), JSON.stringify(list.products.map((p: any) => [p.product_key, p.stale])));
+
+  const q = (await (await authed(`/api/catalog/cards?q=${encodeURIComponent(first.issuer)}`)).json()) as any;
+  check('it can be searched', q.products.length > 0 && q.products.length <= list.products.length, `${q.products.length}/${list.products.length}`);
+
+  const detail = (await (await authed(`/api/catalog/cards/${encodeURIComponent(first.product_key)}`)).json()) as any;
+  check('one product opens to its versions', detail.versions.length >= 1, JSON.stringify(detail.versions?.length));
+  check('with the rules inside each', Array.isArray(detail.versions[0].rules), '');
+  check('and no day covered twice', detail.overlaps.length === 0, JSON.stringify(detail.overlaps));
+  check('an unknown product is a 404', (await authed('/api/catalog/cards/nope')).status === 404, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});
   const body = (await res.json()) as any;
   check('the database can be migrated from the app', res.status === 200, String(res.status));
-  check('and reports it is already current', body.alreadyCurrent === true, JSON.stringify(body).slice(0, 120));
+
+  // A migration that runs on every deploy has to be idempotent: by now the
+  // linking has already happened, and there must be nothing left to do.
+  check('a repeat migration finds nothing to link', body.products.cards_linked === 0, JSON.stringify(body.products));
+
+  const again = (await (await authed('/api/migrate', {})).json()) as any;
+  check('running it again changes nothing', again.alreadyCurrent === true, JSON.stringify(again).slice(0, 200));
+  check('and creates no second product', again.products.products_created === 0, JSON.stringify(again.products));
 }
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');

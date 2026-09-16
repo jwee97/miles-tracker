@@ -18,6 +18,96 @@ CREATE TABLE IF NOT EXISTS cards (
 CREATE UNIQUE INDEX IF NOT EXISTS cards_nickname ON cards(nickname);
 CREATE INDEX        IF NOT EXISTS cards_issuer   ON cards(issuer);
 
+-- ---------------------------------------------------------------------------
+-- The catalogue: what a card product IS, separately from what you hold.
+--
+-- Until now one table carried both. "4 mpd on online spend" is a fact about
+-- the DBS Woman's World Card and is the same for everyone who holds one; "the
+-- limit is $12,000 and it closes on the 12th" is a fact about YOUR card. Mixed
+-- together, the first cannot be shared, corrected once, or dated.
+--
+-- The cards table keeps its name for now and gains product_id. Renaming it to
+-- user_cards touches every query in the app and buys nothing this phase: the
+-- separation is real once the product owns the rules. The rename belongs with
+-- dropping the legacy columns, after this model has run in production.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS card_products (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_key       TEXT    NOT NULL UNIQUE,      -- 'dbs_womans_world'
+  issuer            TEXT    NOT NULL,
+  product_name      TEXT    NOT NULL,
+  network           TEXT,                          -- visa | mastercard | amex | unionpay
+  card_type         TEXT    NOT NULL DEFAULT 'credit',
+  currency          TEXT    NOT NULL DEFAULT 'SGD',
+  reward_type       TEXT    NOT NULL DEFAULT 'miles', -- miles | cashback | points
+  program_key       TEXT    REFERENCES programs(key),
+  base_mpd          REAL,
+  base_cashback_pct REAL,
+  annual_fee_cents  INTEGER,
+  official_url      TEXT,
+  status            TEXT    NOT NULL DEFAULT 'active',   -- active | discontinued
+  -- Where this product came from. A card the catalogue has never heard of is a
+  -- product too, so there is one reward engine rather than two.
+  source            TEXT    NOT NULL DEFAULT 'catalog',  -- catalog | user | imported
+  -- Never hidden from the engine: a stale rule may still be the best available,
+  -- but it lowers a recommendation's confidence rather than being silently
+  -- trusted or silently dropped.
+  verification_status TEXT  NOT NULL DEFAULT 'draft',    -- verified | needs_review | stale | draft | migrated_unverified
+  last_verified_at  TEXT,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS product_issuer ON card_products(issuer, product_name);
+
+-- Where a product's numbers came from, so a rate can be traced to a document.
+CREATE TABLE IF NOT EXISTS product_sources (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id      INTEGER NOT NULL REFERENCES card_products(id) ON DELETE CASCADE,
+  source_type     TEXT    NOT NULL,   -- bank_product_page | bank_terms | bank_rewards_terms | bank_faq | manual_verified
+  source_url      TEXT    NOT NULL,
+  title           TEXT,
+  retrieved_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+  effective_from  TEXT,
+  effective_until TEXT,
+  content_hash    TEXT,
+  active          INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS product_source ON product_sources(product_id, active);
+
+-- ---------------------------------------------------------------------------
+-- Rule sets: what a product paid, and WHEN.
+--
+-- A bank changing its rates in October must not silently rewrite what August
+-- earned. So a published rule set is never edited when the economics move — it
+-- is closed off and a new version opens the next day. Every historical
+-- calculation then picks the version that was in force on the day.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rule_sets (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id       INTEGER NOT NULL REFERENCES card_products(id) ON DELETE CASCADE,
+  version          INTEGER NOT NULL,
+  effective_from   TEXT    NOT NULL,       -- YYYY-MM-DD, inclusive
+  effective_until  TEXT,                   -- inclusive; NULL means still current
+  published_at     TEXT,
+  status           TEXT    NOT NULL DEFAULT 'draft', -- draft | published | superseded | withdrawn
+  source_id        INTEGER REFERENCES product_sources(id),
+  verified_at      TEXT,
+  notes            TEXT,
+  UNIQUE(product_id, version)
+);
+CREATE INDEX IF NOT EXISTS ruleset_lookup ON rule_sets(product_id, status, effective_from);
+
+-- Exclusions are not timeless either: a code a card stopped excluding in June
+-- must still be excluded from May's spend.
+CREATE TABLE IF NOT EXISTS rule_exclusions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_set_id   INTEGER NOT NULL REFERENCES rule_sets(id) ON DELETE CASCADE,
+  mcc           TEXT    NOT NULL,
+  reason        TEXT,
+  scope         TEXT    NOT NULL DEFAULT 'rewards'   -- rewards | min_spend | both
+);
+CREATE INDEX IF NOT EXISTS rule_exclusion_set ON rule_exclusions(rule_set_id);
+
 CREATE TABLE IF NOT EXISTS transactions (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   card_id      INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
@@ -37,6 +127,12 @@ CREATE TABLE IF NOT EXISTS transactions (
   actual_miles INTEGER,                          -- what the bank actually credited
   actual_cashback_cents INTEGER,
   reward_note  TEXT,
+  -- Which rule set produced the expected reward, and when. The transaction is
+  -- still recalculable from the rules; this is here so an audit can say what
+  -- the app believed at the time and why.
+  evaluated_rule_set_id INTEGER,
+  evaluation_version TEXT,
+  evaluated_at TEXT,
   expected_program TEXT,                          -- programme the earn lands in
   credited_at  TEXT,                              -- when you accepted it into the wallet
   credited_tranche_id INTEGER,                    -- which balance tranche took it
@@ -286,13 +382,20 @@ CREATE TABLE IF NOT EXISTS conversions (
 -- bonus categories actually work.
 CREATE TABLE IF NOT EXISTS earn_rules (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  card_id     INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  -- Nullable: a rule belonging to a product's rule set is not any one card's.
+  -- Kept only for rules that predate the product model.
+  card_id     INTEGER REFERENCES cards(id) ON DELETE CASCADE,
   category    TEXT    NOT NULL,
   mpd         REAL    NOT NULL,                -- miles per dollar, or percent if cashback
   reward_type TEXT    NOT NULL DEFAULT 'miles', -- miles | cashback
   mcc_include TEXT,                             -- CSV of MCCs, null = any
   mcc_exclude TEXT,                             -- CSV of MCCs that never match
   channel     TEXT,                             -- online | offline | contactless | null = any
+  -- The versioned set this rule belongs to. card_id below is the legacy link,
+  -- kept until the product layer is verified in production; activation is
+  -- decided by the rule set's effective dates, not by `active`.
+  rule_set_id INTEGER REFERENCES rule_sets(id) ON DELETE CASCADE,
+  priority    INTEGER NOT NULL DEFAULT 0,       -- higher wins among equals
   min_txn_cents INTEGER,                        -- rule needs a transaction this large
   -- Cards whose rate depends on which spend tier the quarter is holding: UOB
   -- One pays 3.33% on groceries at the S$600 rung but 6% at S$1,000. This is
