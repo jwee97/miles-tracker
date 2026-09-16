@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations, runSeed } from '../src/migrate';
 import { buildDigest } from '../src/digest';
+import { evaluate } from '../src/rules';
 import { cycleStartingIn, requirementProgress, standings, statementQuarter } from '../src/spend';
 import type { Card, Env, Requirement } from '../src/types';
 
@@ -310,6 +311,104 @@ at('2026-05-15');
   check('and the target is that rung', p.target_cents === 200000, String(p.target_cents));
   check('with the full gap to it reported', p.to_target_cents === 200000, String(p.to_target_cents));
   check('while the minimum to not lose the quarter stays the floor', p.remaining_cents === 60000, String(p.remaining_cents));
+}
+
+// --- a rate that moves with the tier -----------------------------------------
+//
+// UOB One pays 3.33% on groceries at the S$600 rung, 6% at S$1,000 and 8% at
+// S$2,000. Which one applies is decided by the tier the QUARTER is holding, not
+// by how much went on the card this month — spending into a quarter already
+// capped one rung down does not buy the higher rate.
+{
+  sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at,base_mpd)
+       VALUES ('UOB','One Rates','uob_rates','rates',1000000,18,'2026-02-10',0)`);
+  const rc = db.prepare(`SELECT * FROM cards WHERE nickname='rates'`).get() as Card;
+  sql(
+    `INSERT INTO requirements (card_id,kind,amount_cents,window,min_txns,anchor_at,per_month,prorate_first)
+     VALUES (?,'monthly_min',60000,'statement_quarter',10,'2026-02-10',1,0)`,
+    rc.id
+  );
+  const rq = db.prepare(`SELECT * FROM requirements WHERE card_id = ?`).get(rc.id) as Requirement;
+  for (const [min, reward] of [[60000, 6000], [100000, 10000], [200000, 20000]] as [number, number][]) {
+    sql(`INSERT INTO requirement_tiers (requirement_id,min_spend_cents,reward_cents) VALUES (?,?,?)`, rq.id, min, reward);
+  }
+  // One rate per rung, plus a base that never depends on one.
+  for (const [rate, tier] of [[3.33, 60000], [6, 100000], [8, 200000]] as [number, number][]) {
+    sql(
+      `INSERT INTO earn_rules (card_id,category,mpd,reward_type,min_tier_cents) VALUES (?,'groceries',?,'cashback',?)`,
+      rc.id,
+      rate,
+      tier
+    );
+  }
+  sql(`INSERT INTO earn_rules (card_id,category,mpd,reward_type) VALUES (?,'*',0.3,'cashback')`, rc.id);
+
+  const buy = { amount_cents: 10000, category: 'groceries', mcc: null, channel: null };
+  const put = (date: string, cents: number) => {
+    for (let i = 0; i < 10; i++)
+      sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,merchant) VALUES (?,?,?,'shop')`, rc.id, Math.round(cents / 10), date);
+  };
+
+  // Month 1 of Q3 at $900 — the bottom rung.
+  put('2026-09-01', 90000);
+  at('2026-09-10');
+  {
+    const e = await evaluate(env, rc, buy);
+    check('a tier-gated rate uses the rung the card is on', e.bonus_rate === 3.33, String(e.bonus_rate));
+    check('and the reason is in the trace', e.trace.some((t) => /Spend tier/.test(t.check)), JSON.stringify(e.trace.map((t) => t.check)));
+  }
+
+  // Month 2, spending $2,500. The quarter is still capped by month 1 at the
+  // bottom rung, so this does NOT earn 8% however big the month is.
+  put('2026-10-01', 250000);
+  at('2026-10-10');
+  {
+    const e = await evaluate(env, rc, buy);
+    check('a big month does not buy a rate the quarter cannot pay', e.bonus_rate === 3.33, String(e.bonus_rate));
+    check('the higher rungs are refused with a reason', e.trace.some((t) => t.check === 'Spend tier' && t.pass === false), JSON.stringify(e.trace.filter((t) => t.check === 'Spend tier')));
+  }
+
+  // A card holding the top rung earns the top rate.
+  {
+    const e = await evaluate(env, rc, buy, { tier_cents: 200000 });
+    check('holding a higher rung earns the higher rate', e.bonus_rate === 8, String(e.bonus_rate));
+  }
+  {
+    const e = await evaluate(env, rc, buy, { tier_cents: 100000 });
+    check('and the middle rung earns the middle rate', e.bonus_rate === 6, String(e.bonus_rate));
+  }
+
+  // A card with no ladder at all cannot claim a tier-gated rate.
+  {
+    const e = await evaluate(env, rc, buy, { tier_cents: null });
+    check('no ladder means no tier-gated rate', e.bonus_rate === 0.3, String(e.bonus_rate));
+    check('and it says why rather than silently dropping to base', e.trace.some((t) => /no tiers recorded/.test(t.detail)), JSON.stringify(e.trace.map((t) => t.detail)));
+  }
+}
+
+// --- a window measured as one lump says so -----------------------------------
+{
+  sql(`INSERT INTO cards (issuer,product,product_key,nickname,credit_limit_cents,statement_day,opened_at,base_mpd)
+       VALUES ('UOB','One Lumped','uob_lump','lump',3570000,30,'2026-01-01',0)`);
+  const lc = db.prepare(`SELECT * FROM cards WHERE nickname='lump'`).get() as Card;
+  // Exactly the shape that reported $1,621 against a $1,000 minimum.
+  sql(
+    `INSERT INTO requirements (card_id,kind,amount_cents,window,min_txns,reward_note)
+     VALUES (?,'monthly_min',100000,'calendar_quarter',5,'$100 quarterly rebate')`,
+    lc.id
+  );
+  const lq = db.prepare(`SELECT * FROM requirements WHERE card_id = ?`).get(lc.id) as Requirement;
+  at('2026-09-16');
+  const p = await requirementProgress(env, lc, lq);
+  check('a quarter measured as one lump is flagged', p.shape_warning !== null, String(p.shape_warning));
+  check('and the warning names the fix', /every statement month of a rolling quarter/.test(p.shape_warning ?? ''), String(p.shape_warning));
+  check('and mentions the tiers, since there are none', /add its spend tiers/.test(p.shape_warning ?? ''), String(p.shape_warning));
+  check('the window really is three months', p.window.start === '2026-07-01' && p.window.end === '2026-09-30', JSON.stringify(p.window));
+
+  // A correctly shaped one must not be nagged.
+  const fine = db.prepare(`SELECT * FROM requirements WHERE card_id = (SELECT id FROM cards WHERE nickname='real')`).get() as Requirement;
+  const q = await requirementProgress(env, db.prepare(`SELECT * FROM cards WHERE nickname='real'`).get() as Card, fine);
+  check('a correctly shaped minimum is left alone', q.shape_warning === null, String(q.shape_warning));
 }
 
 // --- the status report leads with minimum spend ------------------------------

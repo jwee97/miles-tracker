@@ -156,8 +156,16 @@ one big month does not carry two thin ones. The first quarter pro-rates: hit the
 minimum in the last two months only and two thirds is paid; in the last month
 only, a third.
 
+Rates can hang off the rungs too: `/addearn uobone groceries 6% tier 1000`
+earns 6% only while the card is holding the $1,000 tier, and 3.33% below it.
+The rung used is the one the *quarter* will pay, so a big month inside a quarter
+already capped lower does not earn the higher rate.
+
 The ladder is the minimum: with rungs at $600/$1,000/$2,000 the monthly minimum
-is **$600**, not whatever figure the requirement was created with. And because
+is **$600**, not whatever figure the requirement was created with. A minimum set
+up with the wrong window can be corrected in place — **Edit** beside it — and a
+window that adds three months into one total is flagged on the card with what to
+change it to. And because
 the quarter pays at its weakest month, a month that closes at $900 caps the
 whole quarter at the $600 rung — so the target for the remaining months is $600,
 and the app says so rather than urging spend that buys nothing.

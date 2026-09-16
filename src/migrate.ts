@@ -64,6 +64,7 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
     column: 'needs_review',
     ddl: 'ALTER TABLE transactions ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0',
   },
+  { table: 'earn_rules', column: 'min_tier_cents', ddl: 'ALTER TABLE earn_rules ADD COLUMN min_tier_cents INTEGER' },
   { table: 'earn_rules', column: 'mcc_include', ddl: 'ALTER TABLE earn_rules ADD COLUMN mcc_include TEXT' },
   { table: 'earn_rules', column: 'mcc_exclude', ddl: 'ALTER TABLE earn_rules ADD COLUMN mcc_exclude TEXT' },
   { table: 'earn_rules', column: 'channel', ddl: 'ALTER TABLE earn_rules ADD COLUMN channel TEXT' },

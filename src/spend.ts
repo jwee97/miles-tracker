@@ -372,6 +372,13 @@ export interface Progress {
   projected_reward_cents: number;
   /** Months already closed that failed — those cannot be recovered. */
   months_missed: number;
+  /**
+   * Set when the window looks like the wrong one for this card, in words that
+   * say what to change. A minimum measured across a whole quarter adds three
+   * months together and reads as a total four times what you spent — the
+   * commonest way for this app to look broken while doing exactly as told.
+   */
+  shape_warning: string | null;
 }
 
 export async function requirementTiers(env: Env, requirementId: number): Promise<RequirementTier[]> {
@@ -590,7 +597,34 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
     thirds,
     projected_reward_cents: projected,
     months_missed: months.filter((m) => m.state === 'past' && !m.qualified).length,
+    shape_warning: shapeWarning(req, tiers),
   };
+}
+
+/**
+ * Whether this requirement's window is probably not the one meant.
+ *
+ * Only two cases are flagged, both unambiguous, because a warning that fires on
+ * a correct setup is worse than none: a quarter measured as one lump, and a
+ * transaction count measured over a window longer than a month. Neither is how
+ * an issuer that pays quarterly actually counts.
+ */
+function shapeWarning(req: Requirement, tiers: RequirementTier[]): string | null {
+  if (req.window === 'calendar_quarter' && !req.per_month) {
+    return (
+      'This adds three calendar months into one total, so it reads far higher than a month\u2019s spend. ' +
+      'A card that pays quarterly almost always wants the minimum in EACH month \u2014 change the window to ' +
+      '\u201cevery statement month of a rolling quarter\u201d' +
+      (tiers.length ? '.' : ', and add its spend tiers.')
+    );
+  }
+  if (req.window === 'statement_quarter' && !req.per_month) {
+    return (
+      'This is set to one total across the whole quarter rather than a minimum in each of its three statement ' +
+      'months, which is how these cards are actually counted.'
+    );
+  }
+  return null;
 }
 
 /**
@@ -666,6 +700,29 @@ export async function standings(env: Env): Promise<Standing[]> {
     out.push({ card, utilization: utilization_, requirements, headline, percent, rank, lost });
   }
   return out.sort((a, b) => a.rank - b.rank);
+}
+
+/**
+ * Which spend tier this card is actually holding, in cents of monthly spend.
+ *
+ * Cards like UOB One do not have one rate per category — they have one per
+ * category *per tier*, and which tier you are on is decided by the quarter's
+ * weakest month. So a rate that only applies above a rung needs to know the
+ * rung the card is really on, not the one it might reach.
+ *
+ * Returns null when the card has no ladder, which is most cards.
+ */
+export async function currentTierCents(env: Env, card: Card): Promise<number | null> {
+  for (const req of await requirementsFor(env, card.id)) {
+    const tiers = await requirementTiers(env, req.id);
+    if (!tiers.length) continue;
+    const p = await requirementProgress(env, card, req);
+    // What the quarter will pay is the honest answer: a big month inside a
+    // quarter capped one rung down does not earn at the higher rate.
+    const held = p.quarter_tier ?? p.ceiling_tier ?? p.tier;
+    return held ? held.min_spend_cents : 0;
+  }
+  return null;
 }
 
 export async function activeCards(env: Env): Promise<Card[]> {

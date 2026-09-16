@@ -98,6 +98,8 @@ export interface Progress {
   thirds: number | null;
   projected_reward_cents: number;
   months_missed: number;
+  /** Set when the window looks like the wrong one, in words that say what to change. */
+  shape_warning: string | null;
 }
 
 export interface CardSummary {
@@ -687,6 +689,7 @@ export interface EarnRuleRow {
   mcc_exclude: string | null;
   channel: string | null;
   min_txn_cents: number | null;
+  min_tier_cents: number | null;
   program_key: string | null;
   cap_cents: number | null;
   cap_group: string | null;
@@ -752,10 +755,14 @@ export const addEarnRule = (body: {
   mcc_exclude?: string;
   channel?: string | null;
   min_txn?: string;
+  /** Only earn at this rate once the card holds this monthly spend rung. */
+  min_tier?: string;
   note?: string;
 }) => post<{ ok: true; id: number }>('/api/card/rule', body);
 
 export const addRequirement = (body: {
+  /** Set to change an existing requirement rather than add another. */
+  id?: number;
   nickname: string;
   kind: 'monthly_min' | 'signup_min';
   amount: string;

@@ -148,6 +148,7 @@ export default {
               thirds: p.thirds,
               projected_reward_cents: p.projected_reward_cents,
               months_missed: p.months_missed,
+              shape_warning: p.shape_warning,
             })),
           }));
 
@@ -762,6 +763,7 @@ export default {
             mcc_exclude?: string | null;
             channel?: string | null;
             min_txn?: string | number | null;
+            min_tier?: string | number | null;
             program_key?: string | null;
             note?: string | null;
           };
@@ -796,8 +798,8 @@ export default {
 
           const ins = await env.DB.prepare(
             `INSERT INTO earn_rules (card_id, category, mpd, reward_type, mcc_include, mcc_exclude, channel,
-               min_txn_cents, program_key, cap_cents, cap_group, cap_window, note)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+               min_txn_cents, min_tier_cents, program_key, cap_cents, cap_group, cap_window, note)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
             .bind(
               card.id,
@@ -808,6 +810,7 @@ export default {
               exclude,
               b.channel || null,
               b.min_txn ? parseMoney(String(b.min_txn)) : null,
+              b.min_tier ? parseMoney(String(b.min_tier)) : null,
               b.program_key || null,
               b.cap ? parseMoney(String(b.cap)) : null,
               b.cap_group || null,
@@ -834,6 +837,8 @@ export default {
             per_month?: boolean;
             prorate_first?: boolean;
             tiers?: { min_spend?: string | number; reward?: string | number; label?: string | null }[];
+            /** Set to change an existing requirement rather than add another. */
+            id?: number;
           };
           const card = await env.DB.prepare(`SELECT id, opened_at FROM cards WHERE nickname = ? COLLATE NOCASE`)
             .bind(String(b.nickname ?? '').trim())
@@ -884,40 +889,59 @@ export default {
           // disagreeing about the same card.
           const lowestRung = tiers.length ? Math.min(...tiers.map((t) => t.min_spend!)) : null;
 
-          const ins = await env.DB.prepare(
-            `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, min_txns,
-               bonus_cap_cents, reward_note, anchor_at, per_month, prorate_first, active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
-          )
-            .bind(
-              card.id,
-              kind,
-              lowestRung ?? amount,
-              window,
-              deadline,
-              starts,
-              b.min_txns ? Math.max(0, Math.round(Number(b.min_txns))) : null,
-              b.bonus_cap ? parseMoney(String(b.bonus_cap)) : null,
-              b.reward_note?.trim() || null,
-              anchor,
-              b.per_month ? 1 : 0,
-              b.prorate_first ? 1 : 0
+          const fields = [
+            kind,
+            lowestRung ?? amount,
+            window,
+            deadline,
+            starts,
+            b.min_txns ? Math.max(0, Math.round(Number(b.min_txns))) : null,
+            b.bonus_cap ? parseMoney(String(b.bonus_cap)) : null,
+            b.reward_note?.trim() || null,
+            anchor,
+            b.per_month ? 1 : 0,
+            b.prorate_first ? 1 : 0,
+          ];
+
+          // Changing a requirement in place rather than deleting and adding
+          // one: a minimum set up with the wrong window is the commonest thing
+          // to get wrong, and making the only fix "delete it" is how a card
+          // stays wrong.
+          let id: number;
+          if (b.id) {
+            const owned = await env.DB.prepare(`SELECT id FROM requirements WHERE id = ? AND card_id = ?`)
+              .bind(b.id, card.id)
+              .first();
+            if (!owned) return json({ error: 'no such requirement on that card' }, 404);
+            await env.DB.prepare(
+              `UPDATE requirements SET kind = ?, amount_cents = ?, window = ?, deadline = ?, starts_at = ?,
+                 min_txns = ?, bonus_cap_cents = ?, reward_note = ?, anchor_at = ?, per_month = ?, prorate_first = ?
+               WHERE id = ?`
             )
-            .run();
+              .bind(...fields, b.id)
+              .run();
+            id = b.id;
+            // The ladder is replaced wholesale, so removing a rung works.
+            await env.DB.prepare(`DELETE FROM requirement_tiers WHERE requirement_id = ?`).bind(id).run();
+          } else {
+            const ins = await env.DB.prepare(
+              `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, min_txns,
+                 bonus_cap_cents, reward_note, anchor_at, per_month, prorate_first, active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+            )
+              .bind(card.id, ...fields)
+              .run();
+            id = Number(ins.meta.last_row_id);
+          }
 
           for (const t of tiers) {
             await env.DB.prepare(
               `INSERT INTO requirement_tiers (requirement_id, min_spend_cents, reward_cents, label) VALUES (?, ?, ?, ?)`
             )
-              .bind(ins.meta.last_row_id, t.min_spend, t.reward, t.label)
+              .bind(id, t.min_spend, t.reward, t.label)
               .run();
           }
-          return json({
-            ok: true,
-            id: ins.meta.last_row_id,
-            tiers: tiers.length,
-            amount_cents: lowestRung ?? amount,
-          });
+          return json({ ok: true, id, tiers: tiers.length, amount_cents: lowestRung ?? amount });
         }
 
         if (url.pathname === '/api/card/requirement/delete' && req.method === 'POST') {

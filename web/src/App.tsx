@@ -171,6 +171,14 @@ function RequirementRow({ p, nickname }: { p: Progress; nickname: string }) {
           {open ? 'hide the purchases' : "what's counted?"}
         </button>
       </p>
+      {/* A window that adds three months together reads as a total four times
+          what you spent. Saying which, and what to change it to, is the
+          difference between a wrong number and a fixable one. */}
+      {p.shape_warning && (
+        <p className="cap">
+          {p.shape_warning} <span className="dim">Cards → this card → edit the minimum.</span>
+        </p>
+      )}
       {open && <CountedRows p={p} nickname={nickname} />}
       <Meter percent={pct} tone={p.met ? 'ok' : urgent ? 'warn' : 'mid'} />
       <div className="req-foot">

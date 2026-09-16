@@ -1259,6 +1259,95 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('without ever naming a token value', !JSON.stringify(r).includes('Bearer'), '');
 }
 
+// --- a minimum can be corrected, not only deleted ----------------------------
+{
+  // The shape that read $1,621 against a $1,000 minimum: a whole calendar
+  // quarter, no tiers. Being unable to fix it in place is how a card stays
+  // wrong, so the same endpoint updates.
+  await authed('/api/card', { issuer: 'UOB', product: 'One Card', nickname: 'uobone', limit: '35700', statement_day: 30, opened_at: '2026-01-01' });
+  const made = (await (await authed('/api/card/requirement', {
+    nickname: 'uobone',
+    kind: 'monthly_min',
+    amount: '1000',
+    window: 'calendar_quarter',
+    min_txns: 5,
+    reward_note: '$100 quarterly rebate',
+  })).json()) as any;
+  check('the wrong shape can be created, as it was', made.id > 0, JSON.stringify(made));
+
+  const fixed = await authed('/api/card/requirement', {
+    id: made.id,
+    nickname: 'uobone',
+    kind: 'monthly_min',
+    amount: '600',
+    window: 'statement_quarter',
+    min_txns: 5,
+    per_month: true,
+    prorate_first: false,
+    anchor_at: '2026-01-01',
+    tiers: [
+      { min_spend: '600', reward: '60' },
+      { min_spend: '1000', reward: '100' },
+      { min_spend: '2000', reward: '200' },
+    ],
+  });
+  const body = (await fixed.json()) as any;
+  check('and corrected in place', fixed.status === 200 && body.id === made.id, JSON.stringify(body));
+
+  const row = db.prepare(`SELECT * FROM requirements WHERE id = ?`).get(made.id) as any;
+  check('the window is now a rolling statement quarter', row.window === 'statement_quarter', row.window);
+  check('gated on every month', row.per_month === 1, String(row.per_month));
+  check('with the lowest rung as the minimum', row.amount_cents === 60000, String(row.amount_cents));
+  const tiers = db.prepare(`SELECT COUNT(*) AS n FROM requirement_tiers WHERE requirement_id = ?`).get(made.id) as any;
+  check('and the ladder attached', Number(tiers.n) === 3, String(tiers.n));
+
+  // Editing again must replace the ladder, not add a second copy of it.
+  await authed('/api/card/requirement', {
+    id: made.id,
+    nickname: 'uobone',
+    amount: '600',
+    window: 'statement_quarter',
+    per_month: true,
+    anchor_at: '2026-01-01',
+    tiers: [{ min_spend: '600', reward: '60' }],
+  });
+  const again = db.prepare(`SELECT COUNT(*) AS n FROM requirement_tiers WHERE requirement_id = ?`).get(made.id) as any;
+  check('editing replaces the ladder rather than appending', Number(again.n) === 1, String(again.n));
+
+  check(
+    'a requirement belonging to another card is refused',
+    (await authed('/api/card/requirement', { id: made.id, nickname: 'crw', amount: '600', window: 'calendar_month' })).status === 404,
+    ''
+  );
+}
+
+// --- rates that move with the tier -------------------------------------------
+{
+  const res = await authed('/api/card/rule', {
+    nickname: 'uobone',
+    category: 'groceries',
+    rate: '6',
+    reward_type: 'cashback',
+    min_tier: '1000',
+  });
+  check('a rate can be tied to a spend rung', res.status === 200, String(res.status));
+  const rule = db.prepare(`SELECT * FROM earn_rules WHERE card_id = (SELECT id FROM cards WHERE nickname='uobone') AND category='groceries'`).get() as any;
+  check('and the rung is stored in cents', rule.min_tier_cents === 100000, String(rule.min_tier_cents));
+
+  const tg = (text: string) =>
+    worker.fetch(
+      new Request('https://x.test/tg', {
+        method: 'POST',
+        headers: { 'X-Telegram-Bot-Api-Secret-Token': 'y', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: { chat: { id: 1 }, from: { id: 1 }, text } }),
+      }),
+      env
+    );
+  await tg('/addearn uobone dining 8% tier 2000');
+  const botRule = db.prepare(`SELECT * FROM earn_rules WHERE card_id = (SELECT id FROM cards WHERE nickname='uobone') AND category='dining'`).get() as any;
+  check('the bot understands the tier keyword too', botRule?.min_tier_cents === 200000, JSON.stringify(botRule));
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

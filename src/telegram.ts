@@ -1354,6 +1354,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         let capWindow: string | undefined;
         let capGroup: string | undefined;
         let mccList: string | undefined;
+        let minTier: string | undefined;
         let note: string | undefined;
 
         if (args.includes('|')) {
@@ -1373,7 +1374,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
                 '`/addearn citirw online 4 cap 1000 group tenx` — shares that cap with other `tenx` rules\n' +
                 '`/addearn citirw * 0.4` — the fallback rate for everything else\n' +
                 '`/addearn citirw online 4 mcc 5262,5964,5969` — only those merchant codes\n\n' +
-                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`, `mcc <codes>`, `note <text>`'
+                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`, `mcc <codes>`, `tier <amount>`, `note <text>`\n\n' +
+                '`tier` is for cards whose rate moves with the spend rung: `/addearn uobone groceries 6% tier 1000` earns 6% only while the card holds the $1,000 tier.'
             );
           [nick, cat, rateRaw] = tok;
           for (let i = 3; i < tok.length; i += 2) {
@@ -1383,6 +1385,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             else if (k === 'window') capWindow = v;
             else if (k === 'group') capGroup = v;
             else if (k === 'mcc') mccList = v;
+            else if (k === 'tier') minTier = v;
             else if (k === 'note') {
               note = tok.slice(i + 1).join(' ');
               break;
@@ -1408,8 +1411,9 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           return send(env, chatId, `\`mcc\` takes four-digit codes, comma separated — got "${mccList}".`);
 
         await env.DB.prepare(
-          `INSERT INTO earn_rules (card_id, category, mpd, reward_type, mcc_include, cap_cents, cap_window, cap_group, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO earn_rules (card_id, category, mpd, reward_type, mcc_include, min_tier_cents,
+             cap_cents, cap_window, cap_group, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             card.id,
@@ -1417,6 +1421,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             rate,
             isCashback ? 'cashback' : 'miles',
             include.length ? include.join(',') : null,
+            minTier ? parseMoney(minTier) : null,
             cap ? parseMoney(cap) : null,
             capWindow || (cap ? 'statement_cycle' : null),
             capGroup || null,
@@ -1429,6 +1434,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           chatId,
           `*${card.product}* earns ${formatRate(rate, isCashback ? 'cashback' : 'miles')} on *${cat}*` +
             (include.length ? `, but only on MCC ${include.join(', ')}` : '') +
+            (minTier ? `, and only while the card holds the $${money(parseMoney(minTier) ?? 0)} tier` : '') +
             (cap ? `, up to $${money(parseMoney(cap) ?? 0)} per ${capWindow || 'statement_cycle'}` : '') +
             (capGroup ? `\n_Shares that cap with other \`${capGroup}\` rules._` : '') +
             '\n\nTry `/which ' + cat.toLowerCase() + ' 100`.'

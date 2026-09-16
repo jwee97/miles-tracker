@@ -48,12 +48,13 @@ function RuleLine({ r, onGone }: { r: EarnRuleRow; onGone: () => void }) {
         {r.cap_cents ? ` up to $${money(r.cap_cents)} ${(r.cap_window ?? '').replace(/_/g, ' ')}` : ''}
         {r.cap_group ? ` · shares the "${r.cap_group}" cap` : ''}
       </span>
-      {(r.mcc_include || r.mcc_exclude || r.channel || r.min_txn_cents) && (
+      {(r.mcc_include || r.mcc_exclude || r.channel || r.min_txn_cents || r.min_tier_cents) && (
         <p className="sub">
           {r.mcc_include ? `only ${r.mcc_include}` : ''}
           {r.mcc_exclude ? ` · never ${r.mcc_exclude}` : ''}
           {r.channel ? ` · ${r.channel} only` : ''}
           {r.min_txn_cents ? ` · transactions of $${money(r.min_txn_cents)}+` : ''}
+          {r.min_tier_cents ? ` · only at the $${money(r.min_tier_cents)} tier and above` : ''}
         </p>
       )}
       {r.note && <p className="sub note">{r.note}</p>}
@@ -86,6 +87,7 @@ function AddRule({ card, categories, onSaved }: { card: CardRow; categories: str
     mcc_exclude: '',
     channel: '',
     min_txn: '',
+    min_tier: '',
     note: '',
   });
   const [msg, setMsg] = useState<string | null>(null);
@@ -107,9 +109,10 @@ function AddRule({ card, categories, onSaved }: { card: CardRow; categories: str
         mcc_exclude: f.mcc_exclude || undefined,
         channel: f.channel || null,
         min_txn: f.min_txn || undefined,
+        min_tier: f.min_tier || undefined,
         note: f.note || undefined,
       });
-      setF({ ...f, rate: '', cap: '', mcc_include: '', mcc_exclude: '', note: '' });
+      setF({ ...f, rate: '', cap: '', mcc_include: '', mcc_exclude: '', min_tier: '', note: '' });
       onSaved();
     } catch (e) {
       setMsg((e as Error).message);
@@ -204,6 +207,15 @@ function AddRule({ card, categories, onSaved }: { card: CardRow; categories: str
           <span>Minimum per txn</span>
           <input value={f.min_txn} onChange={(e) => setF({ ...f, min_txn: e.target.value })} placeholder="blank" inputMode="decimal" />
         </label>
+        <label className="f">
+          <span>Only at this tier</span>
+          <input
+            value={f.min_tier}
+            onChange={(e) => setF({ ...f, min_tier: e.target.value })}
+            placeholder="blank · 1000"
+            inputMode="decimal"
+          />
+        </label>
         <label className="f f-note">
           <span>Note</span>
           <input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder="where this came from" />
@@ -218,6 +230,11 @@ function AddRule({ card, categories, onSaved }: { card: CardRow; categories: str
       <p className="sub">
         A shared cap name matters: if one cap covers several categories, giving them the same name is what stops the app
         thinking you have more bonus headroom than you do.
+      </p>
+      <p className="sub">
+        <strong>Only at this tier</strong> is for cards whose rate moves with the spend rung — UOB One pays 3.33% on
+        groceries at $600 a month but 6% at $1,000. Add one rate per rung with the rung&rsquo;s monthly spend here, and
+        the app uses whichever the card is actually holding.
       </p>
     </div>
   );
@@ -607,6 +624,8 @@ const WINDOW_LABEL: Record<string, string> = {
  */
 function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => void }) {
   const [open, setOpen] = useState(false);
+  /** The requirement being changed, or null when adding a new one. */
+  const [editing, setEditing] = useState<RequirementRow | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [r, setR] = useState({
@@ -621,6 +640,25 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
     anchor_at: card.opened_at ?? '',
     prorate_first: true,
   });
+
+  /** Loads an existing requirement into the form, ladder and all. */
+  function edit(q: RequirementRow) {
+    setEditing(q);
+    setR({
+      kind: q.kind,
+      amount: money(q.amount_cents),
+      window: q.window,
+      deadline: q.deadline ?? '',
+      starts_at: q.starts_at ?? '',
+      min_txns: q.min_txns ? String(q.min_txns) : '',
+      bonus_cap: q.bonus_cap_cents ? money(q.bonus_cap_cents) : '',
+      reward_note: q.reward_note ?? '',
+      anchor_at: q.anchor_at ?? card.opened_at ?? '',
+      prorate_first: !!q.prorate_first,
+    });
+    setTiers((q.tiers ?? []).map((t) => ({ min_spend: money(t.min_spend_cents), reward: money(t.reward_cents), label: t.label ?? '' })));
+    setOpen(true);
+  }
   // A tiered card pays a different amount at each rung, so the tiers are rows
   // the user adds, not three fixed boxes.
   const [tiers, setTiers] = useState<{ min_spend: string; reward: string; label: string }[]>([]);
@@ -631,6 +669,7 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
     setErr(null);
     try {
       await addRequirement({
+        id: editing?.id,
         nickname: card.nickname,
         kind: r.kind,
         amount: r.amount,
@@ -649,6 +688,7 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
       });
       setR({ ...r, amount: '', min_txns: '', bonus_cap: '', reward_note: '' });
       setTiers([]);
+      setEditing(null);
       setOpen(false);
       onChanged();
     } catch (e) {
@@ -690,6 +730,9 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
                 </p>
               )}
               <div className="entry-foot rule-actions">
+                <button className="secondary" onClick={() => edit(q)}>
+                  Edit
+                </button>
                 <button
                   className="danger"
                   onClick={async () => {
@@ -838,7 +881,7 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
           )}
           <div className="entry-foot">
             <button className="secondary" onClick={save} disabled={busy || !r.amount}>
-              Add this minimum
+              {editing ? 'Save this minimum' : 'Add this minimum'}
             </button>
             {err && <span className="err-text">{err}</span>}
           </div>
@@ -849,7 +892,14 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
         </div>
       )}
       <div className="entry-foot">
-        <button className="secondary" onClick={() => setOpen((v) => !v)}>
+        <button
+          className="secondary"
+          onClick={() => {
+            setEditing(null);
+            setTiers([]);
+            setOpen((v) => !v);
+          }}
+        >
           {open ? 'Cancel' : 'Add a minimum'}
         </button>
       </div>

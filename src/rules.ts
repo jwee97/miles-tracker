@@ -1,4 +1,4 @@
-import { calendarMonth, calendarQuarter, money, statementCycle, today, EFFECTIVE_DATE } from './spend';
+import { calendarMonth, calendarQuarter, currentTierCents, money, statementCycle, today, EFFECTIVE_DATE } from './spend';
 import type { Card, Env } from './types';
 
 export type Channel = 'online' | 'offline' | 'contactless';
@@ -17,6 +17,11 @@ export interface EarnRule {
   mcc_exclude: string | null;
   channel: Channel | null;
   min_txn_cents: number | null;
+  /**
+   * The monthly spend rung at or above which this rate applies, for cards whose
+   * rate changes with the tier. Null means it always applies.
+   */
+  min_tier_cents: number | null;
   note: string | null;
 }
 
@@ -167,7 +172,39 @@ async function capSpend(env: Env, card: Card, rule: EarnRule, rules: EarnRule[])
 /** Does this rule apply to this purchase, and why or why not. */
 /** Whether a rule covers a purchase, with the reasoning appended to `trace`.
  *  Exported so the MCC table shows the same answer the engine would give. */
-export function ruleMatches(rule: EarnRule, p: Purchase, trace: RuleStep[] = []): boolean {
+export function ruleMatches(
+  rule: EarnRule,
+  p: Purchase,
+  trace: RuleStep[] = [],
+  tierCents: number | null = null
+): boolean {
+  // A rate that only exists above a spend rung cannot be claimed below it. The
+  // rung is the one the quarter is actually holding, not the one it might
+  // reach — spending into a capped quarter does not buy the higher rate.
+  if (rule.min_tier_cents) {
+    if (tierCents === null) {
+      trace.push({
+        check: 'Spend tier',
+        pass: null,
+        detail: `Rate needs the $${money(rule.min_tier_cents)} tier, and this card has no tiers recorded`,
+      });
+      return false;
+    }
+    if (tierCents < rule.min_tier_cents) {
+      trace.push({
+        check: 'Spend tier',
+        pass: false,
+        detail: `Rate needs the $${money(rule.min_tier_cents)} tier; this card is holding $${money(tierCents)}`,
+      });
+      return false;
+    }
+    trace.push({
+      check: 'Spend tier',
+      pass: true,
+      detail: `Holding the $${money(tierCents)} tier, so the $${money(rule.min_tier_cents)} rate applies`,
+    });
+  }
+
   const inc = csv(rule.mcc_include);
   const exc = csv(rule.mcc_exclude);
 
@@ -214,7 +251,12 @@ export async function evaluate(
   env: Env,
   card: Card,
   p: Purchase,
-  opts: { rules?: EarnRule[]; exclusions?: { card_id: number | null; mcc: string; reason: string | null }[] } = {}
+  opts: {
+    rules?: EarnRule[];
+    exclusions?: { card_id: number | null; mcc: string; reason: string | null }[];
+    /** The spend rung this card is holding; looked up when not supplied. */
+    tier_cents?: number | null;
+  } = {}
 ): Promise<Evaluation> {
   const trace: RuleStep[] = [];
   const mileValue = parseFloat(env.MILE_VALUE_CENTS || '1.5');
@@ -275,10 +317,19 @@ export async function evaluate(
   const fallback = mine.find((r) => r.category === '*') ?? null;
   const worth = (r: EarnRule) => (r.reward_type === 'cashback' ? r.mpd * 100 : r.mpd * mileValue);
   let matched: EarnRule | null = null;
+  // A card whose rate depends on its tier has to be asked which one it is
+  // holding before any of its rates can be judged.
+  const tierCents =
+    opts.tier_cents !== undefined
+      ? opts.tier_cents
+      : mine.some((r) => r.min_tier_cents)
+        ? await currentTierCents(env, card)
+        : null;
+
   for (const r of mine
     .filter((r) => r.category === category && r.category !== '*')
     .sort((a, b) => worth(b) - worth(a))) {
-    if (ruleMatches(r, p, trace)) {
+    if (ruleMatches(r, p, trace, tierCents)) {
       matched = r;
       break;
     }

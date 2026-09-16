@@ -294,6 +294,10 @@ CREATE TABLE IF NOT EXISTS earn_rules (
   mcc_exclude TEXT,                             -- CSV of MCCs that never match
   channel     TEXT,                             -- online | offline | contactless | null = any
   min_txn_cents INTEGER,                        -- rule needs a transaction this large
+  -- Cards whose rate depends on which spend tier the quarter is holding: UOB
+  -- One pays 3.33% on groceries at the S$600 rung but 6% at S$1,000. This is
+  -- the monthly rung at or above which the rate applies; null means always.
+  min_tier_cents INTEGER,
   program_key TEXT    REFERENCES programs(key),
   cap_cents   INTEGER,                         -- bonus rate applies below this
   cap_group   TEXT,                            -- rules sharing one cap

@@ -870,6 +870,46 @@ teaches both. One thing to watch: if you top up PayLah with a card, the top-up
 is already card spend — record what you buy here, not the top-up, or it counts
 twice.
 
+### Rates that move with the tier
+
+On a card like UOB One the rate is not one number per category — it is one per
+category *per tier*. Groceries pay 3.33% while the card holds the S$600 rung and
+6% at S$1,000; partner merchants pay 8.33% at the lower rungs and 10% at
+S$2,000.
+
+Record one rate per rung, with the rung's **monthly** spend in *Only at this
+tier*:
+
+```
+/addearn uobone groceries 3.33% tier 600
+/addearn uobone groceries 6% tier 1000
+/addearn uobone groceries 8% tier 2000
+```
+
+The engine then earns at whichever rung the card is **actually holding**, which
+is the tier the *quarter* will pay — not the one this month alone might reach.
+That distinction is the whole point: a S$2,500 month inside a quarter already
+capped at S$600 by an earlier month does not earn the 8% rate, and the
+explanation on the purchase says so in as many words.
+
+A tier-gated rate on a card with no ladder never applies, and says why rather
+than quietly falling through to the base rate.
+
+### Correcting a minimum
+
+Every minimum has an **Edit** beside it now, which loads the whole thing —
+window, transaction count, anchor, ladder — back into the form. Saving replaces
+the ladder wholesale, so a rung can be removed as well as added.
+
+This matters because the commonest thing to get wrong is the window, and until
+now the only fix was to delete the requirement and start again.
+
+**The app also checks the shape.** A minimum measured over a whole calendar
+quarter adds three months into one total and reads far higher than a month's
+spend — that is exactly how a card shows "$1,621 / $1,000" when the month's
+spend was $900. When it sees that, the card says so, and says what to change the
+window to.
+
 ### Why a minimum-spend total looks too big
 
 Every minimum on a card now prints the **window it is counting** — the two

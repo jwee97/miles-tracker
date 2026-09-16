@@ -149,7 +149,8 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /expiry — every batch, soonest expiry first
 /earn — list earn rules
 /addearn <card> <category> <rate> — e.g. \`/addearn citirw shopping 4\`
-   add \`cap 1000\`, \`window calendar_month\`, \`group tenx\`, \`mcc 5262,5964\` as needed
+   add \`cap 1000\`, \`window calendar_month\`, \`group tenx\`, \`mcc 5262,5964\`,
+   \`tier 1000\` (rate only while the card holds that spend rung) as needed
    a rate ending in % means cashback: \`/addearn uobone groceries 5%\`
 /cardrules <card> — get a prompt to extract a card's rates with Claude
 /setearn <id> <rate> — correct a rule, e.g. \`/setearn 3 5%\`

@@ -1,4 +1,5 @@
 import { ruleMatches, type EarnRule } from './rules';
+import { currentTierCents } from './spend';
 import type { Card, Env } from './types';
 
 /**
@@ -102,6 +103,15 @@ export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<Mcc
   const usage = new Map((used ?? []).map((u) => [u.mcc, u]));
 
   const mileValue = parseFloat(env.MILE_VALUE_CENTS || '1.5') || 1.5;
+
+  // Resolved once per card rather than per code: 900 codes times a database
+  // round trip each would be a page load measured in seconds.
+  const tierFor = new Map<number, number | null>();
+  for (const card of cards ?? []) {
+    if ((rules ?? []).some((r) => r.card_id === card.id && r.min_tier_cents)) {
+      tierFor.set(card.id, await currentTierCents(env, card));
+    }
+  }
   const rows: MccRow[] = [];
 
   for (const c of codes ?? []) {
@@ -128,7 +138,12 @@ export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<Mcc
       // how much you have already spent this month, not about the code.
       const mine = (rules ?? []).filter((r) => r.card_id === card.id);
       const purchase = { amount_cents: null, mcc: c.code, category: c.category, channel: null };
-      const matching = mine.filter((r) => (r.category === '*' || r.category === c.category) && ruleMatches(r, purchase));
+      // Tier-gated rates are judged against the tier the card is actually
+      // holding, the same as the engine does — a 6% grocery rate that needs the
+      // $1,000 rung should not be shown on a card sitting at $600.
+      const matching = mine.filter(
+        (r) => (r.category === '*' || r.category === c.category) && ruleMatches(r, purchase, [], tierFor.get(card.id) ?? null)
+      );
 
       const worth = (r: EarnRule) => (r.reward_type === 'cashback' ? r.mpd * 100 : r.mpd * mileValue);
       const best = matching.sort((a, b) => worth(b) - worth(a))[0];
