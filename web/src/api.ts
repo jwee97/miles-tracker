@@ -79,7 +79,15 @@ export interface Progress {
   window: { start: string; end: string };
   window_kind: 'calendar_month' | 'calendar_quarter' | 'statement_cycle' | 'statement_quarter' | 'fixed_window';
   /** Set only for a quarter of three statement months anchored to the card. */
-  quarter: { start: string; end: string; index: number; months: { start: string; end: string }[] } | null;
+  quarter: {
+    start: string;
+    end: string;
+    index: number;
+    months: { start: string; end: string }[];
+    /** The months this card's quarters begin in, e.g. "Mar, Jun, Sep, Dec". */
+    pattern: string;
+    anchor_month: string;
+  } | null;
   months: MonthSlice[];
   tiers: Tier[];
   /** The minimum that actually has to be hit — the lowest rung, when there are rungs. */

@@ -28,6 +28,26 @@ import {
  * online" from "4 mpd on 5262, 5964 and 5969".
  */
 
+/**
+ * Which months a quarter anchored here begins in.
+ *
+ * Shown beside the date because the anchor is the single field that decides
+ * whether this card's quarters are Jan-Mar or Feb-Apr, and being one month out
+ * moves every quarter for as long as the card is held. Months are counted from
+ * the anchor's own month, which is what the engine does; the exact dates depend
+ * on the statement day and are shown on the card itself.
+ */
+function quarterMonths(anchor: string): string {
+  const NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const m = Number(anchor.slice(5, 7)) - 1;
+  if (!Number.isFinite(m) || m < 0 || m > 11) return '—';
+  return [0, 1, 2, 3]
+    .map((n) => (m + n * 3) % 12)
+    .sort((a, b) => a - b)
+    .map((x) => NAMES[x])
+    .join(', ');
+}
+
 const WINDOWS = [
   { key: '', label: 'no cap' },
   { key: 'calendar_month', label: 'per calendar month' },
@@ -801,6 +821,11 @@ function Requirements({ card, onChanged }: { card: CardRow; onChanged: () => voi
                 <label className="f">
                   <span>Quarter anchored to</span>
                   <input type="date" value={r.anchor_at} onChange={(e) => setR({ ...r, anchor_at: e.target.value })} />
+                  {r.anchor_at && (
+                    <span className="sub">
+                      quarters begin in {quarterMonths(r.anchor_at)}
+                    </span>
+                  )}
                 </label>
                 <label className="f">
                   <span>First quarter</span>

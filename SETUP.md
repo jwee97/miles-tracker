@@ -366,6 +366,17 @@ the principal card was issued, fixed for as long as you hold the card. A card
 issued in February runs Feb–Mar–Apr, then May–Jun–Jul, then Aug–Sep–Oct, then
 Nov–Dec–Jan.
 
+Month one is the first statement cycle that **starts on or after** the anchor
+date: the part-month a card is issued into was never a whole statement month.
+
+**The anchor is the field to get right.** It alone decides which months every
+quarter covers, and being one month out moves every quarter for the life of the
+card — an anchor in March gives quarters beginning Mar, Jun, Sep and Dec, while
+July gives Jan, Apr, Jul and Oct. So the app says which: on the card, under the
+quarter dates, and next to the date field while you are setting it. If your
+statement says Jul–Sep and the app says the quarter begins in September, the
+anchor is the thing to change.
+
 **The month.** A statement month, not a calendar one. If the statement closes on
 the 18th, month 1 runs 19 Feb to 18 Mar, month 2 runs 19 Mar to 18 Apr, month 3
 runs 19 Apr to 18 May. Spend has to *post* inside the month to count, which is

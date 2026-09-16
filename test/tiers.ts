@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { runMigrations, runSeed } from '../src/migrate';
 import { buildDigest } from '../src/digest';
 import { evaluate } from '../src/rules';
-import { cycleStartingIn, requirementProgress, standings, statementQuarter } from '../src/spend';
+import { cycleStartingIn, daysBetween, requirementProgress, standings, statementQuarter } from '../src/spend';
 import type { Card, Env, Requirement } from '../src/types';
 
 const db = new DatabaseSync(':memory:');
@@ -63,6 +63,57 @@ await runSeed(env);
   // A cycle is named for the month it opens in, which is what an anchor means.
   const c = cycleStartingIn(2026, 1, 31);
   check('a statement day past the end of a month clamps', c.start === '2026-03-01' && c.end === '2026-03-31', `${c.start}..${c.end}`);
+}
+
+// --- statement days at the end of a month ------------------------------------
+//
+// A card closing on the 31st: August closes on the 31st, so the next cycle
+// STARTS on 1 September while being opened by August's close. Keying one half
+// of the arithmetic by the start month and the other by the close month put
+// every quarter a month out — but only on the 29th, 30th and 31st, which is why
+// it survived a worked example built on the 18th.
+{
+  at('2026-09-17');
+  const q = statementQuarter('2025-03-01', 31, env);
+  check('a month-end close does not shift the quarter', q.months[0].start === '2026-09-01', JSON.stringify(q.months));
+  check('and today falls inside one of its months', q.months.some((m) => m.start <= '2026-09-17' && m.end >= '2026-09-17'), JSON.stringify(q.months));
+  check('the quarter runs from that month', `${q.start}..${q.end}` === '2026-09-01..2026-11-30', `${q.start}..${q.end}`);
+  check('and each month is a whole calendar month', q.months[1].start === '2026-10-01' && q.months[1].end === '2026-10-31', JSON.stringify(q.months[1]));
+
+  // Every statement day has to put today somewhere: a quarter that contains
+  // today in none of its three months is the shape of the original bug.
+  for (const day of [1, 5, 15, 18, 27, 28, 29, 30, 31]) {
+    const x = statementQuarter('2025-03-01', day, env);
+    check(
+      `day ${day}: today is inside one of the three months`,
+      x.months.some((m) => m.start <= '2026-09-17' && m.end >= '2026-09-17'),
+      JSON.stringify(x.months)
+    );
+    check(
+      `day ${day}: the months run end to end with no gap`,
+      x.months.every((m, i) => i === 0 || daysBetween(x.months[i - 1].end, m.start) === 1),
+      JSON.stringify(x.months)
+    );
+  }
+
+  // Month one is the first cycle that STARTS on or after the anchor: the
+  // part-month a card is issued into was never a whole statement month.
+  at('2026-03-01');
+  const mid = statementQuarter('2026-02-10', 18, env);
+  check('an anchor mid-cycle starts at the next whole month', mid.index === 1 && mid.months[0].start === '2026-02-19', JSON.stringify(mid.months[0]));
+  const exact = statementQuarter('2026-03-01', 31, env);
+  check('an anchor on a cycle boundary starts there', exact.index === 1 && exact.months[0].start === '2026-03-01', JSON.stringify(exact.months[0]));
+  at('2026-09-17');
+
+  // The anchor month decides which months every quarter covers, so the app
+  // states it: "should be Jul-Sep" against "begins in Mar, Jun, Sep, Dec" is a
+  // five-second check, where two dates alone are not.
+  const march = statementQuarter('2025-03-01', 31, env);
+  check('the quarter cycle is spelled out', march.pattern === 'Mar, Jun, Sep, Dec', march.pattern);
+  check('and where it is counted from', march.anchor_month === 'Mar 2025', march.anchor_month);
+  const july = statementQuarter('2025-07-01', 31, env);
+  check('a different anchor gives a different cycle', july.pattern === 'Jan, Apr, Jul, Oct', july.pattern);
+  check('which is the one that makes Jul-Sep a quarter', `${july.start}..${july.end}` === '2026-07-01..2026-09-30', `${july.start}..${july.end}`);
 }
 
 // --- a UOB One-shaped card ---------------------------------------------------

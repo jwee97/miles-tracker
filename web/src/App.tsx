@@ -247,6 +247,12 @@ function QuarterStrip({ p }: { p: Progress }) {
           {p.quarter.start} → {p.quarter.end}
         </span>
       </div>
+      {/* The anchor decides which months a quarter covers, and being one month
+          out moves every quarter for the life of the card. Saying it here is
+          what makes "why is this the September quarter" checkable. */}
+      <p className="sub qpattern">
+        Counted from {p.quarter.anchor_month} — this card&rsquo;s quarters begin in {p.quarter.pattern}.
+      </p>
       <ol className="months">
         {p.months.map((m) => (
           <li key={m.index} className={cls(m)}>

@@ -41,30 +41,7 @@ export function addMonths(date: string, months: number): string {
  * through N of the next. Months shorter than N clamp to the last day.
  */
 export function statementCycle(statementDay: number, env: Env): { start: string; end: string } {
-  const l = localNow(env);
-  const y = l.getUTCFullYear();
-  const m = l.getUTCMonth();
-  const d = l.getUTCDate();
-  const clamp = (yy: number, mm: number) => Math.min(statementDay, daysInMonth(yy, mm));
-
-  let endY = y;
-  let endM = m;
-  if (d > clamp(y, m)) {
-    endM = m + 1;
-    if (endM > 11) {
-      endM = 0;
-      endY++;
-    }
-  }
-  const end = new Date(Date.UTC(endY, endM, clamp(endY, endM)));
-  let startY = endY;
-  let startM = endM - 1;
-  if (startM < 0) {
-    startM = 11;
-    startY--;
-  }
-  const prevClose = new Date(Date.UTC(startY, startM, clamp(startY, startM)));
-  return { start: isoDate(new Date(prevClose.getTime() + 86400_000)), end: isoDate(end) };
+  return cycleContaining(today(env), statementDay);
 }
 
 /**
@@ -98,6 +75,17 @@ export interface StatementQuarter {
   index: number;
   /** The three statement months, in order. */
   months: { start: string; end: string }[];
+  /**
+   * The months this card's quarters begin in, e.g. "Mar, Jun, Sep, Dec".
+   *
+   * The anchor decides this, and being one month out moves every quarter for
+   * the life of the card. Naming a cycle that straddles two months is
+   * ambiguous — 31 Aug to 30 Sep is nobody's idea of "August" — but the month
+   * a quarter BEGINS in is a date, so that is what this says.
+   */
+  pattern: string;
+  /** The month the count starts from, e.g. "March 2025". */
+  anchor_month: string;
 }
 
 /**
@@ -108,19 +96,99 @@ export interface StatementQuarter {
  * "month" is a statement period rather than the 1st to the 31st. Getting this
  * wrong by a single cycle would report a minimum as met a month before it is.
  */
+/**
+ * The key of a statement cycle: months since year zero of the month whose close
+ * OPENS it.
+ *
+ * Both halves of the quarter arithmetic have to agree on what names a cycle,
+ * and "the month the cycle starts in" is not it. On a card closing on the 31st,
+ * August closes on the 31st and the next cycle starts on 1 September — so that
+ * cycle *starts* in September but is opened by August's close, which is the key
+ * `cycleStartingIn` already uses. Keying one side by the start month and the
+ * other by the close month put every quarter a month out on the 29th, 30th and
+ * 31st, and only on those.
+ */
+function keyOfCycleOpenedBy(year: number, month: number): number {
+  return year * 12 + month;
+}
+
+/** The statement cycle containing a given date. */
+export function cycleContaining(date: string, statementDay: number): { start: string; end: string } {
+  const [y, m, d] = date.split('-').map(Number);
+  const clamp = (yy: number, mm: number) => Math.min(statementDay, daysInMonth(yy, mm));
+  // The cycle ends at this month's close, unless the date is past it.
+  let endY = y;
+  let endM = m - 1;
+  if (d > clamp(y, m - 1)) {
+    endM += 1;
+    if (endM > 11) {
+      endM = 0;
+      endY += 1;
+    }
+  }
+  return cycleStartingIn(endY, endM - 1, statementDay);
+}
+
+/**
+ * Three consecutive statement months, anchored to the month a card was issued.
+ *
+ * Cards like UOB One do not use calendar quarters. A card issued in February
+ * runs Feb–Mar–Apr, then May–Jun–Jul, for as long as it is held, and each
+ * "month" is a statement period rather than the 1st to the 31st.
+ *
+ * Month one is the first cycle that STARTS on or after the anchor date, which
+ * is the only reading that holds for every statement day. A card issued on 10
+ * February with an 18th close begins on 19 February — the part-month before
+ * that was never a whole statement month. A card closing on the 31st and
+ * anchored to 1 March begins on 1 March, because that is when its March
+ * statement opens.
+ */
 export function statementQuarter(anchorDate: string, statementDay: number, env: Env): StatementQuarter {
-  const here = statementCycle(statementDay, env);
-  const [hy, hm] = here.start.split('-').map(Number);
-  const [ay, am] = anchorDate.split('-').map(Number);
+  const anchorCycle = cycleContaining(anchorDate, statementDay);
+  // `cycleContaining` gives the cycle the anchor sits INSIDE; month one is the
+  // first that starts on or after it, which is the same cycle only when the
+  // anchor lands exactly on a cycle's first day.
+  const first = anchorCycle.start >= anchorDate ? anchorCycle : cycleAfter(anchorCycle, statementDay);
 
-  // Index by the month a cycle opens in, so a cycle running 19 Feb - 18 Mar
-  // belongs to February, which is what the anchor month means.
-  const elapsed = hy * 12 + (hm - 1) - (ay * 12 + (am - 1));
-  const q = Math.floor(Math.max(0, elapsed) / 3);
-  const firstMonth = (ay * 12 + (am - 1)) + q * 3;
+  const keyOf = (cycle: { start: string }) => {
+    // The month whose close opened this cycle is the month of the day before it.
+    const before = new Date(Date.parse(`${cycle.start}T00:00:00Z`) - 86400_000);
+    return keyOfCycleOpenedBy(before.getUTCFullYear(), before.getUTCMonth());
+  };
 
-  const months = [0, 1, 2].map((i) => cycleStartingIn(Math.floor((firstMonth + i) / 12), (firstMonth + i) % 12, statementDay));
-  return { start: months[0].start, end: months[2].end, index: q + 1, months };
+  const anchorKey = keyOf(first);
+  const hereKey = keyOf(cycleContaining(today(env), statementDay));
+
+  const q = Math.floor(Math.max(0, hereKey - anchorKey) / 3);
+  const firstKey = anchorKey + q * 3;
+
+  const months = [0, 1, 2].map((i) =>
+    cycleStartingIn(Math.floor((firstKey + i) / 12), (firstKey + i) % 12, statementDay)
+  );
+
+  // Which months this card's quarters begin in. Four of them, in calendar
+  // order, so it reads the same whenever you look at it.
+  const NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const startsIn = (key: number) => {
+    const c = cycleStartingIn(Math.floor(key / 12), key % 12, statementDay);
+    return new Date(`${c.start}T00:00:00Z`).getUTCMonth();
+  };
+  const pattern = [0, 1, 2, 3]
+    .map((n) => startsIn(anchorKey + n * 3))
+    .sort((a, b) => a - b)
+    .map((m) => NAMES[m])
+    .join(', ');
+
+  const anchorFirst = new Date(`${first.start}T00:00:00Z`);
+  const anchorMonth = `${NAMES[anchorFirst.getUTCMonth()]} ${anchorFirst.getUTCFullYear()}`;
+
+  return { start: months[0].start, end: months[2].end, index: q + 1, months, pattern, anchor_month: anchorMonth };
+}
+
+/** The cycle immediately after a given one. */
+function cycleAfter(cycle: { end: string }, statementDay: number): { start: string; end: string } {
+  const end = new Date(`${cycle.end}T00:00:00Z`);
+  return cycleStartingIn(end.getUTCFullYear(), end.getUTCMonth(), statementDay);
 }
 
 export function calendarQuarter(env: Env): { start: string; end: string } {
