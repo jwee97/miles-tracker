@@ -26,27 +26,34 @@ function cloudflare(reply: (query: string, vars: any) => { status?: number; body
   return seen;
 }
 
-const workerGroups = (days: [string, number, number][]) =>
+// Cloudflare reports cpuTime in MICROSECONDS, which is the whole reason the
+// old panel showed a nonsense "41ms" for what was really 41 microseconds.
+const workerGroups = (days: [string, number, number][], dim = 'date') =>
   days.map(([date, requests, errors]) => ({
     sum: { requests, errors, subrequests: requests * 2 },
-    quantiles: { cpuTimeP50: 3, cpuTimeP99: 40 },
-    dimensions: { date },
+    quantiles: { cpuTimeP50: 3400, cpuTimeP99: 41_000 },
+    dimensions: { [dim]: date },
   }));
 
 const d1Groups = (days: [string, number, number][]) =>
   days.map(([date, rowsRead, rowsWritten]) => ({
-    sum: { readQueries: 10, writeQueries: 2, rowsRead, rowsWritten },
+    sum: { readQueries: 10, writeQueries: 2, rowsRead, rowsWritten, queryBatchResponseBytes: 500 },
+    avg: { queryBatchTimeMs: 1.5 },
+    quantiles: { queryBatchTimeMsP90: 4 },
     dimensions: { date },
   }));
 
-const ok = (worker: unknown[], d1: unknown[], size: number | null = 12_000_000) => ({
+const ok = (worker: unknown[], d1: unknown[], sizes: [string, number][] | null = [['2026-09-15', 12_000_000]]) => ({
   data: {
     viewer: {
       accounts: [
         {
           workersInvocationsAdaptive: worker,
           d1AnalyticsAdaptiveGroups: d1,
-          d1StorageAdaptiveGroups: size === null ? [] : [{ max: { databaseSizeBytes: size } }],
+          d1StorageAdaptiveGroups: (sizes ?? []).map(([date, bytes]) => ({
+            max: { databaseSizeBytes: bytes },
+            dimensions: { date },
+          })),
         },
       ],
     },
@@ -73,17 +80,25 @@ const ok = (worker: unknown[], d1: unknown[], size: number | null = 12_000_000) 
   check('the token is sent as a bearer', seen[0].auth === 'Bearer tok', String(seen[0].auth));
   check('and never comes back in the report', !JSON.stringify(r).includes('tok'), '');
   check('it asks about the right worker', seen[0].vars.script === 'miles-tracker', JSON.stringify(seen[0].vars));
-  check('and the right database', seen[1].vars.db === 'db-uuid', JSON.stringify(seen[1].vars));
+  check('and the right database', seen.some((c) => c.vars.db === 'db-uuid'), JSON.stringify(seen.map((c) => c.vars)));
 
   check('worker requests are totalled', r.worker.requests === 460, String(r.worker.requests));
   check('so are errors', r.worker.errors === 1, String(r.worker.errors));
   check('the daily series is kept for the chart', r.worker.days.length === 2, String(r.worker.days.length));
-  check('cpu percentiles are reported as the worst day, not averaged', r.worker.cpu_p99_ms === 40, String(r.worker.cpu_p99_ms));
+  check('cpu time is converted from microseconds', r.worker.cpu_p99_ms === 41, String(r.worker.cpu_p99_ms));
+  check('and the typical request is reported, not only the worst', r.worker.cpu_median_ms === 3.4, String(r.worker.cpu_median_ms));
+  check('requests per day are averaged over the window', r.worker.per_day === Math.round(460 / 7), String(r.worker.per_day));
+  check('the error rate is a share, not a count', Math.abs(r.worker.error_percent - (1 / 460) * 100) < 0.001, String(r.worker.error_percent));
 
   check('rows read are totalled', r.d1.rows_read === 34000, String(r.d1.rows_read));
   check('rows written too', r.d1.rows_written === 130, String(r.d1.rows_written));
   check('queries are separated by kind', r.d1.read_queries === 20 && r.d1.write_queries === 4, JSON.stringify([r.d1.read_queries, r.d1.write_queries]));
   check('the database size comes through', r.d1.size_bytes === 12_000_000, String(r.d1.size_bytes));
+  check('rows per read query are worked out', r.d1.rows_per_read === 1700, String(r.d1.rows_per_read));
+  check('batch latency is reported when the account has it', r.d1.latency_avg_ms === 1.5, String(r.d1.latency_avg_ms));
+  check('and its 90th percentile', r.d1.latency_p90_ms === 4, String(r.d1.latency_p90_ms));
+  check('response bytes are totalled', r.d1.response_bytes === 1000, String(r.d1.response_bytes));
+  check('every shape tried is recorded', r.attempts.length > 0 && r.attempts.every((a) => typeof a.ok === 'boolean'), JSON.stringify(r.attempts));
 
   // The free tier is a DAILY allowance, so a busy day inside a quiet week is
   // the number that matters — an average would hide it.
@@ -110,24 +125,45 @@ const ok = (worker: unknown[], d1: unknown[], size: number | null = 12_000_000) 
   check("and Cloudflare's own wording is kept", /rowsRead/.test(r.d1.error ?? ''), '');
 }
 
-// --- the daily breakdown is the nicety; the totals are the point -------------
+// --- the shape Cloudflare will actually accept -------------------------------
 {
-  // workersInvocationsAdaptive is still beta and not every account exposes a
-  // date dimension on it. Losing the chart must not lose the numbers.
+  // `date` is not a dimension on workersInvocationsAdaptive — the documented
+  // ones are datetime, scriptName and status — so the panel has to find a shape
+  // that works rather than assume one. This is exactly why it showed nothing.
   const seen = cloudflare((q) => {
     const worker = /workersInvocationsAdaptive/.test(q);
     if (worker && /dimensions \{ date \}/.test(q))
-      return { body: { errors: [{ message: 'unknown field "date" on dimensions' }] } };
-    if (worker)
-      return { body: ok([{ sum: { requests: 900, errors: 3, subrequests: 10 }, quantiles: { cpuTimeP50: 2, cpuTimeP99: 9 } }], []) };
+      return { body: { errors: [{ message: 'Unknown field "date" on type "ZoneWorkersInvocationsAdaptiveDimensions"' }] } };
+    if (worker && /dimensions \{ datetimeHour \}/.test(q))
+      return { body: ok(workerGroups([['2026-09-15T00:00:00Z', 120, 0], ['2026-09-15T06:00:00Z', 80, 1]], 'datetimeHour'), []) };
+    if (worker) return { body: ok([], []) };
     return { body: ok([], d1Groups([['2026-09-15', 10, 1]])) };
   });
   const r = await platformReport(CONFIG, 7);
-  check('a rejected date dimension falls back to totals', r.worker.requests === 900, String(r.worker.requests));
-  check('and says the chart is unavailable rather than showing an empty one', r.worker.totals_only === true, '');
-  check('the fallback was actually a second call', seen.length === 3, String(seen.length));
-  check('no error is reported once the fallback worked', r.worker.error === null, String(r.worker.error));
-  check('D1 is unaffected by the worker falling back', r.d1.rows_read === 10, String(r.d1.rows_read));
+  check('a rejected dimension is not the end of it', r.worker.requests === 200, String(r.worker.requests));
+  check('the next shape is tried', seen.length >= 3, String(seen.length));
+  check('hourly buckets are folded into days', r.worker.days.length === 1 && r.worker.days[0].date === '2026-09-15', JSON.stringify(r.worker.days));
+  check('and the day adds up', r.worker.days[0]?.requests === 200, String(r.worker.days[0]?.requests));
+  check('so the chart is still drawn', r.worker.totals_only === false, '');
+  check('no error is reported once a shape worked', r.worker.error === null, String(r.worker.error));
+  check('but the rejection is still recorded', r.attempts.some((a) => !a.ok && /Unknown field/.test(a.error ?? '')), JSON.stringify(r.attempts));
+  check('D1 is unaffected by the worker probing', r.d1.rows_read === 10, String(r.d1.rows_read));
+}
+
+// --- when nothing is accepted ------------------------------------------------
+{
+  cloudflare(() => ({ body: { errors: [{ message: 'no such node' }] } }));
+  const r = await platformReport(CONFIG, 7);
+  check('every shape failing is reported once, not silently', /no such node/.test(r.worker.error ?? ''), String(r.worker.error));
+  check('and every attempt is listed so it can be diagnosed', r.attempts.filter((a) => !a.ok).length >= 4, String(r.attempts.length));
+}
+
+// --- database growth ---------------------------------------------------------
+{
+  cloudflare(() => ({ body: ok([], d1Groups([['2026-09-15', 10, 1]]), [['2026-09-10', 9_000_000], ['2026-09-16', 12_000_000]]) }));
+  const r = await platformReport(CONFIG, 7);
+  check('the newest size is the one reported', r.d1.size_bytes === 12_000_000, String(r.d1.size_bytes));
+  check('and growth across the window comes with it', r.d1.size_change_bytes === 3_000_000, String(r.d1.size_change_bytes));
 }
 
 // --- the window --------------------------------------------------------------

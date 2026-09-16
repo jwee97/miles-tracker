@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 /** Page numbers, windowed so a hundred pages do not wrap the screen. */
 export default function Pager({ page, pages, onGo }: { page: number; pages: number; onGo: (p: number) => void }) {
   const slots: (number | '…')[] = [];
@@ -67,4 +69,38 @@ export function PageSize({
       </select>
     </label>
   );
+}
+
+/**
+ * A page size that survives leaving the tab.
+ *
+ * Choosing 100 rows and finding 25 again on the way back is the kind of small
+ * betrayal that makes a setting feel broken. It lives in localStorage, which is
+ * per-device and per-browser — exactly the scope a display preference wants,
+ * and nothing it holds is worth syncing anywhere.
+ */
+export function usePageSize(key: string, fallback = 25): [number, (n: number) => void] {
+  const [per, setPer] = useState(() => {
+    try {
+      const raw = localStorage.getItem(`per:${key}`);
+      const n = raw === null ? NaN : Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : fallback;
+    } catch {
+      // Private windows and blocked site data both throw here; a default is a
+      // perfectly good answer and not a reason to fail to render.
+      return fallback;
+    }
+  });
+
+  return [
+    per,
+    (n: number) => {
+      setPer(n);
+      try {
+        localStorage.setItem(`per:${key}`, String(n));
+      } catch {
+        /* nothing to do: the size still applies for this visit */
+      }
+    },
+  ];
 }

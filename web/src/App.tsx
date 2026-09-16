@@ -83,7 +83,65 @@ function Meter({ percent, tone: t }: { percent: number; tone: string }) {
   );
 }
 
-function RequirementRow({ p }: { p: Progress }) {
+const WINDOW_NAME: Record<string, string> = {
+  calendar_month: 'calendar month',
+  calendar_quarter: 'calendar quarter',
+  statement_cycle: 'statement cycle',
+  statement_quarter: 'statement month of a rolling quarter',
+  fixed_window: 'one-off window',
+};
+
+/**
+ * The purchases a minimum-spend figure was added up from.
+ *
+ * A total on its own cannot be checked, and the commonest way for one to look
+ * wrong is that it is counting a different window from the one you had in mind
+ * — a calendar quarter rather than a statement month adds three months
+ * together and looks like a bug. This shows the dates and the rows, so the
+ * answer is visible rather than argued about.
+ */
+function CountedRows({ p, nickname }: { p: Progress; nickname: string }) {
+  const [rows, setRows] = useState<Txn[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchTransactions(500, { from: p.window.start, to: p.window.end, card: nickname })
+      .then((d) => setRows(d.transactions))
+      .catch((e) => setErr((e as Error).message));
+  }, [p.window.start, p.window.end, nickname]);
+
+  if (err) return <p className="cap">{err}</p>;
+  if (!rows) return <p className="sub">Loading…</p>;
+
+  const total = rows.reduce((n, r) => n + r.amount_cents, 0);
+  return (
+    <div className="counted">
+      <p className="sub">
+        Counting <strong>{p.window.start} → {p.window.end}</strong>, which is one{' '}
+        {WINDOW_NAME[p.window_kind] ?? p.window_kind}. {rows.length} purchase{rows.length === 1 ? '' : 's'} on this card
+        in that range.
+      </p>
+      <ul className="txns counted-list">
+        {rows.map((r) => (
+          <li key={r.id}>
+            <span className="t-date">{(r.posted_at ?? r.occurred_at).slice(5)}</span>
+            <span className="t-note">{r.merchant ?? r.category ?? '—'}</span>
+            <span className="t-amt">${money(r.amount_cents)}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="sub mono">
+        ${money(total)} in the window · ${money(p.spent_cents)} counted toward the minimum
+        {total !== p.spent_cents && (
+          <> · the difference is spend on excluded codes, which the issuer leaves out</>
+        )}
+      </p>
+    </div>
+  );
+}
+
+function RequirementRow({ p, nickname }: { p: Progress; nickname: string }) {
+  const [open, setOpen] = useState(false);
   const label =
     p.kind === 'signup_min'
       ? 'Sign-up minimum'
@@ -102,6 +160,15 @@ function RequirementRow({ p }: { p: Progress }) {
           {p.txns_required > 0 && ` · ${p.txn_count}/${p.txns_required} txns`}
         </span>
       </div>
+      {/* Which window this total covers. A figure that looks too big is almost
+          always a window wider than the one you had in mind. */}
+      <p className="sub window-line">
+        {p.window.start} → {p.window.end} · {WINDOW_NAME[p.window_kind] ?? p.window_kind}
+        <button className="linky" onClick={() => setOpen((v) => !v)}>
+          {open ? 'hide the purchases' : "what's counted?"}
+        </button>
+      </p>
+      {open && <CountedRows p={p} nickname={nickname} />}
       <Meter percent={pct} tone={p.met ? 'ok' : urgent ? 'warn' : 'mid'} />
       <div className="req-foot">
         {p.met && p.met_only_with_at_risk ? (
@@ -255,7 +322,7 @@ function Card({ c }: { c: CardSummary }) {
         <p className="risk">⏳ ${money(c.at_risk_cents)} may post after this cycle closes</p>
       )}
       {c.requirements.map((r) => (
-        <RequirementRow key={r.id} p={r} />
+        <RequirementRow key={r.id} p={r} nickname={c.nickname} />
       ))}
     </section>
   );

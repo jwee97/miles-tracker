@@ -39,6 +39,7 @@ import {
 } from './mccscan';
 import { scanCardPage } from './cardscan';
 import { markDuplicates, parseStatement, type ParsedRow } from './statement';
+import { merchantGroups, renameMerchant } from './tidy';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import { executeTransfer, tranchesByExpiry } from './points';
 import type { Env, Offer } from './types';
@@ -232,13 +233,20 @@ export default {
         // Record a code for a merchant, and apply it to the spend already
         // logged under that name.
         if (url.pathname === '/api/mcc/assign' && req.method === 'POST') {
-          const b = (await req.json()) as { merchant?: string; mcc?: string; channel?: string; backfill?: boolean };
+          const b = (await req.json()) as {
+            merchant?: string;
+            mcc?: string;
+            channel?: string;
+            backfill?: boolean;
+            categorise?: boolean;
+          };
           const code = String(b.mcc ?? '').trim();
           if (!b.merchant?.trim() || !/^\d{4}$/.test(code))
             return json({ error: 'merchant and a four-digit mcc are required' }, 400);
           const res = await assignMerchantCode(env, b.merchant, code, {
             channel: b.channel ?? null,
             backfill: b.backfill,
+            categorise: b.categorise,
           });
           return json({ ok: true, ...res });
         }
@@ -1686,6 +1694,13 @@ export default {
             where.push(`${EFFECTIVE_DATE} <= ?`);
             binds.push(to);
           }
+          // One card's rows, so a minimum-spend figure can be checked against
+          // the purchases it was added up from.
+          const nick = (url.searchParams.get('card') ?? '').trim();
+          if (nick) {
+            where.push(`t.card_id = (SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE)`);
+            binds.push(nick);
+          }
           const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
           // The ledger edits these in place, so every editable column has to
@@ -1725,6 +1740,31 @@ export default {
             pages,
             per_page: limit,
           });
+        }
+
+        // Spellings that look like one merchant. Suggested, never applied:
+        // two different shops can share an opening, and only you can tell.
+        if (url.pathname === '/api/tx/groups') {
+          return json({ groups: await merchantGroups(env, parseInt(url.searchParams.get('limit') ?? '20', 10) || 20) });
+        }
+
+        // Rename every transaction whose merchant matches. Without apply it
+        // reports what it WOULD change, which is the only safe way to offer a
+        // bulk edit over a name you typed.
+        if (url.pathname === '/api/tx/rename' && req.method === 'POST') {
+          const b = (await req.json()) as { match?: string; to?: string; mode?: string; apply?: boolean };
+          try {
+            return json(
+              await renameMerchant(env, {
+                match: String(b.match ?? ''),
+                to: String(b.to ?? ''),
+                mode: b.mode,
+                apply: !!b.apply,
+              })
+            );
+          } catch (e) {
+            return json({ error: (e as Error).message }, 400);
+          }
         }
 
         if (url.pathname === '/api/tx/posted' && req.method === 'POST') {

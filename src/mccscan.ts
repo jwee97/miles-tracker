@@ -288,8 +288,8 @@ export async function assignMerchantCode(
   env: Env,
   merchant: string,
   mcc: string,
-  opts: { channel?: string | null; backfill?: boolean } = {}
-): Promise<{ merchant: string; updated: number }> {
+  opts: { channel?: string | null; backfill?: boolean; categorise?: boolean } = {}
+): Promise<{ merchant: string; updated: number; categorised: number; category: string | null }> {
   const name = merchant.trim().toLowerCase();
   await env.DB.prepare(
     `INSERT INTO merchant_mcc (merchant, mcc, channel, source, confidence, updated_at)
@@ -309,7 +309,32 @@ export async function assignMerchantCode(
       .run();
     updated = res.meta.changes ?? 0;
   }
-  return { merchant: name, updated };
+
+  // A code carries a category, and a purchase with a code but no category is
+  // still invisible to any rule that matches on one. So the category comes with
+  // it — but only where there is nothing to overwrite. A category you chose by
+  // hand outranks a code's idea of what a merchant is, always: the bank knows
+  // the code, you know the purchase.
+  let categorised = 0;
+  const row = await env.DB.prepare(`SELECT category FROM mcc_codes WHERE code = ?`)
+    .bind(mcc)
+    .first<{ category: string | null }>();
+  const category = row?.category ?? null;
+  if (category && opts.categorise !== false) {
+    const res = await env.DB.prepare(
+      `UPDATE transactions
+          SET category = ?, category_source = 'mcc', needs_review = 0
+        WHERE LOWER(TRIM(merchant)) = ?
+          AND mcc = ?
+          AND (category IS NULL OR TRIM(category) = '' OR category_source IS NULL OR category_source = 'learned')
+          AND COALESCE(category_source, '') <> 'manual'`
+    )
+      .bind(category, name, mcc)
+      .run();
+    categorised = res.meta.changes ?? 0;
+  }
+
+  return { merchant: name, updated, categorised, category };
 }
 
 /**

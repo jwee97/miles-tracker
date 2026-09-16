@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import Pager, { PageSize } from './Pager';
+import Pager, { PageSize, usePageSize } from './Pager';
 import { RankedBars, SERIES, slotMap } from './charts';
 import {
   addOther,
@@ -26,7 +26,7 @@ export default function Other() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [per, setPer] = useState(25);
+  const [per, setPer] = usePageSize('other', 25);
   // A different month, or a different page size, renumbers everything.
   useEffect(() => setPage(1), [month, per]);
 

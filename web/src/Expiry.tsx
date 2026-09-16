@@ -65,7 +65,7 @@ export default function ExpiryTab() {
             <thead>
               <tr>
                 <th>Expires</th>
-                <th className="num">Left</th>
+                <th>Left</th>
                 <th>Programme</th>
                 <th className="num">Amount</th>
                 <th>Note</th>
@@ -77,7 +77,7 @@ export default function ExpiryTab() {
                 return (
                   <tr key={r.id}>
                     <td className="mono">{r.expires_at ?? '—'}</td>
-                    <td className="num">
+                    <td>
                       <span className={`chip ${u.cls}`}>{u.label}</span>
                     </td>
                     <td>

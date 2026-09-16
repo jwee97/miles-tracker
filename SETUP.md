@@ -841,13 +841,56 @@ teaches both. One thing to watch: if you top up PayLah with a card, the top-up
 is already card spend — record what you buy here, not the top-up, or it counts
 twice.
 
+### Why a minimum-spend total looks too big
+
+Every minimum on a card now prints the **window it is counting** — the two
+dates and what kind of window it is — with a *what's counted?* link that opens
+the purchases behind the figure.
+
+This is worth knowing about because the commonest surprise is not a bug. A
+minimum set to *each calendar quarter* adds three months together; one set to
+*each calendar month* runs the 1st to the 31st, which is not the same as a
+statement month if your statement closes on the 18th. A total that looks like
+three months usually is three months, and the window line says so at a glance.
+
+If the window is wrong, remove the minimum and add it again with the right one.
+For a card like UOB One the answer is nearly always **every statement month of
+a rolling quarter**, not *each calendar quarter*.
+
+### Tidying merchant names
+
+**Ledger → Tidy merchant names.** A statement writes the same merchant a
+hundred ways — `BUS/MRT 3948201`, `BUS/MRT 7712`, `BUS/MRT 22` — and until they
+are one name every merchant total is wrong, no category is ever learned from
+them, and the merchant-code list carries a row per terminal.
+
+Open it and it suggests groups: spellings that share an opening and differ only
+by digits. Pick one, or type your own match, and **Show me what changes** lists
+every name it would rewrite and how many rows. The rename button only appears
+once you have seen that list — two genuinely different shops can share an
+opening, and only you can tell.
+
+### When a code sets a category too
+
+Recording a merchant code now also fills in the **category** on that merchant's
+past purchases, since the code carries one and a purchase with a code but no
+category is still invisible to any rule that matches on one.
+
+It only fills a gap. A category you set by hand is never overwritten; only rows
+with none at all, or one that was guessed from the merchant name, are touched,
+and they are marked as having come from the code. Nothing else changes: the
+earn engine prefers an MCC-restricted rule over a category word anyway, so this
+only helps the rules that have no codes attached.
+
 ### Long lists
 
 Four lists in the app grow without a ceiling: spend, merchant codes, merchants
 with no code yet, and off-card entries. Each now has a **page size** (10, 25, 50
 or 100) next to its pager, and the off-card list offers *all* as well, since one
 month's entries arrive together anyway. Changing the size returns to page one —
-staying on page 7 of a list that just became four pages long shows nothing.
+staying on page 7 of a list that just became four pages long shows nothing — and
+each list remembers its own size on that device, so leaving the tab and coming
+back does not put it back to 25.
 
 **Merchants with no code** also has an **Ignore** on every row. Some spend has
 no code to find — a hawker stall, a transfer to a friend — and taking it off the
@@ -1114,28 +1157,43 @@ Open **Settings → Cloudflare**. It should fill in within a second or two.
 
 ### If it does not
 
-The panel shows Cloudflare's own words rather than a blank box, so the error
-tells you which of the four is wrong:
+Which fields and dimensions a Cloudflare dataset offers varies by dataset and
+by plan, so the panel does not assume one shape — it tries several in
+descending order of confidence and uses the first that is accepted. **What was
+asked** at the bottom of the panel lists every attempt and what Cloudflare said
+to each, which is the fastest way to tell a wrong token from a wrong id from a
+field your plan does not have.
 
 - **"Cloudflare refused the token (403)"** — the token is wrong, expired, or
   missing *Account Analytics → Read*. Re-check step 1.
 - **Numbers that are all zero** — the Worker name or database id does not match
   what you deployed. A wrong name reads as an idle Worker, not as an error,
   because to Cloudflare it is simply a Worker with no traffic.
-- **An `unknown field` message** — that dataset is not available on your plan.
-  Workers and D1 are reported separately, so one failing does not hide the
-  other.
-- **"Your account does not break these down by day"** — the daily chart is
-  unavailable, so only the totals are shown. `workersInvocationsAdaptive` is
-  still beta and not every account exposes a date dimension on it.
+- **An `Unknown field` message against one shape but not the next** — normal.
+  That is the probing working.
+- **Every shape failing** — the error from the last one is shown in full.
+  Workers and D1 are read separately, so one failing does not hide the other.
 
 ### What it shows
 
-Invocations, errors, subrequests and CPU p99 for the Worker; rows read, rows
-written, queries and database size for D1; and each against the **free tier's
-daily allowance measured on the busiest day of the window**. That last part
-matters: the allowance resets daily, so an average across a quiet week would
-hide the one day that nearly ran out.
+**Worker** — invocations and how many a day, errors as a share of requests,
+outcomes broken down by status, subrequests, and CPU time per invocation.
+
+CPU is reported as the **median**: the request you actually get. Cloudflare
+returns these in *microseconds*, which is worth knowing — a panel that forgets
+to convert reports a typical request as "41ms" when it was 41 millionths of a
+second. The 99th percentile sits beside it, labelled, because one request in a
+hundred being slow is a different fact from the typical one being slow.
+
+**D1** — rows read and written, query counts, batch latency (average and 90th
+percentile), bytes of results returned, database size *and how much it grew
+across the window*. Also **rows read per read query**, which is the one number
+that says whether a query found its rows by index or walked the table to reach
+them; past a thousand, the panel says so.
+
+**Against the free tier** — each daily allowance measured on the **busiest day
+of the window**. The allowance resets daily, so an average across a quiet week
+would hide the one day that nearly ran out.
 
 Cloudflare keeps about 30 days of this, and the most recent hours lag.
 

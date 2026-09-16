@@ -254,10 +254,16 @@ except ones you marked applied, which are your own record and are never swept.
 
 ## What it costs to run
 
-**Settings → Cloudflare** reads Cloudflare's own meters: Worker invocations and
-errors, D1 rows read and written, database size, each against the free tier's
-*daily* allowance measured on the busiest day of the window — an average across
-a quiet week would hide the day that nearly ran out.
+**Settings → Cloudflare** reads Cloudflare's own meters: Worker invocations,
+errors and CPU time per request; D1 rows read and written, query latency,
+database size and how fast it is growing; each against the free tier's *daily*
+allowance measured on the busiest day of the window — an average across a quiet
+week would hide the day that nearly ran out.
+
+Which fields a Cloudflare dataset offers varies by plan, so the panel tries
+several query shapes and uses the first that is accepted. **What was asked**
+lists every attempt and Cloudflare's reply to each, so an empty panel can be
+explained rather than guessed at.
 
 It needs an API token with one permission (Account → Account Analytics → Read),
 which is free. The token goes in as a secret like the others; the account id,

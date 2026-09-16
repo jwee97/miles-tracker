@@ -214,13 +214,14 @@ export interface TxnPage {
 
 export const fetchTransactions = (
   limit = 25,
-  opts: { range?: string; from?: string; to?: string; page?: number } = {}
+  opts: { range?: string; from?: string; to?: string; page?: number; card?: string } = {}
 ) => {
   const p = new URLSearchParams({ limit: String(limit) });
   if (opts.range) p.set('range', opts.range);
   if (opts.from) p.set('from', opts.from);
   if (opts.to) p.set('to', opts.to);
   if (opts.page) p.set('page', String(opts.page));
+  if (opts.card) p.set('card', opts.card);
   return get<TxnPage>(`/api/transactions?${p}`);
 };
 
@@ -1056,7 +1057,10 @@ export const ignoreMerchant = (merchant: string, undo = false) =>
 export const scanMccDirectory = () => post<MccScanResult>('/api/mcc/scan', {});
 
 export const assignMerchantCode = (merchant: string, mcc: string, backfill = true) =>
-  post<{ ok: true; merchant: string; updated: number }>('/api/mcc/assign', { merchant, mcc, backfill });
+  post<{ ok: true; merchant: string; updated: number; categorised: number; category: string | null }>(
+    '/api/mcc/assign',
+    { merchant, mcc, backfill }
+  );
 
 export interface ScanCandidate {
   kind: 'rate' | 'cap' | 'mcc' | 'exclusion' | 'minspend' | string;
@@ -1088,6 +1092,12 @@ export const scanCardPage = (body: { nickname: string; url?: string; text?: stri
 export const saveExclusion = (body: { mcc: string; nickname?: string | null; reason?: string; active?: boolean }) =>
   post<{ ok: true }>('/api/exclusion', body);
 
+export interface PlatformAttempt {
+  query: string;
+  ok: boolean;
+  error: string | null;
+}
+
 export interface PlatformReport {
   configured: boolean;
   missing: string[];
@@ -1097,23 +1107,39 @@ export interface PlatformReport {
   from: string;
   to: string;
   days: number;
+  attempts: PlatformAttempt[];
   worker: {
     days: { date: string; requests: number; errors: number; subrequests: number }[];
     requests: number;
     errors: number;
     subrequests: number;
-    cpu_p50_ms: number | null;
+    error_percent: number;
+    by_status: { status: string; requests: number }[];
+    cpu_median_ms: number | null;
     cpu_p99_ms: number | null;
+    per_day: number;
     error: string | null;
     totals_only: boolean;
   };
   d1: {
-    days: { date: string; read_queries: number; write_queries: number; rows_read: number; rows_written: number }[];
+    days: {
+      date: string;
+      read_queries: number;
+      write_queries: number;
+      rows_read: number;
+      rows_written: number;
+      response_bytes: number;
+    }[];
     read_queries: number;
     write_queries: number;
     rows_read: number;
     rows_written: number;
+    response_bytes: number;
+    rows_per_read: number | null;
+    latency_avg_ms: number | null;
+    latency_p90_ms: number | null;
     size_bytes: number | null;
+    size_change_bytes: number | null;
     error: string | null;
   };
   free_tier: {
@@ -1130,6 +1156,27 @@ export interface PlatformReport {
 
 /** What Cloudflare's own meters say this app costs. */
 export const fetchPlatform = (days = 7) => get<PlatformReport>(`/api/platform?days=${days}`);
+
+export interface MerchantGroup {
+  prefix: string;
+  variants: { merchant: string; txn_count: number; spend_cents: number }[];
+  txn_count: number;
+  spend_cents: number;
+}
+
+export interface RenameResult {
+  matched: number;
+  from: string[];
+  to: string;
+  updated: number;
+  preview: boolean;
+}
+
+/** Spellings that look like one merchant — suggestions, never applied. */
+export const fetchMerchantGroups = () => get<{ groups: MerchantGroup[] }>('/api/tx/groups');
+
+export const renameMerchant = (body: { match: string; to: string; mode?: string; apply?: boolean }) =>
+  post<RenameResult>('/api/tx/rename', body);
 
 export const money = (cents: number) =>
   (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

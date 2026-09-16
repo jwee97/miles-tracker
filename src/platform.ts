@@ -34,6 +34,14 @@ export interface D1Day {
   write_queries: number;
   rows_read: number;
   rows_written: number;
+  response_bytes: number;
+}
+
+/** One query shape tried, and what Cloudflare said to it. */
+export interface Attempt {
+  query: string;
+  ok: boolean;
+  error: string | null;
 }
 
 export interface PlatformReport {
@@ -46,16 +54,27 @@ export interface PlatformReport {
   from: string;
   to: string;
   days: number;
+  /** Every query shape tried, so an empty panel can be explained. */
+  attempts: Attempt[];
   worker: {
     days: DayPoint[];
     requests: number;
     errors: number;
     subrequests: number;
-    /** Null when the account's plan does not expose them. */
-    cpu_p50_ms: number | null;
+    /** Errors as a share of requests, 0-100. */
+    error_percent: number;
+    /** Requests broken down by outcome, when the account reports it. */
+    by_status: { status: string; requests: number }[];
+    /**
+     * CPU time per invocation. Cloudflare reports these in MICROSECONDS; they
+     * are converted once, here, so nothing downstream has to remember.
+     * The median is the typical request; p99 is the slowest one in a hundred.
+     */
+    cpu_median_ms: number | null;
     cpu_p99_ms: number | null;
+    /** Requests per day, averaged over the window. */
+    per_day: number;
     error: string | null;
-    /** True when daily figures were unavailable and only a total came back. */
     totals_only: boolean;
   };
   d1: {
@@ -64,7 +83,15 @@ export interface PlatformReport {
     write_queries: number;
     rows_read: number;
     rows_written: number;
+    response_bytes: number;
+    /** Rows read per read query — the number that says whether a query scans. */
+    rows_per_read: number | null;
+    /** Batch latency, when the account reports it. */
+    latency_avg_ms: number | null;
+    latency_p90_ms: number | null;
     size_bytes: number | null;
+    /** How the database has grown across the window, when there is a series. */
+    size_change_bytes: number | null;
     error: string | null;
   };
   free_tier: {
@@ -120,52 +147,149 @@ async function cfGraph(
 
 const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
-const WORKER_DAILY = `query W($account: string!, $script: string!, $start: Time!, $end: Time!) {
+/**
+ * Cloudflare's GraphQL is not one schema but many, and which fields a node
+ * offers varies by dataset and by plan. Rather than assume, each family of
+ * numbers is asked for in descending order of confidence and the first shape
+ * that is accepted wins. What was tried, and what Cloudflare said to each, is
+ * reported: a panel that silently shows nothing is the one thing worse than an
+ * error message.
+ *
+ * Note the variable types. They are lowercase `string`, which is what
+ * Cloudflare's own examples use — declaring `Time!` gets the whole document
+ * rejected before a single field is read.
+ */
+interface Shape {
+  label: string;
+  query: string;
+  /** Pulls the groups out of a successful response. */
+  pick: (data: any) => any[];
+  /** How a group's date comes out, when it has one. */
+  day?: (g: any) => string;
+}
+
+const workerShape = (dim: string | null, label: string): Shape => ({
+  label,
+  query: `query W($account: string, $script: string, $start: string, $end: string) {
   viewer { accounts(filter: { accountTag: $account }) {
     workersInvocationsAdaptive(
-      limit: 1000
+      limit: 10000
       filter: { scriptName: $script, datetime_geq: $start, datetime_leq: $end }
-      orderBy: [date_ASC]
     ) {
       sum { requests errors subrequests }
       quantiles { cpuTimeP50 cpuTimeP99 }
-      dimensions { date }
+      ${dim ? `dimensions { ${dim} }` : ''}
     }
-  }}}`;
+  }}}`,
+  pick: (d) => d?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [],
+  day: dim ? (g) => String(g?.dimensions?.[dim] ?? '').slice(0, 10) : undefined,
+});
 
-// Not every account exposes a `date` dimension on this node — it is still
-// marked beta — so there is a shape to fall back to that asks only for totals.
-const WORKER_TOTAL = `query W($account: string!, $script: string!, $start: Time!, $end: Time!) {
+/**
+ * The day breakdown, in the order most likely to be accepted.
+ *
+ * `date` is not a dimension on this node — the documented ones are datetime,
+ * scriptName and status — but accounts differ, so it is still tried first and
+ * costs one rejected request when it is not there. `datetimeHour` buckets to
+ * the hour, which folds into days here; bare `datetime` is finest and last.
+ */
+const WORKER_SHAPES: Shape[] = [
+  workerShape('date', 'by day'),
+  workerShape('datetimeHour', 'by hour'),
+  workerShape('datetime', 'by datetime'),
+  workerShape(null, 'totals only'),
+];
+
+/** Success and error counts split by outcome, which is its own useful number. */
+const WORKER_STATUS: Shape = {
+  label: 'by status',
+  query: `query S($account: string, $script: string, $start: string, $end: string) {
   viewer { accounts(filter: { accountTag: $account }) {
     workersInvocationsAdaptive(
-      limit: 1
+      limit: 100
       filter: { scriptName: $script, datetime_geq: $start, datetime_leq: $end }
     ) {
-      sum { requests errors subrequests }
-      quantiles { cpuTimeP50 cpuTimeP99 }
+      sum { requests }
+      dimensions { status }
     }
-  }}}`;
+  }}}`,
+  pick: (d) => d?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [],
+};
 
-const D1_DAILY = `query D($account: string!, $db: string!, $start: Date!, $end: Date!) {
+const d1Shape = (extra: boolean): Shape => ({
+  label: extra ? 'with latency' : 'queries and rows',
+  query: `query D($account: string, $db: string, $start: Date, $end: Date) {
   viewer { accounts(filter: { accountTag: $account }) {
     d1AnalyticsAdaptiveGroups(
-      limit: 1000
+      limit: 10000
       filter: { date_geq: $start, date_leq: $end, databaseId: $db }
       orderBy: [date_ASC]
     ) {
-      sum { readQueries writeQueries rowsRead rowsWritten }
+      sum { readQueries writeQueries rowsRead rowsWritten${extra ? ' queryBatchResponseBytes' : ''} }
+      ${extra ? 'avg { queryBatchTimeMs }\n      quantiles { queryBatchTimeMsP90 }' : ''}
       dimensions { date }
     }
+  }}}`,
+  pick: (d) => d?.viewer?.accounts?.[0]?.d1AnalyticsAdaptiveGroups ?? [],
+  day: (g) => String(g?.dimensions?.date ?? '').slice(0, 10),
+});
+
+const D1_SHAPES: Shape[] = [d1Shape(true), d1Shape(false)];
+
+const D1_STORAGE: Shape = {
+  label: 'storage',
+  query: `query DS($account: string, $db: string, $start: Date, $end: Date) {
+  viewer { accounts(filter: { accountTag: $account }) {
     d1StorageAdaptiveGroups(
-      limit: 1
+      limit: 100
       filter: { date_geq: $start, date_leq: $end, databaseId: $db }
       orderBy: [date_DESC]
     ) {
       max { databaseSizeBytes }
+      dimensions { date }
     }
-  }}}`;
+  }}}`,
+  pick: (d) => d?.viewer?.accounts?.[0]?.d1StorageAdaptiveGroups ?? [],
+};
+
+/** Walks the shapes until one is accepted, recording every attempt. */
+async function firstThatWorks(
+  env: Env,
+  shapes: Shape[],
+  vars: Record<string, unknown>,
+  log: Attempt[]
+): Promise<{ shape: Shape; groups: any[] } | null> {
+  for (const shape of shapes) {
+    const r = await cfGraph(env, shape.query, vars);
+    log.push({ query: shape.label, ok: r.error === null, error: r.error });
+    if (!r.error) return { shape, groups: shape.pick(r.data) };
+  }
+  return null;
+}
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+/** Microseconds to milliseconds, which is what the figure is readable in. */
+const usToMs = (us: unknown) => (typeof us === 'number' && Number.isFinite(us) ? Math.round(us / 10) / 100 : null);
+
+/** Folds groups of any granularity into one row per calendar day. */
+function byDay<T extends Record<string, number>>(
+  groups: any[],
+  day: (g: any) => string,
+  fields: { [K in keyof T]: (g: any) => number }
+): (T & { date: string })[] {
+  const out = new Map<string, T & { date: string }>();
+  for (const g of groups) {
+    const date = day(g);
+    if (!date) continue;
+    const row = out.get(date) ?? ({ date, ...Object.fromEntries(Object.keys(fields).map((k) => [k, 0])) } as T & { date: string });
+    for (const k of Object.keys(fields) as (keyof T)[]) {
+      (row as any)[k] += fields[k](g);
+    }
+    out.set(date, row);
+  }
+  return [...out.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
 
 export async function platformReport(env: Env, days = 7): Promise<PlatformReport> {
   const span = Math.min(30, Math.max(1, Math.round(days)));
@@ -184,6 +308,7 @@ export async function platformReport(env: Env, days = 7): Promise<PlatformReport
   if (!script) missing.push('CF_SCRIPT_NAME');
   if (!database) missing.push('CF_DATABASE_ID');
 
+  const attempts: Attempt[] = [];
   const blank: PlatformReport = {
     configured: missing.length === 0,
     missing,
@@ -193,8 +318,34 @@ export async function platformReport(env: Env, days = 7): Promise<PlatformReport
     from,
     to,
     days: span,
-    worker: { days: [], requests: 0, errors: 0, subrequests: 0, cpu_p50_ms: null, cpu_p99_ms: null, error: null, totals_only: false },
-    d1: { days: [], read_queries: 0, write_queries: 0, rows_read: 0, rows_written: 0, size_bytes: null, error: null },
+    attempts,
+    worker: {
+      days: [],
+      requests: 0,
+      errors: 0,
+      subrequests: 0,
+      error_percent: 0,
+      by_status: [],
+      cpu_median_ms: null,
+      cpu_p99_ms: null,
+      per_day: 0,
+      error: null,
+      totals_only: false,
+    },
+    d1: {
+      days: [],
+      read_queries: 0,
+      write_queries: 0,
+      rows_read: 0,
+      rows_written: 0,
+      response_bytes: 0,
+      rows_per_read: null,
+      latency_avg_ms: null,
+      latency_p90_ms: null,
+      size_bytes: null,
+      size_change_bytes: null,
+      error: null,
+    },
     free_tier: {
       worker_requests_per_day: FREE_WORKER_REQUESTS_PER_DAY,
       d1_rows_read_per_day: FREE_D1_ROWS_READ_PER_DAY,
@@ -209,62 +360,100 @@ export async function platformReport(env: Env, days = 7): Promise<PlatformReport
   if (missing.length) return blank;
 
   // --- the Worker ---------------------------------------------------------
-  const vars = { account, script, start: `${from}T00:00:00Z`, end: `${to}T23:59:59Z` };
-  let w = await cfGraph(env, WORKER_DAILY, vars);
-  let totalsOnly = false;
-  if (w.error && /date|dimension|field/i.test(w.error)) {
-    // The daily breakdown is the nicety; the totals are the point.
-    const fallback = await cfGraph(env, WORKER_TOTAL, vars);
-    if (!fallback.error) {
-      w = fallback;
-      totalsOnly = true;
+  const wVars = { account, script, start: `${from}T00:00:00Z`, end: `${to}T23:59:59Z` };
+  const w = await firstThatWorks(env, WORKER_SHAPES, wVars, attempts);
+
+  if (!w) {
+    blank.worker.error = attempts.filter((a) => !a.ok).pop()?.error ?? 'Cloudflare accepted none of the query shapes';
+  } else {
+    const g = w.groups;
+    blank.worker.totals_only = !w.shape.day;
+    blank.worker.requests = g.reduce((n, x) => n + num(x.sum?.requests), 0);
+    blank.worker.errors = g.reduce((n, x) => n + num(x.sum?.errors), 0);
+    blank.worker.subrequests = g.reduce((n, x) => n + num(x.sum?.subrequests), 0);
+    blank.worker.error_percent = blank.worker.requests ? (blank.worker.errors / blank.worker.requests) * 100 : 0;
+    blank.worker.per_day = Math.round(blank.worker.requests / span);
+
+    if (w.shape.day) {
+      blank.worker.days = byDay<Omit<DayPoint, 'date'>>(g, w.shape.day, {
+        requests: (x: any) => num(x.sum?.requests),
+        errors: (x: any) => num(x.sum?.errors),
+        subrequests: (x: any) => num(x.sum?.subrequests),
+      });
+    }
+
+    // A percentile cannot be summed or averaged into another percentile, so the
+    // highest group's is reported and labelled for what it is.
+    const q = (k: string) => {
+      const xs = g.map((x) => x.quantiles?.[k]).filter((x) => typeof x === 'number');
+      return xs.length ? Math.max(...xs) : null;
+    };
+    blank.worker.cpu_median_ms = usToMs(q('cpuTimeP50'));
+    blank.worker.cpu_p99_ms = usToMs(q('cpuTimeP99'));
+
+    // Outcomes, which say whether the errors are yours or the platform's.
+    const st = await cfGraph(env, WORKER_STATUS.query, wVars);
+    attempts.push({ query: WORKER_STATUS.label, ok: st.error === null, error: st.error });
+    if (!st.error) {
+      const rows = WORKER_STATUS.pick(st.data);
+      const tally = new Map<string, number>();
+      for (const r of rows) {
+        const key = String(r?.dimensions?.status ?? 'unknown');
+        tally.set(key, (tally.get(key) ?? 0) + num(r.sum?.requests));
+      }
+      blank.worker.by_status = [...tally].map(([status, requests]) => ({ status, requests })).sort((a, b) => b.requests - a.requests);
     }
   }
 
-  if (w.error) {
-    blank.worker.error = w.error;
+  // --- D1 -----------------------------------------------------------------
+  const dVars = { account, db: database, start: from, end: to };
+  const d = await firstThatWorks(env, D1_SHAPES, dVars, attempts);
+
+  if (!d) {
+    blank.d1.error = attempts.filter((a) => !a.ok).pop()?.error ?? 'Cloudflare accepted none of the query shapes';
   } else {
-    const groups: any[] = w.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [];
-    blank.worker.totals_only = totalsOnly;
-    blank.worker.days = totalsOnly
-      ? []
-      : groups.map((g) => ({
-          date: g.dimensions?.date ?? '',
-          requests: num(g.sum?.requests),
-          errors: num(g.sum?.errors),
-          subrequests: num(g.sum?.subrequests),
-        }));
-    blank.worker.requests = groups.reduce((n, g) => n + num(g.sum?.requests), 0);
-    blank.worker.errors = groups.reduce((n, g) => n + num(g.sum?.errors), 0);
-    blank.worker.subrequests = groups.reduce((n, g) => n + num(g.sum?.subrequests), 0);
-    // A percentile cannot be summed, so the worst day's is reported rather
-    // than an average of percentiles, which would mean nothing.
-    const p50 = groups.map((g) => g.quantiles?.cpuTimeP50).filter((x) => typeof x === 'number');
-    const p99 = groups.map((g) => g.quantiles?.cpuTimeP99).filter((x) => typeof x === 'number');
-    blank.worker.cpu_p50_ms = p50.length ? Math.max(...p50) : null;
-    blank.worker.cpu_p99_ms = p99.length ? Math.max(...p99) : null;
+    const g = d.groups;
+    blank.d1.days = byDay<Omit<D1Day, 'date'>>(g, d.shape.day!, {
+      read_queries: (x: any) => num(x.sum?.readQueries),
+      write_queries: (x: any) => num(x.sum?.writeQueries),
+      rows_read: (x: any) => num(x.sum?.rowsRead),
+      rows_written: (x: any) => num(x.sum?.rowsWritten),
+      response_bytes: (x: any) => num(x.sum?.queryBatchResponseBytes),
+    });
+    blank.d1.read_queries = blank.d1.days.reduce((n, x) => n + x.read_queries, 0);
+    blank.d1.write_queries = blank.d1.days.reduce((n, x) => n + x.write_queries, 0);
+    blank.d1.rows_read = blank.d1.days.reduce((n, x) => n + x.rows_read, 0);
+    blank.d1.rows_written = blank.d1.days.reduce((n, x) => n + x.rows_written, 0);
+    blank.d1.response_bytes = blank.d1.days.reduce((n, x) => n + x.response_bytes, 0);
+
+    // Rows read per read query: the number that says whether a query is
+    // finding its rows by index or scanning the table to get to them.
+    blank.d1.rows_per_read = blank.d1.read_queries
+      ? Math.round((blank.d1.rows_read / blank.d1.read_queries) * 10) / 10
+      : null;
+
+    const avgs = g.map((x) => x.avg?.queryBatchTimeMs).filter((x) => typeof x === 'number');
+    blank.d1.latency_avg_ms = avgs.length ? Math.round((avgs.reduce((a, b) => a + b, 0) / avgs.length) * 100) / 100 : null;
+    const p90 = g.map((x) => x.quantiles?.queryBatchTimeMsP90).filter((x) => typeof x === 'number');
+    blank.d1.latency_p90_ms = p90.length ? Math.round(Math.max(...p90) * 100) / 100 : null;
   }
 
-  // --- D1 -----------------------------------------------------------------
-  const d = await cfGraph(env, D1_DAILY, { account, db: database, start: from, end: to });
-  if (d.error) {
-    blank.d1.error = d.error;
-  } else {
-    const acct = d.data?.viewer?.accounts?.[0] ?? {};
-    const groups: any[] = acct.d1AnalyticsAdaptiveGroups ?? [];
-    blank.d1.days = groups.map((g) => ({
-      date: g.dimensions?.date ?? '',
-      read_queries: num(g.sum?.readQueries),
-      write_queries: num(g.sum?.writeQueries),
-      rows_read: num(g.sum?.rowsRead),
-      rows_written: num(g.sum?.rowsWritten),
-    }));
-    blank.d1.read_queries = blank.d1.days.reduce((n, g) => n + g.read_queries, 0);
-    blank.d1.write_queries = blank.d1.days.reduce((n, g) => n + g.write_queries, 0);
-    blank.d1.rows_read = blank.d1.days.reduce((n, g) => n + g.rows_read, 0);
-    blank.d1.rows_written = blank.d1.days.reduce((n, g) => n + g.rows_written, 0);
-    const size = acct.d1StorageAdaptiveGroups?.[0]?.max?.databaseSizeBytes;
-    blank.d1.size_bytes = typeof size === 'number' ? size : null;
+  const storage = await cfGraph(env, D1_STORAGE.query, dVars);
+  attempts.push({ query: D1_STORAGE.label, ok: storage.error === null, error: storage.error });
+  if (!storage.error) {
+    const rows = D1_STORAGE.pick(storage.data);
+    const sizes = rows
+      .map((r: any) => ({ date: String(r?.dimensions?.date ?? ''), bytes: r?.max?.databaseSizeBytes }))
+      .filter((r: any) => typeof r.bytes === 'number')
+      .sort((a: any, b: any) => a.date.localeCompare(b.date));
+    if (sizes.length) {
+      blank.d1.size_bytes = sizes[sizes.length - 1].bytes;
+      // Growth across the window is the number that answers "is this a problem
+      // later" — a single size never does.
+      if (sizes.length > 1) blank.d1.size_change_bytes = sizes[sizes.length - 1].bytes - sizes[0].bytes;
+    }
+  } else if (!blank.d1.error) {
+    blank.d1.error = storage.error;
   }
 
   // The free tier is a DAILY allowance, so the busiest day is what matters —

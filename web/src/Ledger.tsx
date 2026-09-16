@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import Pager, { PageSize } from './Pager';
+import Pager, { PageSize, usePageSize } from './Pager';
 import Statement from './Statement';
 import {
   addTransaction,
@@ -13,6 +13,10 @@ import {
   type CardSummary,
   type ReviewRow,
   type Txn,
+  fetchMerchantGroups,
+  renameMerchant,
+  type MerchantGroup,
+  type RenameResult,
 } from './api';
 
 type Field = 'occurred_at' | 'posted_at' | 'amount' | 'merchant' | 'category' | 'card_id';
@@ -104,13 +108,182 @@ function Cell({
   );
 }
 
+/**
+ * One merchant, spelled a hundred ways.
+ *
+ * A statement writes "BUS/MRT 3948201" and "BUS/MRT 7712" for the same two
+ * journeys. Until they are one name, every merchant total is wrong, no category
+ * is ever learned from them, and the code list carries a row per terminal.
+ *
+ * Nothing is applied on a guess: the match is previewed with every name it
+ * would rewrite, and the button only appears once you have seen them.
+ */
+function TidyMerchants({ onDone }: { onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [groups, setGroups] = useState<MerchantGroup[] | null>(null);
+  const [f, setF] = useState({ match: '', to: '', mode: 'prefix' });
+  const [preview, setPreview] = useState<RenameResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || groups) return;
+    fetchMerchantGroups()
+      .then((d) => setGroups(d.groups))
+      .catch((e) => setErr((e as Error).message));
+  }, [open, groups]);
+
+  async function look() {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      setPreview(await renameMerchant({ match: f.match, to: f.to, mode: f.mode }));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function apply() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await renameMerchant({ match: f.match, to: f.to, mode: f.mode, apply: true });
+      setMsg(`${r.updated} row${r.updated === 1 ? '' : 's'} now read "${r.to}".`);
+      setPreview(null);
+      setGroups(null);
+      setF({ ...f, match: '', to: '' });
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card entry">
+      <div className="section-head">
+        <h2>Tidy merchant names</h2>
+        <button className="secondary" onClick={() => setOpen((v) => !v)}>
+          {open ? 'Close' : 'Open'}
+        </button>
+      </div>
+      {!open && (
+        <p className="sub">
+          Fold "BUS/MRT 3948201" and "BUS/MRT 7712" into one name, so they group, categorise and carry a code together.
+        </p>
+      )}
+
+      {open && (
+        <>
+          {groups === null && !err && <p className="sub">Looking for names that repeat…</p>}
+          {groups !== null && groups.length === 0 && <p className="sub">No merchant names look like variants of each other.</p>}
+          {groups !== null && groups.length > 0 && (
+            <>
+              <p className="sub">
+                These spellings share an opening and differ only by digits — the shape a terminal id takes. Two genuinely
+                different shops could land here, so nothing is changed until you look.
+              </p>
+              <ul className="notes">
+                {groups.map((g) => (
+                  <li key={g.prefix}>
+                    <strong>{g.prefix}</strong> — {g.variants.length} spellings, {g.txn_count} purchase
+                    {g.txn_count === 1 ? '' : 's'}, ${money(g.spend_cents)}
+                    <button
+                      className="linky"
+                      onClick={() => {
+                        setF({ match: g.prefix, to: g.prefix, mode: 'prefix' });
+                        setPreview(null);
+                        setMsg(null);
+                      }}
+                    >
+                      use this
+                    </button>
+                    <span className="sub"> {g.variants.slice(0, 4).map((v) => v.merchant).join(' · ')}
+                      {g.variants.length > 4 ? ` · +${g.variants.length - 4} more` : ''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          <div className="entry-grid">
+            <label className="f">
+              <span>Match</span>
+              <input
+                value={f.match}
+                onChange={(e) => {
+                  setF({ ...f, match: e.target.value });
+                  setPreview(null);
+                }}
+                placeholder="BUS/MRT"
+              />
+            </label>
+            <label className="f">
+              <span>Where</span>
+              <select value={f.mode} onChange={(e) => { setF({ ...f, mode: e.target.value }); setPreview(null); }}>
+                <option value="prefix">the name starts with it</option>
+                <option value="contains">the name contains it</option>
+                <option value="exact">the name is exactly it</option>
+              </select>
+            </label>
+            <label className="f f-note">
+              <span>Rename all of them to</span>
+              <input value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} placeholder="BUS/MRT" />
+            </label>
+          </div>
+
+          <div className="entry-foot">
+            <button className="secondary" onClick={look} disabled={busy || !f.match || !f.to}>
+              {busy ? 'Checking…' : 'Show me what changes'}
+            </button>
+            {preview && preview.matched > 0 && (
+              <button onClick={apply} disabled={busy}>
+                Rename {preview.matched} row{preview.matched === 1 ? '' : 's'}
+              </button>
+            )}
+            {err && <span className="err-text">{err}</span>}
+            {msg && <span className="sub">{msg}</span>}
+          </div>
+
+          {preview && (
+            <div className="counted">
+              {preview.matched === 0 ? (
+                <p className="sub">Nothing matches "{f.match}".</p>
+              ) : (
+                <>
+                  <p className="sub">
+                    {preview.matched} purchase{preview.matched === 1 ? '' : 's'} across {preview.from.length} spelling
+                    {preview.from.length === 1 ? '' : 's'} would become <strong>{preview.to}</strong>:
+                  </p>
+                  <ul className="notes">
+                    {preview.from.slice(0, 20).map((m) => (
+                      <li key={m}>{m}</li>
+                    ))}
+                    {preview.from.length > 20 && <li className="sub">…and {preview.from.length - 20} more</li>}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 export default function Ledger() {
   const [rows, setRows] = useState<Txn[]>([]);
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [cats, setCats] = useState<string[]>([]);
   const [review, setReview] = useState<{ ready: ReviewRow[]; waiting: ReviewRow[] } | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [limit, setLimit] = useState(25);
+  const [limit, setLimit] = usePageSize('ledger', 25);
   const [page, setPage] = useState(1);
   const [range, setRange] = useState('30d');
   const [from, setFrom] = useState('');
@@ -200,6 +373,8 @@ export default function Ledger() {
   return (
     <>
       <Statement cards={cards} onImported={load} />
+
+      <TidyMerchants onDone={load} />
       {err && <p className="pad error">{err}</p>}
 
       {needsReview > 0 && (

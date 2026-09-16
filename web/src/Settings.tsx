@@ -242,6 +242,7 @@ function Platform() {
   const [data, setData] = useState<PlatformReport | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showDiag, setShowDiag] = useState(false);
 
   function load(d = days) {
     setBusy(true);
@@ -297,34 +298,49 @@ function Platform() {
             {data.from} → {data.to} · {data.script} · {data.days} days
           </p>
 
+          <h3 className="panel-h">Worker</h3>
           {data.worker.error ? (
-            <p className="cap">Workers: {data.worker.error}</p>
+            <p className="cap">{data.worker.error}</p>
           ) : (
             <>
               <div className="stat-row">
                 <div className="stat">
                   <span className="stat-label">invocations</span>
                   <span className="stat-value">{data.worker.requests.toLocaleString()}</span>
+                  <span className="stat-sub">{data.worker.per_day.toLocaleString()} a day</span>
                 </div>
                 <div className="stat">
                   <span className="stat-label">errors</span>
                   <span className={`stat-value ${data.worker.errors > 0 ? 'bad-text' : ''}`}>
                     {data.worker.errors.toLocaleString()}
                   </span>
+                  <span className="stat-sub">{data.worker.error_percent.toFixed(2)}% of requests</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">CPU, typical</span>
+                  <span className="stat-value">
+                    {data.worker.cpu_median_ms === null ? '—' : `${data.worker.cpu_median_ms}ms`}
+                  </span>
+                  {/* The median is the request you actually get; p99 is the one
+                      in a hundred that is slowest, and is the only reason the
+                      old panel read 41ms for what was 41 microseconds. */}
+                  <span className="stat-sub">
+                    {data.worker.cpu_p99_ms === null ? 'median per invocation' : `p99 ${data.worker.cpu_p99_ms}ms`}
+                  </span>
                 </div>
                 <div className="stat">
                   <span className="stat-label">subrequests</span>
                   <span className="stat-value">{data.worker.subrequests.toLocaleString()}</span>
-                </div>
-                <div className="stat">
-                  <span className="stat-label">CPU p99</span>
-                  <span className="stat-value">{data.worker.cpu_p99_ms === null ? '—' : `${data.worker.cpu_p99_ms}ms`}</span>
+                  <span className="stat-sub">outbound calls it made</span>
                 </div>
               </div>
-              {data.worker.totals_only ? (
+              {data.worker.by_status.length > 0 && (
                 <p className="sub">
-                  Your account does not break these down by day, so only the totals are shown.
+                  By outcome: {data.worker.by_status.map((s) => `${s.status} ${s.requests.toLocaleString()}`).join(' · ')}
                 </p>
+              )}
+              {data.worker.totals_only ? (
+                <p className="sub">Your account does not break these down by day, so only the totals are shown.</p>
               ) : (
                 data.worker.days.length > 0 && (
                   <CountBars
@@ -337,28 +353,59 @@ function Platform() {
             </>
           )}
 
+          <h3 className="panel-h">D1 database</h3>
           {data.d1.error ? (
-            <p className="cap">D1: {data.d1.error}</p>
+            <p className="cap">{data.d1.error}</p>
           ) : (
             <>
               <div className="stat-row">
                 <div className="stat">
                   <span className="stat-label">rows read</span>
                   <span className="stat-value">{data.d1.rows_read.toLocaleString()}</span>
+                  <span className="stat-sub">
+                    {data.d1.rows_per_read === null ? '—' : `${data.d1.rows_per_read.toLocaleString()} per query`}
+                  </span>
                 </div>
                 <div className="stat">
                   <span className="stat-label">rows written</span>
                   <span className="stat-value">{data.d1.rows_written.toLocaleString()}</span>
+                  <span className="stat-sub">{data.d1.write_queries.toLocaleString()} write queries</span>
                 </div>
                 <div className="stat">
                   <span className="stat-label">queries</span>
-                  <span className="stat-value">{(data.d1.read_queries + data.d1.write_queries).toLocaleString()}</span>
+                  <span className="stat-value">
+                    {(data.d1.read_queries + data.d1.write_queries).toLocaleString()}
+                  </span>
+                  <span className="stat-sub">
+                    {data.d1.latency_avg_ms === null
+                      ? `${data.d1.read_queries.toLocaleString()} reads`
+                      : `${data.d1.latency_avg_ms}ms average`}
+                  </span>
                 </div>
                 <div className="stat">
                   <span className="stat-label">database</span>
                   <span className="stat-value">{data.d1.size_bytes === null ? '—' : bytes(data.d1.size_bytes)}</span>
+                  <span className="stat-sub">
+                    {data.d1.size_change_bytes === null
+                      ? 'current size'
+                      : `${data.d1.size_change_bytes >= 0 ? '+' : '−'}${bytes(Math.abs(data.d1.size_change_bytes))} this window`}
+                  </span>
                 </div>
               </div>
+              {(data.d1.latency_p90_ms !== null || data.d1.response_bytes > 0) && (
+                <p className="sub">
+                  {data.d1.latency_p90_ms !== null && <>Slowest 10% of batches take {data.d1.latency_p90_ms}ms. </>}
+                  {data.d1.response_bytes > 0 && <>{bytes(data.d1.response_bytes)} of query results returned.</>}
+                </p>
+              )}
+              {/* Rows read per query is the one number that says whether a query
+                  found its rows by index or walked the table to reach them. */}
+              {data.d1.rows_per_read !== null && data.d1.rows_per_read > 1000 && (
+                <p className="cap">
+                  {data.d1.rows_per_read.toLocaleString()} rows read per query — something is scanning a table rather
+                  than using an index. Worth finding before the free tier notices.
+                </p>
+              )}
               {data.d1.days.length > 0 && (
                 <CountBars
                   data={data.d1.days.map((d) => ({ date: d.date, value: d.rows_read, overlay: d.rows_written }))}
@@ -372,6 +419,7 @@ function Platform() {
           {/* The free tier is a DAILY allowance, so the busiest day is the one
               that decides whether it runs out — an average over a quiet week
               would hide the day that did. */}
+          <h3 className="panel-h">Against the free tier</h3>
           <ul className="allowances">
             <Allowance
               label="Worker invocations, busiest day"
@@ -406,14 +454,31 @@ function Platform() {
               unit="a day"
             />
           </ul>
+
           <div className="entry-foot">
             <button className="secondary" onClick={() => load()} disabled={busy}>
               {busy ? 'Refreshing…' : 'Refresh'}
             </button>
-            <span className="sub">
-              Cloudflare keeps about 30 days of this, and the most recent hours can lag.
-            </span>
+            <button className="secondary" onClick={() => setShowDiag((v) => !v)}>
+              {showDiag ? 'Hide what was asked' : 'What was asked'}
+            </button>
           </div>
+
+          {/* Which query shapes Cloudflare accepted. Fields and dimensions vary
+              by dataset and by plan, so the panel tries several — and when the
+              numbers look wrong, this is what says why. */}
+          {showDiag && (
+            <ul className="notes">
+              {data.attempts.map((a, i) => (
+                <li key={i}>
+                  <span className={a.ok ? 'ok-text' : 'bad-text'}>{a.ok ? '✓' : '✕'}</span> <code>{a.query}</code>
+                  {a.error && <> — {a.error}</>}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <p className="sub">Cloudflare keeps about 30 days of this, and the most recent hours can lag.</p>
         </>
       )}
     </section>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import Pager, { PageSize } from './Pager';
+import Pager, { PageSize, usePageSize } from './Pager';
 import {
   assignMerchantCode,
   fetchMccMatrix,
@@ -175,7 +175,7 @@ function MerchantLookupBox() {
 function MerchantScan() {
   const [rows, setRows] = useState<UnknownPage | null>(null);
   const [page, setPage] = useState(1);
-  const [per, setPer] = useState(10);
+  const [per, setPer] = usePageSize('mcc.unknown', 10);
   const [showIgnored, setShowIgnored] = useState(false);
   const [scan, setScan] = useState<MccScanResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -371,7 +371,7 @@ export default function Mcc() {
   const [filter, setFilter] = useState('all');
   const [category, setCategory] = useState('');
   const [page, setPage] = useState(1);
-  const [per, setPer] = useState(25);
+  const [per, setPer] = usePageSize('mcc.codes', 25);
   // 596 of the 923 codes are individual airlines and hotel chains. They are
   // real — a stay often posts as 3509 rather than 7011 — but they would bury
   // everything else, so they are opt-in.
@@ -441,6 +441,10 @@ export default function Mcc() {
           actually used
         </span>
       </section>
+
+      <MerchantLookupBox />
+
+      <MerchantScan />
 
       {s.excluded_spend_cents > 0 && (
         <section className="card">
@@ -576,10 +580,6 @@ export default function Mcc() {
           </div>
         )}
       </section>
-
-      <MerchantLookupBox />
-
-      <MerchantScan />
 
       <section className="card entry">
         <h2>Add an exclusion</h2>

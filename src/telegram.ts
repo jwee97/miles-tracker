@@ -791,7 +791,10 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           env,
           chatId,
           `*${r.merchant}* is now ${code}.` +
-            (r.updated ? ` ${r.updated} past purchase(s) updated.` : '')
+            (r.updated ? ` ${r.updated} past purchase(s) updated.` : '') +
+            (r.categorised
+              ? `\n${r.categorised} of them also took the code's category, *${r.category}* — anything you had categorised by hand was left alone.`
+              : '')
         );
       }
 
