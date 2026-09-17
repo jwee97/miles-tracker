@@ -6,6 +6,7 @@ import Home from './Home';
 import Onboarding from './features/onboarding/Onboarding';
 import Review from './Review';
 import RewardCheck from './features/rewards/RewardCheck';
+import TransferPlanner from './features/rewards/TransferPlanner';
 import Audit from './Audit';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
@@ -1873,6 +1874,7 @@ const MORE: [string, string][] = [
   ['use', 'Advisor'],
   ['setup', 'Setup'],
   ['rewardcheck', 'Rewards check'],
+  ['transfers', 'Transfers'],
   ['review', 'Review'],
   ['catalog', 'Catalogue'],
   ['other', 'Off-card'],
@@ -1894,6 +1896,7 @@ export default function App() {
     | 'review'
     | 'setup'
     | 'rewardcheck'
+    | 'transfers'
     | 'ledger'
     | 'other'
     | 'trends'
@@ -2076,6 +2079,8 @@ export default function App() {
       {tab === 'setup' && <Onboarding onGo={(t) => setTab(t as typeof tab)} />}
 
       {tab === 'rewardcheck' && <RewardCheck />}
+
+      {tab === 'transfers' && <TransferPlanner />}
 
       {tab === 'review' && <Review />}
 

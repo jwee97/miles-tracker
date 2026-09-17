@@ -656,6 +656,81 @@ export const fetchRewardCandidates = () => get<{ candidates: RewardCandidate[] }
 export const resolveRewardCandidate = (id: number, action: 'accept' | 'reject') =>
   post<{ ok: boolean; ledger_id?: number; applied?: string }>(`/api/rewards/candidates/${id}`, { action });
 
+/* --- transfers ------------------------------------------------------------ */
+
+export interface Programme {
+  key: string;
+  name: string;
+  kind: string;
+  unit: string;
+  expiry_months: number | null;
+}
+
+export interface PlanRoute {
+  from_program: string;
+  from_name: string;
+  route: string | null;
+  source_units: number;
+  destination_units: number;
+  bonus_units: number;
+  fee_cents: number;
+  stranded_units: number;
+  expiring_units_saved: number;
+  promotion: { title: string | null; bonus_pct: number | null; ends: string; registration_required: boolean } | null;
+  processing_days: { min: number | null; max: number | null };
+  reason: string;
+}
+
+export interface TransferPlanResult {
+  destination: { key: string; name: string; unit: string };
+  objective: string;
+  target_units: number | null;
+  resulting_units: number;
+  shortfall_units: number;
+  total_fees_cents: number;
+  routes: PlanRoute[];
+  expiring_points_saved: number;
+  assumptions: string[];
+  warnings: string[];
+  as_of: string;
+}
+
+export interface GoalProgress {
+  goal: { id: number; program_key: string; target_units: number; target_date: string | null; description: string | null; status: string };
+  program_name: string;
+  unit: string;
+  held_units: number;
+  convertible_units: number;
+  total_units: number;
+  shortfall_units: number;
+  percent: number;
+  days_left: number | null;
+  at_risk: boolean;
+}
+
+export const fetchProgrammes = () => get<{ programmes: Programme[] }>('/api/rewards/programmes');
+
+export const optimiseTransfer = (body: {
+  destination: string;
+  target_units?: number | null;
+  target_date?: string | null;
+  objective?: string;
+  include_promotions?: boolean;
+}) => post<TransferPlanResult>('/api/rewards/transfers/optimise', body);
+
+export const fetchGoals = () => get<{ goals: GoalProgress[]; as_of: string }>('/api/rewards/goals');
+
+export const saveRewardGoal = (body: {
+  id?: number;
+  program_key: string;
+  target_units: number;
+  target_date?: string;
+  description?: string;
+}) => post<{ ok: true; goal: GoalProgress }>('/api/rewards/goals', body);
+
+export const setGoalStatus = (id: number, status: 'active' | 'met' | 'abandoned') =>
+  post<{ ok: true }>(`/api/rewards/goals/${id}`, { status });
+
 /* --- onboarding ---------------------------------------------------------- */
 
 export interface OnboardingField {

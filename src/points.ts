@@ -24,6 +24,12 @@ export interface Conversion {
   verified_at: string | null;
   source_url: string | null;
   note: string | null;
+  /** When this ratio applied. Null on either side means open-ended. */
+  effective_from?: string | null;
+  effective_until?: string | null;
+  /** How long the bank takes, when it says. */
+  processing_days_min?: number | null;
+  processing_days_max?: number | null;
 }
 
 export interface TransferPlan {

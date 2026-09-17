@@ -1730,6 +1730,42 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('and an unknown transaction too', (await authed('/api/rewards/mcc/99999', { mcc: '5732' })).status === 400, '');
 }
 
+// --- what to do with the points ------------------------------------------------
+{
+  const progs = (await (await authed('/api/rewards/programmes')).json()) as any;
+  check('programmes are listable', Array.isArray(progs.programmes), JSON.stringify(Object.keys(progs)));
+
+  const routes = (await (await authed('/api/rewards/transfers/routes')).json()) as any;
+  check('so are the routes in force today', Array.isArray(routes.routes), JSON.stringify(Object.keys(routes)));
+  check('each with its promotions kept separate', routes.routes.every((r: any) => Array.isArray(r.promotions)), '');
+
+  const dest = progs.programmes.find((p: any) => p.kind === 'airline')?.key;
+  if (dest) {
+    const res = await authed('/api/rewards/transfers/optimise', { destination: dest });
+    const plan = (await res.json()) as any;
+    check('a plan can be asked for', res.status === 200, String(res.status));
+    check('and says what it would produce', typeof plan.resulting_units === 'number', JSON.stringify(Object.keys(plan)));
+    check('with the fees', typeof plan.total_fees_cents === 'number', '');
+    check('what it assumed', Array.isArray(plan.assumptions), '');
+    check('and that the app transfers nothing', plan.assumptions.some((a: string) => a.includes('carry out')), JSON.stringify(plan.assumptions));
+
+    const goal = await authed('/api/rewards/goals', { program_key: dest, target_units: 85000, target_date: '2026-12-15', description: 'test' });
+    const g = (await goal.json()) as any;
+    check('a goal can be saved', g.ok === true, JSON.stringify(g).slice(0, 200));
+    check('and comes back with its progress', typeof g.goal.percent === 'number', JSON.stringify(g.goal));
+
+    const list = (await (await authed('/api/rewards/goals')).json()) as any;
+    check('goals are listed with progress', list.goals.length >= 1, String(list.goals?.length));
+
+    check('a goal can be set aside', (await authed(`/api/rewards/goals/${g.goal.goal.id}`, { status: 'abandoned' })).status === 200, '');
+    check('a nonsense status is refused', (await authed(`/api/rewards/goals/${g.goal.goal.id}`, { status: 'whatever' })).status === 400, '');
+  }
+
+  check('a plan needs a destination', (await authed('/api/rewards/transfers/optimise', {})).status === 400, '');
+  check('an unknown programme is a 404', (await authed('/api/rewards/transfers/optimise', { destination: 'nope' })).status === 404, '');
+  check('a goal needs a target', (await authed('/api/rewards/goals', { program_key: 'krisflyer' })).status === 400, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

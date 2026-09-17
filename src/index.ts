@@ -30,6 +30,9 @@ import { actionCentre } from './actions';
 import { actualTotals, entriesIn, recordActual, recordManualTotal } from './rewards/ledger';
 import { expectedTotals } from './rewards/expected';
 import { applyActualMcc, reconcileAll, reconcileRewardPeriod } from './rewards/reconcile';
+import { optimiseTransfer } from './transfers/optimiser';
+import { promotionsFor } from './transfers/routes';
+import { goalProgress, listGoals, reservedFor, saveGoal, setGoalStatus } from './transfers/goals';
 import { extractRewards, pendingCandidates, saveCandidates } from './rewards/extract';
 import { onboardingView, writeState } from './onboarding/state';
 import { searchProducts } from './onboarding/search';
@@ -1052,6 +1055,115 @@ export default {
           const b = (await req.json().catch(() => ({}))) as { mcc?: string };
           const r = await applyActualMcc(env, id, String(b.mcc ?? '').trim());
           return json(r, r.ok ? 200 : 400);
+        }
+
+        // --- transfers (P2 phase 4) -----------------------------------------
+        // Plans only. Nothing here logs into a bank, moves points or redeems
+        // anything; the app produces the instruction and a person carries it out.
+        if (url.pathname === '/api/rewards/programmes') {
+          const { results } = await env.DB.prepare(
+            `SELECT key, name, kind, unit, expiry_months, programme_type, expiry_policy, status
+               FROM programs WHERE COALESCE(status, 'active') = 'active' ORDER BY kind, name`
+          ).all<any>();
+          return json({ programmes: results ?? [] });
+        }
+
+        if (url.pathname === '/api/rewards/transfers/routes') {
+          const on = today(env);
+          const { results } = await env.DB.prepare(
+            `SELECT c.*, f.name AS from_name, t.name AS to_name
+               FROM conversions c
+               JOIN programs f ON f.key = c.from_program
+               JOIN programs t ON t.key = c.to_program
+              WHERE c.active = 1
+                AND (c.effective_from IS NULL OR c.effective_from <= ?)
+                AND (c.effective_until IS NULL OR c.effective_until >= ?)
+              ORDER BY f.name, t.name`
+          )
+            .bind(on, on)
+            .all<any>();
+
+          const routes = [];
+          for (const r of results ?? []) {
+            routes.push({ ...r, promotions: await promotionsFor(env, r.id, on) });
+          }
+          return json({ routes, as_of: on });
+        }
+
+        if (url.pathname === '/api/rewards/transfers/optimise' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as {
+            destination?: string;
+            target_units?: number;
+            target_date?: string;
+            objective?: string;
+            include_promotions?: boolean;
+            goal_id?: number;
+          };
+          if (!b.destination) return json({ error: 'a destination programme is required' }, 400);
+
+          const OBJECTIVES = [
+            'maximize_destination_units',
+            'minimize_fees',
+            'minimize_expiry_loss',
+            'reach_target',
+            'balanced',
+          ];
+          const objective = OBJECTIVES.includes(String(b.objective)) ? (b.objective as any) : undefined;
+
+          try {
+            return json(
+              await optimiseTransfer(env, {
+                destination: String(b.destination),
+                target_units: typeof b.target_units === 'number' ? b.target_units : null,
+                target_date: b.target_date ? String(b.target_date) : null,
+                objective,
+                include_promotions: b.include_promotions,
+                // Points promised to another goal are not available to this one.
+                reserved: await reservedFor(env, b.goal_id),
+              })
+            );
+          } catch (e) {
+            return json({ error: (e as Error).message }, 404);
+          }
+        }
+
+        if (url.pathname === '/api/rewards/goals' && req.method === 'GET') {
+          const goals = await listGoals(env, url.searchParams.get('all') === '1');
+          const out = [];
+          for (const g of goals) out.push(await goalProgress(env, g));
+          return json({ goals: out, as_of: today(env) });
+        }
+
+        if (url.pathname === '/api/rewards/goals' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const key = String(b.program_key ?? '').trim();
+          const units = Number(b.target_units);
+          if (!key || !Number.isFinite(units) || units <= 0) {
+            return json({ error: 'a programme and a target are required' }, 400);
+          }
+          const exists = await env.DB.prepare(`SELECT key FROM programs WHERE key = ?`).bind(key).first();
+          if (!exists) return json({ error: 'no such programme' }, 404);
+
+          const when = b.target_date ? parseDateToken(String(b.target_date), env) : null;
+          if (b.target_date && !when) return json({ error: 'bad date' }, 400);
+
+          const goal = await saveGoal(env, {
+            id: typeof b.id === 'number' ? b.id : undefined,
+            program_key: key,
+            target_units: Math.round(units),
+            target_date: when,
+            description: b.description ? String(b.description) : null,
+          });
+          return json({ ok: true, goal: await goalProgress(env, goal) });
+        }
+
+        if (url.pathname.match(/^\/api\/rewards\/goals\/\d+$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          const b = (await req.json().catch(() => ({}))) as { status?: string };
+          const status = String(b.status ?? '');
+          if (!['active', 'met', 'abandoned'].includes(status)) return json({ error: 'bad status' }, 400);
+          await setGoalStatus(env, id, status as any);
+          return json({ ok: true });
         }
 
         // --- onboarding (P1 phase 1) ---------------------------------------

@@ -355,7 +355,10 @@ CREATE TABLE IF NOT EXISTS programs (
   name          TEXT NOT NULL,
   kind          TEXT NOT NULL,                 -- bank | airline
   unit          TEXT NOT NULL DEFAULT 'points',
-  expiry_months INTEGER                        -- null = does not expire
+  expiry_months INTEGER,                       -- null = does not expire
+  programme_type TEXT,                         -- bank | airline | hotel
+  expiry_policy TEXT,                          -- in words, for the wallet screen
+  status        TEXT NOT NULL DEFAULT 'active' -- active | closed
 );
 
 -- Points expire in batches, not all at once, so a single balance number hides
@@ -388,8 +391,17 @@ CREATE TABLE IF NOT EXISTS conversions (
   min_block       INTEGER NOT NULL,
   block_increment INTEGER NOT NULL,
   route           TEXT,                        -- 'direct', 'Kris+', ...
-  bonus_pct       REAL    NOT NULL DEFAULT 0,  -- promotional uplift on miles out
+  -- Legacy promotional fields, kept so older rows still read correctly. New
+  -- bonuses go in transfer_promotions: a temporary uplift written into the
+  -- route would leave the app believing it for ever.
+  bonus_pct       REAL    NOT NULL DEFAULT 0,
   bonus_until     TEXT,
+  -- A route is versioned: banks change ratios, and a transfer made in June has
+  -- to stay explicable in December.
+  effective_from  TEXT,
+  effective_until TEXT,
+  processing_days_min INTEGER,
+  processing_days_max INTEGER,
   verified_at     TEXT,                        -- null = never checked against the bank
   source_url      TEXT,
   note            TEXT,
@@ -651,3 +663,46 @@ CREATE TABLE IF NOT EXISTS statement_reward_candidates (
   created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS candidate_card ON statement_reward_candidates(card_id, status);
+
+-- ===========================================================================
+-- Transfers (P2 phase 4)
+--
+-- A route's ratio is what the bank permanently offers. A 25% bonus for three
+-- weeks in September is not that, and writing it into the ratio would leave the
+-- app believing 40,000 points became 50,000 miles for ever. So promotions are
+-- separate rows with their own dates, and a route is versioned like a reward
+-- rule: what it paid, and when.
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS transfer_promotions (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversion_id         INTEGER NOT NULL REFERENCES conversions(id) ON DELETE CASCADE,
+  bonus_pct             REAL,
+  bonus_flat_units      INTEGER,
+  min_transfer_units    INTEGER,
+  start_at              TEXT    NOT NULL,
+  end_at                TEXT    NOT NULL,
+  -- Many bonuses pay nothing unless you registered first, so the optimiser may
+  -- not assume you are in one.
+  registration_required INTEGER NOT NULL DEFAULT 0,
+  registered            INTEGER NOT NULL DEFAULT 0,
+  title                 TEXT,
+  source_url            TEXT,
+  verified_at           TEXT,
+  promotion_id          INTEGER,                 -- the promotion record it came from
+  created_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS promo_route ON transfer_promotions(conversion_id, start_at, end_at);
+
+-- What the points are for. A target changes the answer: the cheapest way to
+-- move points is not the cheapest way to reach 85,000 of them.
+CREATE TABLE IF NOT EXISTS reward_goals (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  program_key    TEXT    NOT NULL REFERENCES programs(key) ON DELETE CASCADE,
+  target_units   INTEGER NOT NULL,
+  target_date    TEXT,
+  description    TEXT,
+  status         TEXT    NOT NULL DEFAULT 'active',  -- active | met | abandoned
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS goal_active ON reward_goals(status, program_key);

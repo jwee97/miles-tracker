@@ -2130,6 +2130,92 @@ A shortfall also appears in the Action Centre — below the deadlines, above the
 housekeeping. Nothing is lost by looking tomorrow, but it is real money that is
 already earned and quietly missing.
 
+## What to do with the points
+
+**More → Transfers.** Not a list of balances — an answer to *how do I turn what
+I have into what I need?*
+
+The problem is discrete, and the screen says so. Transfers move in whole blocks,
+anything below a block is stranded, the fee is charged once per transfer rather
+than per point, and a promotion may or may not apply. A plan built by
+multiplying a ratio is confidently wrong, and wrong here means a transfer nobody
+can undo.
+
+```
+62,500 miles   for $27.25 in fees
+
+1. Transfer 25,000 DBS Points → 62,500 miles
+   12,000 of these expire from 2026-11-01; a bonus adds 12,500 miles;
+   $27.25 fee over 62,500 miles; 1,000 left behind — they do not fill a block
+   25% transfer bonus — ends 2026-09-30
+   Takes up to 7 days.
+
+12,000 points that would have expired are used.
+```
+
+**Nothing is transferred by this app.** It writes the instruction; you carry it
+out at the bank. That sentence appears on every plan, including the empty ones.
+
+### What to optimise for
+
+```
+maximize_destination_units   the most miles available
+reach_target                 85,000 by December, and no more than needed
+minimize_expiry_loss         move what is about to lapse first
+minimize_fees                cheapest per mile
+balanced
+```
+
+With a target, the plan takes the **smallest whole number of blocks** that gets
+there. Moving more strands points in a programme where they may be worth more.
+
+Expiry-first will accept a worse rate: points that lapse are worth nothing at
+all, which beats a slightly better ratio on points that survive.
+
+### Bonuses sit on top of routes, never inside them
+
+A route's ratio is what the bank permanently offers. A 25% bonus running for
+three weeks in September is not that — and an earlier version of this app wrote
+such bonuses into the ratio, which left it believing 40,000 points became 50,000
+miles for ever.
+
+So promotions are separate dated rows, and `/migrate` moves any legacy ones off
+the routes they were baked into. A bonus with no recorded end date is treated as
+ending today rather than never: an uncapped promotion is the one assumption that
+would keep inflating every plan for years.
+
+**A bonus that needs registering is shown but not counted** unless you have
+registered. Planning a transfer on a bonus you never signed up for produces a
+number the bank will not honour, which is worse than no advice.
+
+Routes are versioned too (`effective_from` / `effective_until`), so a transfer
+made in June stays explicable in December, and a route the bank has withdrawn
+drops out of today's plans without vanishing from yesterday's.
+
+### Goals
+
+```
+85,000 miles — KrisFlyer   Japan business class
+54,200 held · 40,000 could be transferred in · reachable today · 88 days left
+```
+
+Held and convertible are reported separately, because the second is a plan and
+not a promise. Points a goal needs are **reserved** against other goals: a
+source counted twice produces two plans that each look achievable and cannot
+both happen.
+
+A route slower than the target date is flagged rather than silently counted —
+a transfer that lands after the trip is not a transfer that worked.
+
+```
+GET  /api/rewards/programmes
+GET  /api/rewards/transfers/routes        with their promotions kept separate
+POST /api/rewards/transfers/optimise      { destination, target_units?, objective? }
+GET  /api/rewards/goals                   with progress
+POST /api/rewards/goals
+POST /api/rewards/goals/:id               { status }
+```
+
 ## Verify end to end
 
 ```

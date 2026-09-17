@@ -330,6 +330,7 @@ let breakTransactions = false;
 let repriced: any = null;
 let onboardingStatus = 'completed';
 let appliedMcc: any = null;
+let optimised: any = null;
 let added: any[] = [];
 
 /** innerText reflects CSS casing, so every text assertion compares lowercased. */
@@ -427,6 +428,63 @@ async function stub(page: Page) {
         body: JSON.parse(route.request().postData() ?? '{}'),
       };
       return send({ ok: true, applied: 'Kopitiam 88 Outlet 3 is 5814 from now on' });
+    }
+    if (u.pathname === '/api/rewards/programmes')
+      return send({
+        programmes: [
+          { key: 'kf', name: 'KrisFlyer', kind: 'airline', unit: 'miles', expiry_months: 36 },
+          { key: 'dbs', name: 'DBS Points', kind: 'bank', unit: 'points', expiry_months: null },
+        ],
+      });
+    if (u.pathname === '/api/rewards/goals' && route.request().method() === 'GET')
+      return send({
+        as_of: '2026-09-18',
+        goals: [
+          {
+            goal: { id: 1, program_key: 'kf', target_units: 85000, target_date: '2026-12-15', description: 'Japan business class', status: 'active' },
+            program_name: 'KrisFlyer',
+            unit: 'miles',
+            held_units: 54200,
+            convertible_units: 40000,
+            total_units: 94200,
+            shortfall_units: 0,
+            percent: 100,
+            days_left: 88,
+            at_risk: false,
+          },
+        ],
+      });
+    if (u.pathname === '/api/rewards/goals') return send({ ok: true, goal: {} });
+    if (u.pathname === '/api/rewards/transfers/optimise') {
+      optimised = JSON.parse(route.request().postData() ?? '{}');
+      return send({
+        destination: { key: 'kf', name: 'KrisFlyer', unit: 'miles' },
+        objective: optimised.objective,
+        target_units: optimised.target_units ?? null,
+        resulting_units: 62500,
+        shortfall_units: 0,
+        total_fees_cents: 2725,
+        expiring_points_saved: 12000,
+        routes: [
+          {
+            from_program: 'dbs',
+            from_name: 'DBS Points',
+            route: 'direct',
+            source_units: 25000,
+            destination_units: 62500,
+            bonus_units: 12500,
+            fee_cents: 2725,
+            stranded_units: 1000,
+            expiring_units_saved: 12000,
+            promotion: { title: '25% transfer bonus', bonus_pct: 25, ends: '2026-09-30', registration_required: false },
+            processing_days: { min: null, max: 7 },
+            reason: '12,000 of these expire from 2026-11-01; a bonus adds 12,500 miles; $27.25 fee over 62,500 miles; 1,000 left behind — they do not fill a block',
+          },
+        ],
+        assumptions: ['A transfer bonus is counted; it has to be used before the date shown.', 'Nothing is transferred by this app — the plan is for you to carry out.'],
+        warnings: [],
+        as_of: '2026-09-18',
+      });
     }
     if (u.pathname === '/api/rewards/reconciliation')
       return send({
@@ -752,6 +810,36 @@ async function main() {
       'and says what it taught the app, not just that it worked',
       (await page.locator('.ok-text').innerText()).includes('from now on')
     );
+
+    // --- what to do with the points --------------------------------------
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Transfers' }).click();
+    await page.locator('.card', { hasText: 'Plan a transfer' }).first().waitFor();
+    check(
+      'the screen says a transfer is discrete, not a ratio',
+      says(await page.locator('main').innerText(), 'whole blocks'),
+      (await page.locator('main').innerText()).slice(0, 300)
+    );
+
+    await page.getByRole('button', { name: 'Plan a transfer' }).last().click();
+    await page.locator('.plan').waitFor();
+    const planText = await page.locator('.plan').innerText();
+    check('the plan is requested', optimised !== null, JSON.stringify(optimised));
+    check('with the total up front', planText.includes('62,500'), planText.slice(0, 200));
+    check('and what it costs', says(planText, '27.25'), planText.slice(0, 300));
+    check('the transfer is spelled out', says(planText, 'Transfer') && planText.includes('25,000'), planText.slice(0, 400));
+    check('points left behind are admitted', says(planText, 'left behind'), planText);
+    check('the bonus is named with its deadline', says(planText, '25% transfer bonus') && says(planText, '2026-09-30'), planText);
+    check('expiring points are called out', says(planText, 'would have expired'), planText);
+    check(
+      'and the app never claims it will transfer anything',
+      says(planText, 'for you to carry out'),
+      planText
+    );
+
+    const goalsText = await page.locator('.card', { hasText: 'What the points are for' }).innerText();
+    check('goals show what is held against what could be moved', says(goalsText, '54,200 held'), goalsText.slice(0, 300));
+    check('and whether the target is reachable', says(goalsText, 'reachable today'), goalsText.slice(0, 300));
 
     // --- did the bank credit what it owed? -------------------------------
     await page.getByRole('button', { name: /^More/ }).click();

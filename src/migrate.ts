@@ -5,6 +5,7 @@ import { migrateCardsToProducts, type ProductMigrationReport } from './catalog/m
 import { seedCardProducts, type SeedReport } from './catalog/seed-products';
 import { seedAliases } from './onboarding/search';
 import { seedOnboardingFields } from './onboarding/questions';
+import { migrateLegacyBonuses } from './transfers/routes';
 import { today } from './spend';
 import type { Env } from './types';
 
@@ -72,6 +73,18 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
     column: 'reward_rounding_json',
     ddl: 'ALTER TABLE rule_sets ADD COLUMN reward_rounding_json TEXT',
   },
+  // --- transfers (P2 phase 4) ---
+  // A route is versioned like a reward rule: banks change ratios, and a
+  // transfer made in June must still be explicable in December.
+  { table: 'conversions', column: 'effective_from', ddl: "ALTER TABLE conversions ADD COLUMN effective_from TEXT" },
+  { table: 'conversions', column: 'effective_until', ddl: 'ALTER TABLE conversions ADD COLUMN effective_until TEXT' },
+  // How long the bank takes. A target date is not met by a transfer that lands
+  // after it, however good the ratio.
+  { table: 'conversions', column: 'processing_days_min', ddl: 'ALTER TABLE conversions ADD COLUMN processing_days_min INTEGER' },
+  { table: 'conversions', column: 'processing_days_max', ddl: 'ALTER TABLE conversions ADD COLUMN processing_days_max INTEGER' },
+  { table: 'programs', column: 'programme_type', ddl: "ALTER TABLE programs ADD COLUMN programme_type TEXT" },
+  { table: 'programs', column: 'expiry_policy', ddl: 'ALTER TABLE programs ADD COLUMN expiry_policy TEXT' },
+  { table: 'programs', column: 'status', ddl: "ALTER TABLE programs ADD COLUMN status TEXT NOT NULL DEFAULT 'active'" },
   { table: 'conversions', column: 'verified_at', ddl: 'ALTER TABLE conversions ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
   { table: 'conversions', column: 'note', ddl: 'ALTER TABLE conversions ADD COLUMN note TEXT' },
@@ -278,6 +291,7 @@ export async function runSeed(env: Env): Promise<{
   catalog?: SeedReport;
   aliases?: { added: number };
   onboarding?: { declared: number };
+  bonuses?: { moved: number };
 }> {
   const errors: string[] = [];
   let applied = 0;
@@ -310,5 +324,14 @@ export async function runSeed(env: Env): Promise<{
     errors.push(`seeding card aliases — ${(e as Error).message}`);
   }
 
-  return { applied, errors, catalog, aliases, onboarding };
+  // A promotional uplift written into a route's ratio would be believed for
+  // ever. Move any legacy ones onto their own dated rows.
+  let bonuses: { moved: number } | undefined;
+  try {
+    bonuses = await migrateLegacyBonuses(env);
+  } catch (e) {
+    errors.push(`moving transfer bonuses off their routes — ${(e as Error).message}`);
+  }
+
+  return { applied, errors, catalog, aliases, onboarding, bonuses };
 }

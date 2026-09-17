@@ -951,3 +951,13 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .recon-detail h4 { margin: 12px 0 0; font-size: 13px; color: var(--dim); }
 .recon-detail .score-table td { padding: 4px 8px 4px 0; }
 .recon-off td { color: var(--text); }
+
+/* --- the transfer planner ------------------------------------------------ */
+.plan { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.plan-headline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.plan-total { font-size: 26px; font-weight: 700; color: var(--ok); }
+.plan-routes { margin: 12px 0 0; padding-left: 20px; }
+.plan-routes li { padding: 8px 0; }
+.plan-move { margin: 0; font-size: 14px; }
+.plan-assumptions { list-style: none; padding: 0; margin: 10px 0 0; font-size: 12px; }
+.plan-assumptions li { padding: 2px 0 2px 12px; border-left: 2px solid var(--line); }
