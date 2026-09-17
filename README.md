@@ -119,6 +119,24 @@ and a rate written from memory is worse than a blank, because a blank asks you
 and a wrong rate answers you. Read a rewards page onto a card you hold and
 those rates become that product's current version, shared by every card on it.
 
+## Did the bank credit what it owed?
+
+Expectations and observations are two ledgers, and reconciliation never makes
+them agree — it compares them. Per component, so the answer is "the base matches
+and the bonus is short by 1,500" rather than "reward mismatch".
+
+Every explanation is a claim about evidence, and the first candidate is usually
+the app's own fault: rates nobody has verified, or a purchase whose merchant
+code was a guess. Nothing is ever phrased as an accusation.
+
+If the statement shows a different merchant code, one button takes it, teaches
+the merchant, and re-prices the transaction — at which point the discrepancy
+usually disappears, because the expectation was what was wrong.
+
+A welcome bonus with two months to run is pending, not missing. Reporting it as
+a shortfall would make the check useless for the rewards people most want
+checked.
+
 ## Re-pricing the past
 
 Correct a rate, confirm a merchant code, fix a category — and every purchase

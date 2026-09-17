@@ -29,6 +29,7 @@ import { evaluate, lookupMerchant, recommend, type Channel, type Objective } fro
 import { actionCentre } from './actions';
 import { actualTotals, entriesIn, recordActual, recordManualTotal } from './rewards/ledger';
 import { expectedTotals } from './rewards/expected';
+import { applyActualMcc, reconcileAll, reconcileRewardPeriod } from './rewards/reconcile';
 import { extractRewards, pendingCandidates, saveCandidates } from './rewards/extract';
 import { onboardingView, writeState } from './onboarding/state';
 import { searchProducts } from './onboarding/search';
@@ -1005,6 +1006,52 @@ export default {
           });
           await env.DB.prepare(`UPDATE statement_reward_candidates SET status = 'accepted' WHERE id = ?`).bind(id).run();
           return json({ ok: r.ok, ledger_id: r.id, duplicate_of: r.duplicate_of ?? null });
+        }
+
+        // --- did the bank credit what it owed? (P1 phase 3) -----------------
+        // Never makes the two ledgers agree. It compares them and offers the
+        // likely reasons, each a claim about evidence in the data.
+        if (url.pathname === '/api/rewards/reconciliation') {
+          const periods = Math.min(6, Math.max(1, parseInt(url.searchParams.get('periods') ?? '1', 10) || 1));
+          return json({ results: await reconcileAll(env, periods), as_of: today(env) });
+        }
+
+        if (url.pathname === '/api/rewards/reconcile' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as {
+            nickname?: string;
+            from?: string;
+            to?: string;
+            tolerance?: { absolute?: number; percentage?: number; per_transaction?: number };
+          };
+          const card = await env.DB.prepare(`SELECT id, statement_day FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(String(b.nickname ?? '').trim())
+            .first<{ id: number; statement_day: number }>();
+          if (!card) return json({ error: 'no such card' }, 404);
+
+          const from = b.from ? parseDateToken(String(b.from), env) : null;
+          const to = b.to ? parseDateToken(String(b.to), env) : null;
+          if ((b.from && !from) || (b.to && !to)) return json({ error: 'bad date' }, 400);
+
+          const cycle = cycleContaining(from ?? today(env), card.statement_day);
+          return json(
+            await reconcileRewardPeriod(env, {
+              card_id: card.id,
+              start: from ?? cycle.start,
+              end: to ?? cycle.end,
+              tolerance: b.tolerance,
+            })
+          );
+        }
+
+        // The bank told us a code we had guessed wrong. This is the most
+        // valuable thing a statement gives back: it corrects the transaction,
+        // teaches the merchant, and re-prices — which usually makes the
+        // discrepancy disappear, because the expectation was what was wrong.
+        if (url.pathname.match(/^\/api\/rewards\/mcc\/\d+$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          const b = (await req.json().catch(() => ({}))) as { mcc?: string };
+          const r = await applyActualMcc(env, id, String(b.mcc ?? '').trim());
+          return json(r, r.ok ? 200 : 400);
         }
 
         // --- onboarding (P1 phase 1) ---------------------------------------

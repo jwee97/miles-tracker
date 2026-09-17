@@ -2048,6 +2048,88 @@ An expectation carries `available_from` and `expected_by`, and reads as
 missing on day two — reporting it as a shortfall would make the whole check
 useless for exactly the rewards people most want checked.
 
+## Did the bank credit what it owed?
+
+**More → Rewards check.** What the rules say each card owed, against what the
+bank actually credited.
+
+The engine never makes the two ledgers agree. It compares them, and every
+explanation it offers is a claim about evidence in the data — the phrase is
+always *potential discrepancy*, never "the bank made a mistake".
+
+```
+✓ Rewards Card            Matches
+⚠ Woman's World Card      Possible shortfall        medium confidence
+
+  base              900      900       —
+  category bonus  7,500    6,000   -1,500
+
+  Not due yet: 20,000 miles by 2026-11-30.
+```
+
+The per-component comparison is the point. "Reward mismatch" is useless; "the
+base matches and the bonus is short by 1,500" tells you where to look.
+
+### What might explain it
+
+In order, because the first candidate is usually the app's own fault:
+
+| cause | what it means |
+|---|---|
+| `rule_data_stale` | this card's rates were never checked against a bank document — the *expectation* may be wrong |
+| `different_mcc` | a purchase has no confirmed code, so its bonus was expected on a guess |
+| `excluded_mcc` | the code this card excludes, naming it |
+| `posting_date_shift` | a purchase at the edge of the cycle may have been credited to the next statement |
+| `refund` | money back in the period; banks claw back the reward |
+| `bonus_cap_reached` | spend past the cap earns the base rate |
+| `statement_extraction_uncertain` | the bank credited one lump, so the parts cannot be checked separately |
+| `unknown` | nothing in the recorded transactions accounts for it |
+
+Only a transaction whose bonus could plausibly account for the gap is named — a
+$4 coffee cannot explain 1,500 missing points.
+
+### The feedback loop
+
+If the statement shows a merchant code different from the one the app guessed,
+one button fixes everything downstream: the transaction takes the real code, the
+**merchant learns it** as confirmed evidence, and the transaction is re-priced.
+The discrepancy usually disappears — because the expectation was what was wrong.
+
+```
+Re-priced: 1,500 → 150. The merchant will use that code from now on.
+```
+
+### Not late, merely not due
+
+A welcome bonus with two months to run is set aside as `pending`, not counted as
+a shortfall. Reporting it as missing would make the whole check useless for
+exactly the rewards people most want checked.
+
+### Statuses, and what they mean
+
+```
+matched             the parts agree
+within_tolerance    they differ by less than rounding can explain
+undercredited       less arrived than was owed
+overcredited        more did — a campaign the app does not know about
+incomplete          nothing has been credited for this period yet
+needs_review        short on one component and over on another
+```
+
+Confidence is about the comparison, not the bank: a lump-sum credit, an
+uncertain extraction, or card rules nobody has verified all mean the difference
+might be the app's fault.
+
+```
+GET  /api/rewards/reconciliation?periods=
+POST /api/rewards/reconcile        { nickname, from?, to?, tolerance? }
+POST /api/rewards/mcc/:id          { mcc }   the statement's code, applied
+```
+
+A shortfall also appears in the Action Centre — below the deadlines, above the
+housekeeping. Nothing is lost by looking tomorrow, but it is real money that is
+already earned and quietly missing.
+
 ## Verify end to end
 
 ```

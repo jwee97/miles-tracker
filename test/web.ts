@@ -329,6 +329,7 @@ let slowActions = false;
 let breakTransactions = false;
 let repriced: any = null;
 let onboardingStatus = 'completed';
+let appliedMcc: any = null;
 let added: any[] = [];
 
 /** innerText reflects CSS casing, so every text assertion compares lowercased. */
@@ -427,6 +428,57 @@ async function stub(page: Page) {
       };
       return send({ ok: true, applied: 'Kopitiam 88 Outlet 3 is 5814 from now on' });
     }
+    if (u.pathname === '/api/rewards/reconciliation')
+      return send({
+        as_of: '2026-09-18',
+        results: [
+          {
+            scope: { type: 'statement', start: '2026-08-01', end: '2026-08-31', card_id: 1 },
+            card: { id: 1, nickname: 'wwmc', product: "Woman's World Card" },
+            expected: [],
+            actual: [],
+            differences: [
+              { component: 'base', unit: 'points', expected: 900, actual: 900, difference: 0, within_tolerance: true },
+              { component: 'category_bonus', unit: 'points', expected: 7500, actual: 6000, difference: -1500, within_tolerance: false },
+            ],
+            status: 'undercredited',
+            explanations: [
+              {
+                cause: 'different_mcc',
+                text: 'ABC Electronics of $375.00 has no confirmed merchant code, so its bonus was expected on a guess.',
+                transaction_ids: [42],
+                amount: 1500,
+              },
+            ],
+            confidence: 'medium',
+            pending: [{ component: 'minimum_spend_bonus', amount: 20000, unit: 'miles', expected_by: '2026-11-30' }],
+            as_of: '2026-09-18',
+          },
+          {
+            scope: { type: 'statement', start: '2026-08-01', end: '2026-08-31', card_id: 2 },
+            card: { id: 2, nickname: 'crw', product: 'Rewards Card' },
+            expected: [],
+            actual: [],
+            differences: [{ component: 'base', unit: 'points', expected: 400, actual: 400, difference: 0, within_tolerance: true }],
+            status: 'matched',
+            explanations: [],
+            confidence: 'high',
+            pending: [],
+            as_of: '2026-09-18',
+          },
+        ],
+      });
+    if (u.pathname === '/api/rewards/candidates')
+      return send({
+        candidates: [
+          { id: 1, card_id: 1, entry_type: 'bonus_reward', amount: 1500, unit: 'points', description: 'Bonus points earned 1,500', confidence: 'high', raw_line: 'Bonus points earned 1,500' },
+        ],
+      });
+    if (u.pathname.startsWith('/api/rewards/mcc/')) {
+      appliedMcc = { id: Number(u.pathname.split('/')[4]), body: JSON.parse(route.request().postData() ?? '{}') };
+      return send({ ok: true, correction: { previous_mcc: null, reward_before: 1500, reward_after: 150 } });
+    }
+    if (u.pathname.startsWith('/api/rewards/candidates/')) return send({ ok: true, applied: 'accepted' });
     if (u.pathname === '/api/onboarding')
       return send({
         state: { status: onboardingStatus, cards_completed: 2, statements_offered: 0, wallet_offered: 0, completed_at: null },
@@ -700,6 +752,42 @@ async function main() {
       'and says what it taught the app, not just that it worked',
       (await page.locator('.ok-text').innerText()).includes('from now on')
     );
+
+    // --- did the bank credit what it owed? -------------------------------
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Rewards check' }).click();
+    await page.locator('.recon-list').waitFor();
+
+    const check1 = await page.locator('main').innerText();
+    check('a card that matches says so', says(check1, 'Matches'), check1.slice(0, 300));
+    check('and one that does not is a possible shortfall', says(check1, 'Possible shortfall'), check1.slice(0, 300));
+    check(
+      'never an accusation',
+      !/bank (made|got) (a mistake|it wrong)/i.test(check1) && !says(check1, 'the bank owes'),
+      check1.slice(0, 300)
+    );
+    check('with confidence shown when it is not high', says(check1, 'medium confidence'), check1.slice(0, 400));
+
+    await page.locator('.recon').first().getByRole('button', { name: 'Detail' }).click();
+    const reconDetail = await page.locator('.recon-detail').innerText();
+    check('the base is shown matching', says(reconDetail, 'base') && reconDetail.includes('900'), reconDetail);
+    check('and the bonus short by its amount', reconDetail.includes('-1,500'), reconDetail);
+    check('with a reason that names the purchase', says(reconDetail, 'ABC Electronics'), reconDetail);
+    check('and a reward that is merely not due yet is separated out', says(reconDetail, 'Not due yet'), reconDetail);
+
+    await page.locator('.recon-detail input').fill('5732');
+    await page.getByRole('button', { name: /statement/ }).click();
+    await page.locator('.recon-detail .ok-text').waitFor();
+    check('the statement code can be applied', appliedMcc?.body.mcc === '5732', JSON.stringify(appliedMcc));
+    check(
+      'and it says the expectation was what changed',
+      says(await page.locator('.recon-detail .ok-text').innerText(), 'Re-priced'),
+      await page.locator('.recon-detail .ok-text').innerText()
+    );
+
+    const cand = await page.locator('.card', { hasText: 'read off a statement' }).first().innerText();
+    check('reward lines wait to be accepted', says(cand, 'until you accept it'), cand.slice(0, 300));
+    check('with what they say and how sure', says(cand, 'bonus reward') && says(cand, 'high'), cand.slice(0, 300));
 
     // --- setting up ------------------------------------------------------
     // A gap in an existing setup is a repair, not an onboarding: someone with

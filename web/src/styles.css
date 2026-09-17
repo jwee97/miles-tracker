@@ -934,3 +934,20 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .onb-card { padding: 14px 0; border-top: 1px solid var(--line); }
 .onb-card h3 { margin-top: 0; }
 .req { font-style: normal; font-size: 11px; color: var(--mid); margin-left: 6px; }
+
+/* --- the rewards check --------------------------------------------------- */
+.recon-list { list-style: none; padding: 0; margin: 12px 0 0; }
+.recon { padding: 12px 0; border-top: 1px solid var(--line); }
+.recon:first-child { border-top: none; }
+.recon-head { display: flex; gap: 12px; align-items: flex-start; }
+.recon-head > div { flex: 1; min-width: 0; }
+.recon-mark { width: 18px; text-align: center; color: var(--dim); }
+.recon.undercredited .recon-mark { color: var(--bad); }
+.recon.overcredited .recon-mark, .recon.needs_review .recon-mark { color: var(--mid); }
+.recon.matched .recon-mark, .recon.within_tolerance .recon-mark { color: var(--ok); }
+.recon-card { margin: 0; font-size: 14px; font-weight: 600; }
+.recon-status { margin: 2px 0 0; font-size: 12.5px; }
+.recon-detail { margin-top: 10px; padding-left: 30px; }
+.recon-detail h4 { margin: 12px 0 0; font-size: 13px; color: var(--dim); }
+.recon-detail .score-table td { padding: 4px 8px 4px 0; }
+.recon-off td { color: var(--text); }

@@ -1,5 +1,6 @@
 import { tranchesByExpiry } from './points';
 import { staleProducts } from './catalog/publish';
+import { reconcileAll } from './rewards/reconcile';
 import { openReviewCount, REASON_ORDER } from './transactions/review';
 import { money, standings, today, type Progress, type Standing } from './spend';
 import type { Env } from './types';
@@ -26,6 +27,7 @@ export type ActionKind =
   | 'points_expiring'
   | 'unreviewed_import'
   | 'unknown_code'
+  | 'reward_shortfall'
   | 'stale_rules';
 
 /** Lower runs first. Gaps left so a new kind can slot in without a renumber. */
@@ -37,6 +39,9 @@ export const PRIORITY: Record<ActionKind, number> = {
   points_expiring: 50,
   unreviewed_import: 60,
   unknown_code: 70,
+  // Below the deadlines, above the housekeeping: the money is already earned,
+  // so nothing is lost by looking tomorrow — but it is real money.
+  reward_shortfall: 55,
   // Last, and deliberately. A stale rate is still the best answer the app has,
   // and it already costs the recommendation its confidence — which means the
   // consequence of ignoring this line is visible where it matters, rather than
@@ -256,6 +261,36 @@ export async function actionCentre(env: Env): Promise<ActionItem[]> {
       priority: PRIORITY.unknown_code,
       count: unknown.n,
     });
+  }
+
+  // Rewards the bank appears not to have paid. Worth a line because the money
+  // is already earned and quietly missing, which is the one problem nobody
+  // notices without being told.
+  try {
+    for (const r of await reconcileAll(env, 1)) {
+      if (r.status !== 'undercredited') continue;
+      const short = r.differences.filter((d) => d.difference < 0 && !d.within_tolerance);
+      if (!short.length) continue;
+      const gap = Math.abs(short.reduce((t, d) => t + d.difference, 0));
+      items.push({
+        kind: 'reward_shortfall',
+        subject: r.card.nickname,
+        title: `${Math.round(gap).toLocaleString()} ${short[0].unit} short on ${r.card.product}`,
+        detail:
+          r.explanations[0]?.text ??
+          `Expected and credited rewards differ for ${r.scope.start} to ${r.scope.end}.`,
+        amount_cents: null,
+        deadline: null,
+        days_left: null,
+        urgency: 'watch',
+        target: 'rewardcheck',
+        priority: PRIORITY.reward_shortfall,
+        count: 1,
+      });
+    }
+  } catch {
+    // A card with no reward data yet is not an error, and a home screen that
+    // fails to draw because one check threw is worse than one missing line.
   }
 
   // Cards whose rates nobody has checked lately. Not urgent, and reported

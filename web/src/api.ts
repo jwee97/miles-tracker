@@ -597,6 +597,65 @@ export const recommendV2 = (b: {
   occurred_at?: string;
 }) => post<RecommendationV2>('/api/recommend', b);
 
+/* --- did the bank credit what it owed? ------------------------------------ */
+
+export interface RewardDifference {
+  component: string;
+  unit: string;
+  expected: number;
+  actual: number;
+  difference: number;
+  within_tolerance: boolean;
+}
+
+export interface ReconciliationExplanation {
+  cause: string;
+  text: string;
+  transaction_ids: number[];
+  amount: number | null;
+}
+
+export interface ReconciliationResult {
+  scope: { type: string; start: string; end: string; card_id: number };
+  card: { id: number; nickname: string; product: string };
+  expected: { component: string; amount: number; unit: string; all_pending: boolean }[];
+  actual: { component: string; amount: number; unit: string }[];
+  differences: RewardDifference[];
+  status: 'matched' | 'within_tolerance' | 'undercredited' | 'overcredited' | 'incomplete' | 'needs_review';
+  explanations: ReconciliationExplanation[];
+  confidence: 'high' | 'medium' | 'low';
+  pending: { component: string; amount: number; unit: string; expected_by: string | null }[];
+  as_of: string;
+}
+
+export const fetchReconciliation = (periods = 1) =>
+  get<{ results: ReconciliationResult[]; as_of: string }>(`/api/rewards/reconciliation?periods=${periods}`);
+
+export const reconcileCard = (body: { nickname: string; from?: string; to?: string }) =>
+  post<ReconciliationResult>('/api/rewards/reconcile', body);
+
+export const applyStatementMcc = (transactionId: number, mcc: string) =>
+  post<{ ok: boolean; error?: string; correction?: { previous_mcc: string | null; reward_before: number; reward_after: number } }>(
+    `/api/rewards/mcc/${transactionId}`,
+    { mcc }
+  );
+
+export interface RewardCandidate {
+  id: number;
+  card_id: number;
+  entry_type: string;
+  amount: number;
+  unit: string;
+  description: string;
+  confidence: string;
+  raw_line: string | null;
+}
+
+export const fetchRewardCandidates = () => get<{ candidates: RewardCandidate[] }>('/api/rewards/candidates');
+
+export const resolveRewardCandidate = (id: number, action: 'accept' | 'reject') =>
+  post<{ ok: boolean; ledger_id?: number; applied?: string }>(`/api/rewards/candidates/${id}`, { action });
+
 /* --- onboarding ---------------------------------------------------------- */
 
 export interface OnboardingField {

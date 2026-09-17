@@ -1708,6 +1708,28 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('rejecting an unknown candidate is a 404', (await authed('/api/rewards/candidates/99999', { action: 'reject' })).status === 404, '');
 }
 
+// --- did the bank credit what it owed? ----------------------------------------
+{
+  const rec = (await (await authed('/api/rewards/reconciliation')).json()) as any;
+  check('every card can be checked at once', Array.isArray(rec.results), JSON.stringify(Object.keys(rec)));
+  if (rec.results.length) {
+    const r = rec.results[0];
+    check('each says what it compared', typeof r.scope.start === 'string' && typeof r.scope.end === 'string', JSON.stringify(r.scope));
+    check('with a status a person can read', typeof r.status === 'string', r.status);
+    check('the two sides kept apart', Array.isArray(r.expected) && Array.isArray(r.actual), '');
+    check('and how sure the comparison is', ['high', 'medium', 'low'].includes(r.confidence), r.confidence);
+    check('nothing is phrased as an accusation', r.explanations.every((e: any) => !/bank (made|got)/i.test(e.text)), JSON.stringify(r.explanations));
+  }
+
+  const one_ = await authed('/api/rewards/reconcile', { nickname: 'crw' });
+  check('one card can be checked on its own', one_.status === 200, String(one_.status));
+  check('an unknown card is a 404', (await authed('/api/rewards/reconcile', { nickname: 'nope' })).status === 404, '');
+  check('and a bad date is refused', (await authed('/api/rewards/reconcile', { nickname: 'crw', from: 'nonsense' })).status === 400, '');
+
+  check('a bad merchant code is refused', (await authed('/api/rewards/mcc/1', { mcc: '12' })).status === 400, '');
+  check('and an unknown transaction too', (await authed('/api/rewards/mcc/99999', { mcc: '5732' })).status === 400, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});
