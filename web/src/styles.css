@@ -901,3 +901,21 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 
 .stmt-summary { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--dim); }
 .stmt-summary .mono { color: var(--text); font-weight: 600; }
+
+/* --- catalogue operations ------------------------------------------------ */
+.admin { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.admin h4 { margin: 14px 0 8px; font-size: 13px; color: var(--dim); }
+.admin h4:first-child { margin-top: 0; }
+.admin textarea { width: 100%; margin-top: 8px; }
+.draft-rules li { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+.diff { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.diff-list { list-style: none; padding: 0; margin: 8px 0 0; font-size: 13px; }
+.diff-list li { padding: 4px 0 4px 14px; border-left: 2px solid var(--line); }
+.diff-list li.added { border-left-color: var(--ok); }
+.diff-list li.removed { border-left-color: var(--bad); }
+.diff-list li.changed { border-left-color: var(--mid); }
+.stale-note { margin: 12px 0; padding: 12px; border: 1px solid rgba(251,191,36,.3); border-radius: 8px; }
+.stale-note p { margin: 0 0 6px; }
+.stale-note ul { margin: 0 0 6px; padding-left: 18px; }
+
+.picker li { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }

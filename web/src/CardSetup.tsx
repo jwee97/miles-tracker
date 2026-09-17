@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
   addCard,
+  fetchCatalog,
+  type CatalogProduct,
   addEarnRule,
   addRequirement,
   saveExclusion,
@@ -939,6 +941,9 @@ export default function CardSetup({ onChanged }: { onChanged: () => void }) {
   const [open, setOpen] = useState<string | null>(null);
   const [reading, setReading] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [search, setSearch] = useState('');
+  const [matches, setMatches] = useState<CatalogProduct[]>([]);
+  const [picked, setPicked] = useState<CatalogProduct | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [showClosed, setShowClosed] = useState(false);
@@ -970,6 +975,7 @@ export default function CardSetup({ onChanged }: { onChanged: () => void }) {
     setMsg(null);
     try {
       const r = await addCard({
+        product_id: picked?.id,
         issuer: c.issuer,
         product: c.product,
         nickname: c.nickname,
@@ -980,10 +986,15 @@ export default function CardSetup({ onChanged }: { onChanged: () => void }) {
         base_mpd: c.base_mpd || undefined,
       });
       setMsg(
-        `Added ${c.product} as "${r.nickname}"` +
+        `Added ${r.product} as "${r.nickname}"` +
           (r.program_key ? ` · points go to ${r.program_key}` : ' · no programme set, so points cannot be banked') +
-          '. Add its rates below, or it will not appear in any recommendation.'
+          (r.rules
+            ? `. It already knows what this card pays — ${r.rules} rule${r.rules === 1 ? '' : 's'} from the catalogue.`
+            : '. Add its rates below, or it will not appear in any recommendation.')
       );
+      setPicked(null);
+      setSearch('');
+      setMatches([]);
       setC({ issuer: '', product: '', nickname: '', limit: '', statement_day: '1', opened_at: '', program_key: '', base_mpd: '' });
       setAdding(false);
       setOpen(r.nickname);
@@ -1016,15 +1027,91 @@ export default function CardSetup({ onChanged }: { onChanged: () => void }) {
       {adding && (
         <section className="card entry">
           <h2>New card</h2>
+
+          {/*
+            Pick the card, do not describe it. The issuer, the programme and
+            every rate are facts about the product, already recorded against it
+            — asking for them again is asking you to look up something the app
+            knows, and to be wrong about it on your own.
+          */}
+          <div className="advisor-row">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search the catalogue — DBS Woman…"
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              className="secondary"
+              onClick={async () => {
+                try {
+                  const d = await fetchCatalog(search);
+                  setMatches(d.products.slice(0, 8));
+                } catch (e) {
+                  setErr((e as Error).message);
+                }
+              }}
+            >
+              Search
+            </button>
+          </div>
+
+          {matches.length > 0 && !picked && (
+            <ul className="rules picker">
+              {matches.map((m) => (
+                <li key={m.id}>
+                  <span>
+                    <strong>
+                      {m.issuer} {m.product_name}
+                    </strong>
+                    {m.rules > 0 ? (
+                      <span className="chip ok">{m.rules} rules known</span>
+                    ) : (
+                      <span className="chip never">no rates yet</span>
+                    )}
+                  </span>
+                  <div className="entry-foot rule-actions">
+                    <button
+                      onClick={() => {
+                        setPicked(m);
+                        setC({ ...c, issuer: m.issuer, product: m.product_name });
+                        setMatches([]);
+                      }}
+                    >
+                      Use this one
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {picked && (
+            <p className="sub">
+              <b>
+                {picked.issuer} {picked.product_name}
+              </b>{' '}
+              — {picked.rules > 0 ? 'its rates come with it' : 'the catalogue has no rates for it yet'}.{' '}
+              <button type="button" className="link-btn" onClick={() => setPicked(null)}>
+                Choose another
+              </button>
+            </p>
+          )}
+
           <div className="entry-grid">
-            <label className="f">
-              <span>Issuer</span>
-              <input value={c.issuer} onChange={(e) => setC({ ...c, issuer: e.target.value })} placeholder="UOB" />
-            </label>
-            <label className="f">
-              <span>Product</span>
-              <input value={c.product} onChange={(e) => setC({ ...c, product: e.target.value })} placeholder="Lady's Card" />
-            </label>
+            {!picked && (
+              <>
+                <label className="f">
+                  <span>Issuer</span>
+                  <input value={c.issuer} onChange={(e) => setC({ ...c, issuer: e.target.value })} placeholder="UOB" />
+                </label>
+                <label className="f">
+                  <span>Product</span>
+                  <input value={c.product} onChange={(e) => setC({ ...c, product: e.target.value })} placeholder="Lady's Card" />
+                </label>
+              </>
+            )}
             <label className="f">
               <span>Nickname</span>
               <input
@@ -1063,10 +1150,12 @@ export default function CardSetup({ onChanged }: { onChanged: () => void }) {
                 ))}
               </select>
             </label>
-            <label className="f">
-              <span>Base rate</span>
-              <input value={c.base_mpd} onChange={(e) => setC({ ...c, base_mpd: e.target.value })} placeholder="0.4" inputMode="decimal" />
-            </label>
+            {!picked && (
+              <label className="f">
+                <span>Base rate</span>
+                <input value={c.base_mpd} onChange={(e) => setC({ ...c, base_mpd: e.target.value })} placeholder="0.4" inputMode="decimal" />
+              </label>
+            )}
           </div>
           <div className="entry-foot">
             <button onClick={save} disabled={!c.issuer || !c.product || !c.nickname}>

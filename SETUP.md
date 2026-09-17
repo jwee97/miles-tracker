@@ -1703,6 +1703,120 @@ POST /api/review/:id/resolve   { action: confirm | ignore | merge | keep_both }
 Taking its path for the new queue would have been tidier and would have broken a
 working screen.)
 
+## Catalogue operations
+
+The rule this whole layer exists to enforce: **the only way rules a calculation
+can reach have changed is that a person read a comparison and said yes.**
+Everything else — drafting, copying, extracting, noticing a bank page has moved
+— is allowed to be automatic precisely because none of it can reach a published
+version.
+
+```
+a source changes  →  draft a new version  →  compare it with what is live
+                  →  a person reads the comparison  →  publish
+```
+
+### Drafting
+
+A new version is copied from whatever is live, not started blank. Starting blank
+is how a rule nobody meant to remove disappears.
+
+A draft is invisible to every calculation until it is published, so it can be
+built up a rule at a time without any risk. A **published** version cannot be
+edited at all — the endpoint refuses with a 409 — because the point of
+versioning is that August cannot be rewritten in October.
+
+### The comparison
+
+```
+Version 1 → 2
+online goes from 4 mpd, capped at $1000.00 to 1.2 mpd, capped at $500.00
+dining now earns 3 mpd
+4900 now earns nothing
+```
+
+Written to be read aloud. It is not there to show that two rows differ, it is
+there to let you say *"no, they did not cut the online rate to 1.2"* before that
+becomes the number every recommendation is made from. The publish button only
+appears once the comparison has been shown.
+
+Publishing closes the version it replaces on the day before the new one opens,
+marks it `superseded`, and refuses outright if two published versions would
+cover the same day — an overlap is an ambiguous answer to "what did this card pay
+on the 14th", and something would have to pick one silently.
+
+Publishing is also what marks a product **verified**, rather than a separate
+button someone could press without looking. The claim being made is "these rules
+are what the bank says", and the only moment anyone is in a position to make it
+is after reading the diff.
+
+### Where the numbers came from
+
+Every product can name the documents it was read out of, with the date and a
+hash of what the page said at the time:
+
+```
+bank_terms          the strongest
+bank_rewards_terms
+bank_product_page
+bank_faq
+manual_verified     someone checked by hand
+```
+
+Paste the page again later and the app says whether it has changed. Reflowed
+whitespace is not a change — a page its CMS re-rendered has not changed its
+terms, and crying wolf about that trains people to ignore the warning.
+
+**A changed page never rewrites a rule.** It marks the product `needs_review`
+and leaves the published version exactly as it is. Automated extraction may
+write a draft; it may not write production.
+
+### What should not be trusted
+
+`GET /api/catalog/stale`, the top of the Catalogue tab, and the last line of the
+Action Centre all report the same thing: products you hold whose numbers nobody
+has checked lately — never verified, checked more than 180 days ago, or flagged
+because their source moved.
+
+They are still used. A stale rate beats no rate, and refusing to use one would
+leave a card that earns nothing at all. What happens instead is that every
+recommendation made from them says it is uncertain — which is where the
+consequence of ignoring this is actually visible.
+
+### Adding a card
+
+```
+Search cards
+[ DBS Woman…                    ]
+
+DBS Woman's World Card    2 rules known    [ Use this one ]
+
+When did you get it?   [ 14 Mar 2026 ]
+Statement closes on    [ 12 ]
+Credit limit           [ $12,000 ]
+Nickname               [ wwmc ]
+```
+
+Pick the card, do not describe it. The issuer, the programme, the base rate and
+every bonus are facts about the product and already recorded against it — asking
+for them again is asking you to look up something the app knows, and to be wrong
+about it on your own.
+
+A card that is not in the catalogue still works, and still becomes a product
+(`source: 'user'`), so it earns through the same engine rather than down a
+parallel path that would have to be fixed twice.
+
+```
+POST /api/catalog/cards                      add a product
+POST /api/catalog/cards/:id/sources          record where its numbers came from
+POST /api/catalog/sources/:id/check          has that page changed?
+POST /api/catalog/cards/:id/rule-sets        draft a version from what is live
+POST /api/catalog/rule-sets/:id/rules        edit the draft (drafts only)
+GET  /api/catalog/rule-sets/:id/diff         what would change
+POST /api/catalog/rule-sets/:id/publish      make it so
+GET  /api/catalog/stale                      what to re-check
+```
+
 ## Verify end to end
 
 ```

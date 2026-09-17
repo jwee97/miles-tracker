@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { fetchCatalog, fetchCatalogCard, money, type CatalogDetail, type CatalogProduct } from './api';
+import { fetchCatalog, fetchCatalogCard, fetchStaleProducts, money, type CatalogDetail, type CatalogProduct, type StaleProduct } from './api';
+import CatalogAdmin from './CatalogAdmin';
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   verified: { label: 'verified', cls: 'ok' },
@@ -11,15 +12,17 @@ const STATUS: Record<string, { label: string; cls: string }> = {
 
 const badge = (s: string) => STATUS[s] ?? { label: s, cls: 'never' };
 
-function Detail({ k, onClose }: { k: string; onClose: () => void }) {
+function Detail({ k, onClose, onChanged }: { k: string; onClose: () => void; onChanged: () => void }) {
   const [d, setD] = useState<CatalogDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
 
-  useEffect(() => {
+  function load() {
     fetchCatalogCard(k)
       .then(setD)
       .catch((e) => setErr((e as Error).message));
-  }, [k]);
+  }
+  useEffect(load, [k]);
 
   if (err) return <p className="error">{err}</p>;
   if (!d) return <p className="sub">Loading…</p>;
@@ -78,7 +81,9 @@ function Detail({ k, onClose }: { k: string; onClose: () => void }) {
                     {r.category} — {r.reward_type === 'cashback' ? `${r.mpd}%` : `${r.mpd} mpd`}
                     {r.cap_cents ? `, capped at $${money(r.cap_cents)}` : ''}
                     {r.channel ? `, ${r.channel}` : ''}
-                    {r.mcc_list ? ` · codes ${r.mcc_list}` : ''}
+                    {r.min_tier_cents ? ` · from the $${(r.min_tier_cents / 100).toFixed(0)} tier` : ''}
+                    {r.mcc_include ? ` · only codes ${r.mcc_include}` : ''}
+                    {r.mcc_exclude ? ` · never ${r.mcc_exclude}` : ''}
                   </li>
                 ))}
                 {v.rules.length === 0 && <li>no rules in this version</li>}
@@ -89,6 +94,22 @@ function Detail({ k, onClose }: { k: string; onClose: () => void }) {
             </li>
           ))}
         </ul>
+      )}
+
+      <div className="entry-foot rule-actions">
+        <button className="secondary" onClick={() => setEditing((v) => !v)}>
+          {editing ? 'Done' : 'Edit its rules'}
+        </button>
+      </div>
+
+      {editing && (
+        <CatalogAdmin
+          d={d}
+          onChange={() => {
+            load();
+            onChanged();
+          }}
+        />
       )}
 
       {d.sources.length > 0 && (
@@ -128,6 +149,7 @@ export default function Catalog() {
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [onlyMine, setOnlyMine] = useState(false);
+  const [stale, setStale] = useState<StaleProduct[]>([]);
 
   function load(query = q) {
     fetchCatalog(query)
@@ -136,6 +158,9 @@ export default function Catalog() {
   }
   useEffect(() => {
     load('');
+    fetchStaleProducts()
+      .then((d) => setStale(d.products ?? []))
+      .catch(() => void 0);
   }, []);
 
   if (err) return <p className="pad error">{err}</p>;
@@ -156,6 +181,25 @@ export default function Catalog() {
         {rows.length} products · {withRules} with rules · {rows.length - withRules} still waiting for theirs. A product
         arrives with its identity only — issuer, name, network, programme — and never with a rate nobody checked.
       </p>
+
+      {stale.length > 0 && (
+        <div className="stale-note">
+          <p className="warn-num">
+            {stale.length} card{stale.length === 1 ? '' : 's'} you hold have rates nobody has checked lately.
+          </p>
+          <ul className="sub">
+            {stale.map((s) => (
+              <li key={s.product.id}>
+                <b>{s.product.product_name}</b> — {s.reason} · {s.held_by.join(', ')}
+              </li>
+            ))}
+          </ul>
+          <p className="sub">
+            They are still used, because a stale rate beats no rate — but every recommendation made from them says it is
+            uncertain.
+          </p>
+        </div>
+      )}
 
       <form
         className="advisor-row"
@@ -197,7 +241,7 @@ export default function Catalog() {
                   </a>
                 )}
               </div>
-              {open === p.product_key && <Detail k={p.product_key} onClose={() => setOpen(null)} />}
+              {open === p.product_key && <Detail k={p.product_key} onClose={() => setOpen(null)} onChanged={() => load()} />}
             </li>
           );
         })}

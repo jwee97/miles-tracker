@@ -1491,6 +1491,99 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('the ledger\'s category list is untouched', (await authed('/api/review')).status === 200, '');
 }
 
+// --- catalogue operations ------------------------------------------------------
+{
+  const made = await authed('/api/catalog/cards', {
+    issuer: 'HSBC',
+    product_name: 'Revolution Card',
+    network: 'visa',
+    reward_type: 'miles',
+    official_url: 'https://example.invalid/revolution',
+  });
+  const m = (await made.json()) as any;
+  check('a product can be added to the catalogue', made.status === 200, JSON.stringify(m).slice(0, 160));
+  check('and it arrives as a draft, not as fact', m.product.verification_status === 'draft', m.product?.verification_status);
+  check('an issuer and a name are required', (await authed('/api/catalog/cards', { issuer: 'HSBC' })).status === 400, '');
+
+  const pid = m.product.id;
+
+  const src = (await (
+    await authed(`/api/catalog/cards/${pid}/sources`, {
+      source_type: 'bank_rewards_terms',
+      source_url: 'https://example.invalid/revolution-terms',
+      title: 'Rewards terms',
+      text: '4 mpd on online spend.',
+    })
+  ).json()) as any;
+  check('where its numbers came from can be recorded', src.ok === true, JSON.stringify(src));
+
+  const draft = (await (
+    await authed(`/api/catalog/cards/${pid}/rule-sets`, { effective_from: '2026-01-01', notes: 'first' })
+  ).json()) as any;
+  check('a version can be drafted', draft.draft.status === 'draft', JSON.stringify(draft).slice(0, 160));
+  check('a draft for an unknown product is a 404', (await authed('/api/catalog/cards/99999/rule-sets', {})).status === 404, '');
+
+  const rule = await authed(`/api/catalog/rule-sets/${draft.draft.id}/rules`, {
+    category: 'online',
+    mpd: 4,
+    reward_type: 'miles',
+    cap_cents: 100000,
+  });
+  check('rules go into the draft', rule.status === 200, String(rule.status));
+  check('a rule needs a category and a rate', (await authed(`/api/catalog/rule-sets/${draft.draft.id}/rules`, { category: 'x' })).status === 400, '');
+
+  const diff = (await (await authed(`/api/catalog/rule-sets/${draft.draft.id}/diff`)).json()) as any;
+  check('the change can be read before it is made', Array.isArray(diff.rules), JSON.stringify(diff).slice(0, 160));
+  check('and it says what would be added', diff.rules.some((r: any) => r.kind === 'added'), JSON.stringify(diff.rules));
+
+  const pub = await authed(`/api/catalog/rule-sets/${draft.draft.id}/publish`, {});
+  const p = (await pub.json()) as any;
+  check('publishing makes it live', pub.status === 200 && p.rule_set.status === 'published', JSON.stringify(p).slice(0, 160));
+  check('and marks the product verified', p.product.verification_status === 'verified', p.product?.verification_status);
+
+  // A published version is closed off, not editable.
+  const late = await authed(`/api/catalog/rule-sets/${draft.draft.id}/rules`, { category: 'dining', mpd: 3 });
+  check('a published version cannot be edited', late.status === 409, String(late.status));
+  check('and says why', ((await late.json()) as any).error.includes('published'), '');
+
+  // A source that moved marks the product, and changes no rule.
+  const src2 = (await (
+    await authed(`/api/catalog/cards/${pid}/sources`, {
+      source_type: 'bank_terms',
+      source_url: 'https://example.invalid/t',
+      text: 'four miles per dollar',
+    })
+  ).json()) as any;
+  const moved = (await (await authed(`/api/catalog/sources/${src2.source.id}/check`, { text: 'one point two miles per dollar' })).json()) as any;
+  check('a page that moved is noticed', moved.changed === true, JSON.stringify(moved));
+  const after = (await (await authed('/api/catalog/cards/hsbc_revolution_card')).json()) as any;
+  check('the product is flagged for review', after.product.verification_status === 'needs_review', after.product?.verification_status);
+  check(
+    'but the published rules are untouched, because a page is not an approval',
+    after.versions.find((v: any) => v.status === 'published').rules[0].mpd === 4,
+    JSON.stringify(after.versions?.[0]?.rules)
+  );
+
+  const stale = (await (await authed('/api/catalog/stale')).json()) as any;
+  check('what should not be trusted is listable', Array.isArray(stale.products), JSON.stringify(Object.keys(stale)));
+
+  // --- adding a card by picking it, not by describing it -------------------
+  const added = await authed('/api/card', { product_id: pid, nickname: 'rev', limit: '8000', statement_day: 12 });
+  const a = (await added.json()) as any;
+  check('a card can be added by picking the product', added.status === 200, JSON.stringify(a).slice(0, 160));
+  check('the issuer comes from the catalogue, not from you', a.issuer === 'HSBC', a.issuer);
+  check('and so does the product name', a.product === 'Revolution Card', a.product);
+  check('it already knows what the card pays', a.rules === 1, String(a.rules));
+  check('an unknown product is refused', (await authed('/api/card', { product_id: 99999, nickname: 'zzz' })).status === 404, '');
+
+  // A card described by hand still becomes a product, so there is one engine.
+  const custom = (await (
+    await authed('/api/card', { issuer: 'Tiny Bank', product: 'Odd Card', nickname: 'odd', limit: '1000', statement_day: 3 })
+  ).json()) as any;
+  check('a card not in the catalogue still becomes a product', typeof custom.product_id === 'number', JSON.stringify(custom));
+  check('and is not claimed to have come from the catalogue', custom.from_catalog === false, String(custom.from_catalog));
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

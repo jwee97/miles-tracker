@@ -119,6 +119,29 @@ and a rate written from memory is worse than a blank, because a blank asks you
 and a wrong rate answers you. Read a rewards page onto a card you hold and
 those rates become that product's current version, shared by every card on it.
 
+## Changing what a card pays
+
+One rule holds the whole catalogue layer up: the only way rules a calculation
+can reach have changed is that a person read a comparison and said yes.
+
+A new version is drafted from whatever is live, so a rule nobody meant to remove
+cannot vanish by being left out. A draft is invisible to every calculation; a
+published version cannot be edited at all. Before publishing you get the change
+in sentences — *"online goes from 4 mpd, capped at $1,000 to 1.2 mpd, capped at
+$500"* — and the publish button only exists once you have seen it.
+
+Products name the bank documents they were read out of, with a hash of what the
+page said. Paste the page again later and the app tells you whether it moved. A
+moved page marks the card for review and changes no rule: automated extraction
+may write a draft, never production.
+
+Cards whose numbers nobody has checked lately are listed rather than hidden.
+They are still used — a stale rate beats no rate — but every recommendation made
+from them says it is uncertain.
+
+Adding a card means picking it, not describing it: the issuer, programme and
+every rate come with the product.
+
 ## Which card to use
 
 `POST /api/recommend` ranks your cards for one purchase and shows its working.

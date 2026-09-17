@@ -191,5 +191,16 @@ check(
   lost.filter((i) => i.subject === 'lady').map((i) => i.kind).join(',')
 );
 
+// --- rates nobody has checked ---------------------------------------------
+// The recommendation layer rests on these numbers, so an unchecked one is
+// worth a line — and it is the last line, because it is already costing the
+// recommendation its confidence where that actually matters.
+sql(`UPDATE cards SET product_id = (SELECT id FROM card_products WHERE product_key = 'uob_one') WHERE nickname = 'one'`);
+const withStale = await actionCentre(env);
+const rates = withStale.find((i) => i.kind === 'stale_rules');
+check('a card whose rates were never checked is reported', rates !== undefined, withStale.map((i) => i.kind).join(','));
+check('naming the card it affects', rates!.detail.includes('one'), rates?.detail);
+check('and it sits below everything actionable', withStale[withStale.length - 1].kind === 'stale_rules', withStale.map((i) => i.kind).join(','));
+
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

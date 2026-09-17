@@ -1,4 +1,5 @@
 import { tranchesByExpiry } from './points';
+import { staleProducts } from './catalog/publish';
 import { openReviewCount, REASON_ORDER } from './transactions/review';
 import { money, standings, today, type Progress, type Standing } from './spend';
 import type { Env } from './types';
@@ -24,7 +25,8 @@ export type ActionKind =
   | 'cap_nearly_gone'
   | 'points_expiring'
   | 'unreviewed_import'
-  | 'unknown_code';
+  | 'unknown_code'
+  | 'stale_rules';
 
 /** Lower runs first. Gaps left so a new kind can slot in without a renumber. */
 export const PRIORITY: Record<ActionKind, number> = {
@@ -35,6 +37,11 @@ export const PRIORITY: Record<ActionKind, number> = {
   points_expiring: 50,
   unreviewed_import: 60,
   unknown_code: 70,
+  // Last, and deliberately. A stale rate is still the best answer the app has,
+  // and it already costs the recommendation its confidence — which means the
+  // consequence of ignoring this line is visible where it matters, rather than
+  // here.
+  stale_rules: 80,
 };
 
 export interface ActionItem {
@@ -248,6 +255,26 @@ export async function actionCentre(env: Env): Promise<ActionItem[]> {
       target: 'codes',
       priority: PRIORITY.unknown_code,
       count: unknown.n,
+    });
+  }
+
+  // Cards whose rates nobody has checked lately. Not urgent, and reported
+  // anyway: the whole recommendation layer rests on these numbers, and a wrong
+  // one is silent everywhere.
+  for (const s of await staleProducts(env, today(env))) {
+    if (!s.held_by.length) continue;
+    items.push({
+      kind: 'stale_rules',
+      subject: s.held_by[0],
+      title: `Check what ${s.product.product_name} pays`,
+      detail: `${s.reason[0].toUpperCase()}${s.reason.slice(1)}. Every recommendation on ${s.held_by.join(', ')} is made from it.`,
+      amount_cents: null,
+      deadline: null,
+      days_left: null,
+      urgency: 'watch',
+      target: 'catalog',
+      priority: PRIORITY.stale_rules,
+      count: 1,
     });
   }
 

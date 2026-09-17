@@ -229,6 +229,17 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return data as T;
 }
 
+async function del<T>(path: string): Promise<T> {
+  const token = localStorage.getItem(KEY);
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+  return data as T;
+}
+
 export interface TxnPage {
   transactions: Txn[];
   range: { from: string | null; to: string | null; label: string };
@@ -664,7 +675,20 @@ export interface CatalogRuleSet {
   effective_from: string;
   effective_until: string | null;
   notes: string | null;
-  rules: { id: number; category: string; mpd: number; reward_type: string; cap_cents: number | null; mcc_list: string | null; channel: string | null }[];
+  rules: {
+    id: number;
+    category: string;
+    mpd: number;
+    reward_type: string;
+    cap_cents: number | null;
+    // The column names are the engine's own: a rule includes codes or excludes
+    // them, and conflating the two into one "list" is how a bonus restriction
+    // turns into a bonus exclusion.
+    mcc_include: string | null;
+    mcc_exclude: string | null;
+    channel: string | null;
+    min_tier_cents: number | null;
+  }[];
   exclusions: { id: number; mcc: string; reason: string | null }[];
 }
 
@@ -674,6 +698,70 @@ export interface CatalogDetail {
   sources: { id: number; source_type: string; source_url: string; title: string | null; retrieved_at: string }[];
   overlaps: { a: number; b: number; from: string; until: string | null }[];
 }
+
+export interface RuleChange {
+  kind: 'added' | 'removed' | 'changed';
+  category: string;
+  summary: string;
+  before?: string;
+  after?: string;
+}
+
+export interface RuleSetDiff {
+  from: { id: number; version: number } | null;
+  to: { id: number; version: number };
+  rules: RuleChange[];
+  exclusions: RuleChange[];
+  identical: boolean;
+}
+
+export interface StaleProduct {
+  product: CatalogProduct;
+  reason: string;
+  days_since: number | null;
+  held_by: string[];
+}
+
+export const fetchStaleProducts = () =>
+  get<{ products: StaleProduct[]; as_of: string }>('/api/catalog/stale');
+
+export const draftRuleSet = (productId: number, body: { effective_from?: string; notes?: string }) =>
+  post<{ ok: true; draft: CatalogRuleSet; copied_rules: number; copied_exclusions: number; based_on: number | null }>(
+    `/api/catalog/cards/${productId}/rule-sets`,
+    body
+  );
+
+export const addDraftRule = (
+  ruleSetId: number,
+  body: {
+    category: string;
+    mpd: number;
+    reward_type?: string;
+    mcc_include?: string | null;
+    cap_cents?: number | null;
+    channel?: string | null;
+  }
+) => post<{ ok: true; id: number }>(`/api/catalog/rule-sets/${ruleSetId}/rules`, body);
+
+export const deleteDraftRule = (ruleSetId: number, ruleId: number) =>
+  del<{ ok: true }>(`/api/catalog/rule-sets/${ruleSetId}/rules/${ruleId}`);
+
+export const fetchRuleSetDiff = (ruleSetId: number) =>
+  get<RuleSetDiff>(`/api/catalog/rule-sets/${ruleSetId}/diff`);
+
+export const publishRuleSet = (ruleSetId: number) =>
+  post<{ ok?: true; error?: string; code?: string; conflicts?: unknown; diff?: RuleSetDiff }>(
+    `/api/catalog/rule-sets/${ruleSetId}/publish`,
+    {}
+  );
+
+export const addProductSource = (
+  productId: number,
+  body: { source_type: string; source_url: string; title?: string; text?: string }
+) => post<{ ok: true; source: { id: number } }>(`/api/catalog/cards/${productId}/sources`, body);
+
+export const checkProductSource = (sourceId: number, text: string) =>
+  post<{ ok: true; changed: boolean; hash: string }>(`/api/catalog/sources/${sourceId}/check`, { text });
 
 export const fetchCatalog = (q = '') => get<{ products: CatalogProduct[] }>(`/api/catalog/cards?q=${encodeURIComponent(q)}`);
 
@@ -955,15 +1043,28 @@ export const fetchCards = () =>
   get<{ cards: CardRow[]; programs: ProgramRow[]; categories: string[] }>('/api/cards');
 
 export const addCard = (body: {
-  issuer: string;
-  product: string;
+  issuer?: string;
+  product?: string;
   nickname: string;
   limit?: string;
   statement_day?: number;
   opened_at?: string;
   program_key?: string | null;
   base_mpd?: string;
-}) => post<{ ok: true; id: number; nickname: string; program_key: string | null }>('/api/card', body);
+  /** Picked from the catalogue: everything the product decides comes with it. */
+  product_id?: number;
+}) =>
+  post<{
+    ok: true;
+    id: number;
+    nickname: string;
+    program_key: string | null;
+    product_id: number | null;
+    issuer: string;
+    product: string;
+    from_catalog: boolean;
+    rules: number;
+  }>('/api/card', body);
 
 export const addEarnRule = (body: {
   nickname: string;

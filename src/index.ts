@@ -33,7 +33,9 @@ import { optimise } from './advice';
 import { mccMatrix } from './mcc';
 import { runMigrations, runSeed } from './migrate';
 import { currentRuleSetFor } from './catalog/migrate-products';
-import { isStale, listProducts, productByKey, productKeyOf } from './catalog/products';
+import { diffRuleSets, draftFromCurrent, reviewAndPublish, staleProducts } from './catalog/publish';
+import { addSource, checkSource, contentHash } from './catalog/sources';
+import { ensureProduct, isStale, listProducts, productByKey, productById, productKeyOf } from './catalog/products';
 import { recommendV2 } from './recommendations/recommend';
 import { exclusionsIn, overlaps, ruleSetOn, rulesIn, versionsOf } from './catalog/rulesets';
 import { defaultCardPossible, METHODS, monthOfOther, otherMonths } from './other';
@@ -818,7 +820,7 @@ export default {
         // --- the catalogue -----------------------------------------------
         // Read-only this phase. Nothing in the UI depends on it yet; it exists
         // so the product model can be inspected before anything is built on it.
-        if (url.pathname === '/api/catalog/cards') {
+        if (url.pathname === '/api/catalog/cards' && req.method === 'GET') {
           const products = await listProducts(env, url.searchParams.get('q') ?? '');
           const out = [];
           for (const p of products) {
@@ -836,6 +838,161 @@ export default {
             });
           }
           return json({ products: out });
+        }
+
+        // --- catalogue operations (P0 phase 5) -----------------------------
+        // Everything that changes what a card is believed to pay. The shape of
+        // this section is the safety property: a draft can be written by
+        // anything, and only a publish — which requires having been handed the
+        // comparison — changes what a calculation can reach.
+        if (url.pathname === '/api/catalog/cards' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const issuer = String(b.issuer ?? '').trim();
+          const name = String(b.product_name ?? '').trim();
+          if (!issuer || !name) return json({ error: 'an issuer and a product name are required' }, 400);
+
+          const product = await ensureProduct(env, {
+            product_key: String(b.product_key ?? '').trim() || productKeyOf(issuer, name),
+            issuer,
+            product_name: name,
+            network: b.network ? String(b.network) : null,
+            reward_type: b.reward_type ? String(b.reward_type) : undefined,
+            program_key: b.program_key ? String(b.program_key) : null,
+            base_mpd: typeof b.base_mpd === 'number' ? b.base_mpd : null,
+            base_cashback_pct: typeof b.base_cashback_pct === 'number' ? b.base_cashback_pct : null,
+            annual_fee_cents: typeof b.annual_fee_cents === 'number' ? b.annual_fee_cents : null,
+            official_url: b.official_url ? String(b.official_url) : null,
+            // A card you added yourself is still a product, so it earns through
+            // the same engine as a catalogue one rather than a parallel path.
+            source: String(b.source ?? 'user'),
+            verification_status: 'draft',
+          });
+          return json({ ok: true, product });
+        }
+
+        // Record where a product's numbers came from, or re-read a source and
+        // find out whether the bank has changed it.
+        if (url.pathname.match(/^\/api\/catalog\/cards\/\d+\/sources$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const src = String(b.source_url ?? '').trim();
+          if (!src) return json({ error: 'a source url is required' }, 400);
+          const source = await addSource(env, id, {
+            source_type: String(b.source_type ?? 'bank_product_page'),
+            source_url: src,
+            title: b.title ? String(b.title) : null,
+            retrieved_at: today(env),
+            effective_from: b.effective_from ? String(b.effective_from) : null,
+            content_hash: b.text ? contentHash(String(b.text)) : null,
+          });
+          return json({ ok: true, source });
+        }
+
+        if (url.pathname.match(/^\/api\/catalog\/sources\/\d+\/check$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          const b = (await req.json().catch(() => ({}))) as { text?: string };
+          if (!b.text) return json({ error: 'paste the page text to compare against' }, 400);
+          const r = await checkSource(env, id, String(b.text), today(env));
+          if (!r) return json({ error: 'no such source' }, 404);
+          // A changed page never rewrites a rule. It marks the product for
+          // review and leaves the published version exactly as it is.
+          return json({ ok: true, changed: r.changed, previous_hash: r.previous_hash, hash: r.new_hash });
+        }
+
+        // Start a new version, copied from whatever is live so a rule nobody
+        // meant to remove cannot vanish by being left out of a blank page.
+        if (url.pathname.match(/^\/api\/catalog\/cards\/\d+\/rule-sets$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const from = b.effective_from ? parseDateToken(String(b.effective_from), env) : today(env);
+          if (!from) return json({ error: 'bad effective date' }, 400);
+          if (!(await productById(env, id))) return json({ error: 'no such product' }, 404);
+
+          const made = await draftFromCurrent(env, id, from, {
+            notes: b.notes ? String(b.notes) : null,
+            source_id: typeof b.source_id === 'number' ? b.source_id : null,
+            today: today(env),
+          });
+          return json({ ok: true, ...made });
+        }
+
+        // Rules go into a DRAFT only. A published version is closed off, never
+        // edited: the whole point of versioning is that August cannot be
+        // rewritten in October.
+        if (url.pathname.match(/^\/api\/catalog\/rule-sets\/\d+\/rules$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          const set = await env.DB.prepare(`SELECT * FROM rule_sets WHERE id = ?`).bind(id).first<any>();
+          if (!set) return json({ error: 'no such rule set' }, 404);
+          if (set.status !== 'draft') return json({ error: `a ${set.status} version cannot be edited` }, 409);
+
+          const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const category = String(b.category ?? '').trim().toLowerCase();
+          const mpd = Number(b.mpd);
+          if (!category || !Number.isFinite(mpd)) return json({ error: 'a category and a rate are required' }, 400);
+
+          const ins = await env.DB.prepare(
+            `INSERT INTO earn_rules (rule_set_id, category, mpd, reward_type, mcc_include, mcc_exclude, channel,
+               cap_cents, cap_window, min_tier_cents, note, active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+          )
+            .bind(
+              id,
+              category,
+              mpd,
+              String(b.reward_type ?? 'miles'),
+              b.mcc_include ? String(b.mcc_include) : null,
+              b.mcc_exclude ? String(b.mcc_exclude) : null,
+              b.channel ? String(b.channel) : null,
+              typeof b.cap_cents === 'number' ? b.cap_cents : null,
+              b.cap_window ? String(b.cap_window) : null,
+              typeof b.min_tier_cents === 'number' ? b.min_tier_cents : null,
+              b.note ? String(b.note) : null
+            )
+            .run();
+          return json({ ok: true, id: ins.meta.last_row_id });
+        }
+
+        if (url.pathname.match(/^\/api\/catalog\/rule-sets\/\d+\/rules\/\d+$/) && req.method === 'DELETE') {
+          const setId = Number(url.pathname.split('/')[4]);
+          const ruleId = Number(url.pathname.split('/')[6]);
+          const set = await env.DB.prepare(`SELECT status FROM rule_sets WHERE id = ?`).bind(setId).first<any>();
+          if (!set) return json({ error: 'no such rule set' }, 404);
+          if (set.status !== 'draft') return json({ error: `a ${set.status} version cannot be edited` }, 409);
+          await env.DB.prepare(`DELETE FROM earn_rules WHERE id = ? AND rule_set_id = ?`).bind(ruleId, setId).run();
+          return json({ ok: true });
+        }
+
+        // What would change if this draft went live. Read before publishing,
+        // never after.
+        if (url.pathname.match(/^\/api\/catalog\/rule-sets\/\d+\/diff$/)) {
+          const id = Number(url.pathname.split('/')[4]);
+          try {
+            return json(await diffRuleSets(env, id));
+          } catch (e) {
+            return json({ error: (e as Error).message }, 404);
+          }
+        }
+
+        if (url.pathname.match(/^\/api\/catalog\/rule-sets\/\d+\/publish$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          try {
+            const out = await reviewAndPublish(env, id, today(env));
+            return json({ ok: true, ...out });
+          } catch (e) {
+            const err = e as Error & { code?: string; conflicts?: unknown };
+            // An overlap is refused rather than resolved: two published versions
+            // covering one day is an ambiguous answer to "what did this card pay
+            // on the 14th", and something would have to pick one silently.
+            if (err.code === 'RULE_VERSION_OVERLAP') {
+              return json({ error: err.message, code: err.code, conflicts: err.conflicts }, 409);
+            }
+            return json({ error: err.message }, 400);
+          }
+        }
+
+        // Products whose numbers should not be trusted without another look.
+        if (url.pathname === '/api/catalog/stale') {
+          return json({ products: await staleProducts(env, today(env)), as_of: today(env) });
         }
 
         if (url.pathname.startsWith('/api/catalog/cards/')) {
@@ -926,9 +1083,18 @@ export default {
             opened_at?: string;
             program_key?: string | null;
             base_mpd?: number | string;
+            /** Pick the card from the catalogue instead of describing it. */
+            product_id?: number;
           };
-          const issuer = (b.issuer ?? '').trim();
-          const product = (b.product ?? '').trim();
+
+          // Adding a card from the catalogue means naming what you hold, not
+          // what it pays: the issuer, the product, the programme and every rate
+          // are facts about the product and already recorded against it.
+          const chosen = b.product_id ? await productById(env, Number(b.product_id)) : null;
+          if (b.product_id && !chosen) return json({ error: 'no such product in the catalogue' }, 404);
+
+          const issuer = chosen?.issuer ?? (b.issuer ?? '').trim();
+          const product = chosen?.product_name ?? (b.product ?? '').trim();
           const nickname = (b.nickname ?? '').trim().toLowerCase();
           if (!issuer || !product || !nickname) return json({ error: 'issuer, product and nickname are required' }, 400);
           if (!/^[a-z0-9]{2,16}$/.test(nickname))
@@ -945,25 +1111,64 @@ export default {
 
           // A programme is guessed from the issuer so points have somewhere to
           // go; it is reported back rather than applied silently.
-          const program = b.program_key === undefined ? await guessProgram(env, issuer) : b.program_key || null;
+          const program =
+            chosen?.program_key ?? (b.program_key === undefined ? await guessProgram(env, issuer) : b.program_key || null);
           const ins = await env.DB.prepare(
             `INSERT INTO cards (issuer, product, product_key, nickname, credit_limit_cents, statement_day,
-               opened_at, base_mpd, program_key)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+               opened_at, base_mpd, program_key, product_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
             .bind(
               issuer,
               product,
-              productKeyOf(issuer, product),
+              chosen?.product_key ?? productKeyOf(issuer, product),
               nickname,
               parseMoney(String(b.limit ?? '0')) ?? 0,
               day,
               opened,
-              parseFloat(String(b.base_mpd ?? '0')) || 0,
-              program
+              chosen?.base_mpd ?? (parseFloat(String(b.base_mpd ?? '0')) || 0),
+              program,
+              chosen?.id ?? null
             )
             .run();
-          return json({ ok: true, id: ins.meta.last_row_id, nickname, program_key: program });
+
+          // A card not in the catalogue still becomes a product, so it earns
+          // through the same engine rather than down a parallel path that has
+          // to be fixed twice.
+          let productId = chosen?.id ?? null;
+          if (!productId) {
+            const made = await ensureProduct(env, {
+              product_key: productKeyOf(issuer, product),
+              issuer,
+              product_name: product,
+              program_key: program,
+              base_mpd: parseFloat(String(b.base_mpd ?? '0')) || null,
+              source: 'user',
+              verification_status: 'draft',
+            });
+            productId = made.id;
+            await env.DB.prepare(`UPDATE cards SET product_id = ? WHERE id = ?`)
+              .bind(productId, ins.meta.last_row_id)
+              .run();
+          }
+
+          // What this card already pays, if the catalogue knew: the point of
+          // picking from it is not being asked for rates you would have to go
+          // and look up yourself.
+          const liveSet = productId ? await ruleSetOn(env, productId, today(env)) : null;
+          const liveRules = liveSet ? (await rulesIn(env, liveSet.id)).length : 0;
+
+          return json({
+            ok: true,
+            id: ins.meta.last_row_id,
+            nickname,
+            program_key: program,
+            product_id: productId,
+            issuer,
+            product,
+            from_catalog: !!chosen,
+            rules: liveRules,
+          });
         }
 
         if (url.pathname === '/api/card/rule' && req.method === 'POST') {

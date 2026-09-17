@@ -143,7 +143,7 @@ const CATALOG = {
   ],
 };
 
-const CATALOG_ONE = {
+const CATALOG_WITH_DRAFT: any = {
   product: { ...CATALOG.products[0] },
   versions: [
     {
@@ -154,7 +154,17 @@ const CATALOG_ONE = {
       effective_until: null,
       notes: 'migrated from per-card rules',
       rules: [
-        { id: 1, category: 'online', mpd: 4, reward_type: 'miles', cap_cents: 100000, mcc_list: '5311,5399', channel: 'online' },
+        {
+          id: 1,
+          category: 'online',
+          mpd: 4,
+          reward_type: 'miles',
+          cap_cents: 100000,
+          mcc_include: '5311,5399',
+          mcc_exclude: null,
+          channel: 'online',
+          min_tier_cents: null,
+        },
       ],
       exclusions: [{ id: 1, mcc: '4900', reason: 'utilities excluded' }],
     },
@@ -314,6 +324,48 @@ const REVIEW = {
 };
 
 let resolved: { id: number; body: any } | null = null;
+let published = 0;
+
+const DRAFT = {
+  id: 5,
+  version: 2,
+  status: 'draft',
+  effective_from: '2026-10-01',
+  effective_until: null,
+  notes: 'based on version 1',
+  rules: [
+    {
+      id: 9,
+      category: 'online',
+      mpd: 1.2,
+      reward_type: 'miles',
+      cap_cents: 50000,
+      mcc_include: null,
+      mcc_exclude: null,
+      channel: null,
+      min_tier_cents: null,
+    },
+  ],
+  exclusions: [],
+};
+
+CATALOG_WITH_DRAFT.versions.push(DRAFT);
+
+const DIFF = {
+  from: { id: 3, version: 1 },
+  to: { id: 5, version: 2 },
+  rules: [
+    {
+      kind: 'changed',
+      category: 'online',
+      summary: 'online goes from 4 mpd, capped at $1000.00 to 1.2 mpd, capped at $500.00',
+      before: '4 mpd, capped at $1000.00',
+      after: '1.2 mpd, capped at $500.00',
+    },
+  ],
+  exclusions: [],
+  identical: false,
+};
 
 async function serve(): Promise<{ url: string; close: () => Promise<void> }> {
   const server = createServer(async (req, res) => {
@@ -358,7 +410,24 @@ async function stub(page: Page) {
       return send(USED);
     }
     if (u.pathname === '/api/catalog/cards') return send(CATALOG);
-    if (u.pathname.startsWith('/api/catalog/cards/')) return send(CATALOG_ONE);
+    if (u.pathname === '/api/catalog/stale')
+      return send({
+        as_of: '2026-09-18',
+        products: [
+          {
+            product: CATALOG.products[0],
+            reason: 'it has never been checked against a bank document',
+            days_since: null,
+            held_by: ['wwmc'],
+          },
+        ],
+      });
+    if (u.pathname.endsWith('/publish')) {
+      published++;
+      return send({ ok: true, rule_set: { ...DRAFT, status: 'published' }, diff: DIFF, product: CATALOG.products[0] });
+    }
+    if (u.pathname.endsWith('/diff')) return send(DIFF);
+    if (u.pathname.startsWith('/api/catalog/cards/')) return send(CATALOG_WITH_DRAFT);
     return send({});
   });
 }
@@ -494,6 +563,9 @@ async function main() {
     await page.getByRole('button', { name: 'Catalogue' }).click();
     await page.locator('.catalog-list').waitFor();
     check('every product is listed', (await page.locator('.catalog-list > li').count()) === 2);
+    const staleNote = await page.locator('.stale-note').innerText();
+    check('cards whose rates are unchecked are called out', staleNote.includes('never been checked'), staleNote);
+    check('and it says they are still used', staleNote.includes('stale rate beats no rate'));
     const one = await page.locator('.catalog-list > li').nth(1).innerText();
     check('a product with no rules says so', one.includes('no rules yet'));
     check('rather than looking complete', !one.includes('version'));
@@ -507,6 +579,27 @@ async function main() {
     check('a version can be opened', detail.includes('Version 1') && detail.includes('published'));
     check('with the rules it holds', detail.includes('4 mpd'));
     check('and what it excludes', detail.includes('4900'));
+    check('and the codes a bonus is restricted to', detail.includes('only codes 5311,5399'), detail);
+
+    // --- changing what a card pays ---------------------------------------
+    await page.getByRole('button', { name: 'Edit its rules' }).click();
+    const admin = page.locator('.admin');
+    check('a draft can be edited', (await admin.innerText()).includes('Version 2 is a draft'));
+    check(
+      'and it says nothing can reach it yet',
+      (await admin.innerText()).includes('Nothing can reach it until it is published')
+    );
+    check('there is no publish button before the comparison', (await admin.getByRole('button', { name: /^Publish/ }).count()) === 0);
+
+    await admin.getByRole('button', { name: 'Compare with what is live' }).click();
+    await page.locator('.diff').waitFor();
+    const diffText = await page.locator('.diff').innerText();
+    check('the comparison names the versions', diffText.includes('Version 1 → 2'), diffText);
+    check('and reads as a sentence', diffText.includes('online goes from 4 mpd'), diffText);
+    check('only now is publishing offered', (await admin.getByRole('button', { name: /^Publish version 2/ }).count()) === 1);
+
+    await admin.getByRole('button', { name: /^Publish version 2/ }).click();
+    check('publishing goes through', published === 1, String(published));
 
     await page.close();
   } finally {
