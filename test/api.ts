@@ -1814,6 +1814,33 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('merging needs both promotions', (await authed('/api/admin/promotions/duplicates', { keep: 1 })).status === 400, '');
 }
 
+// --- is a card missing from my setup? ------------------------------------------
+{
+  const gaps = (await (await authed('/api/cards/portfolio-gaps?history_months=6')).json()) as any;
+  check('portfolio gaps are readable', Array.isArray(gaps.gaps), JSON.stringify(Object.keys(gaps)));
+  check('with the spending profile behind them', Array.isArray(gaps.profile.slices), '');
+  check('and the months that actually have data', typeof gaps.profile.months_with_data === 'number', '');
+
+  const res = await authed('/api/cards/acquisition/simulate', { history_months: 6 });
+  const report = (await res.json()) as any;
+  check('candidates can be simulated', res.status === 200, String(res.status));
+  check('gaps come with them', Array.isArray(report.gaps), JSON.stringify(Object.keys(report)));
+  check('so do the ones not worth it', Array.isArray(report.not_worth_it), '');
+  check('and the history it rests on', typeof report.history.months_with_data === 'number', JSON.stringify(report.history));
+  check('with a confidence that follows from it', ['high', 'medium', 'low'].includes(report.confidence), report.confidence);
+
+  for (const s of report.suggestions ?? []) {
+    check('a suggestion keeps the fee apart from the reward', s.annual_fee_cents !== undefined && s.projected_annual_incremental_value_cents !== undefined, JSON.stringify(s).slice(0, 160));
+    check('and the welcome offer apart from both', 'welcome_offer' in s, '');
+    check('eligibility is never claimed without grounds', ['eligible', 'ineligible', 'unknown'].includes(s.eligibility), s.eligibility);
+    break;
+  }
+
+  const objective = await authed('/api/cards/acquisition/simulate', { objective: 'simpler_wallet' });
+  check('the objective can be chosen', objective.status === 200, String(objective.status));
+  check('and a nonsense one falls back rather than failing', ((await (await authed('/api/cards/acquisition/simulate', { objective: 'nonsense' })).json()) as any).objective === 'balanced', '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

@@ -8,6 +8,7 @@ import Review from './Review';
 import RewardCheck from './features/rewards/RewardCheck';
 import TransferPlanner from './features/rewards/TransferPlanner';
 import OfferInbox from './features/offers/OfferInbox';
+import PortfolioGaps from './features/cards/PortfolioGaps';
 import Audit from './Audit';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
@@ -1873,6 +1874,7 @@ function PointsTab() {
  */
 const MORE: [string, string][] = [
   ['use', 'Advisor'],
+  ['improve', 'Improve my setup'],
   ['setup', 'Setup'],
   ['rewardcheck', 'Rewards check'],
   ['transfers', 'Transfers'],
@@ -1900,6 +1902,7 @@ export default function App() {
     | 'rewardcheck'
     | 'transfers'
     | 'offers2'
+    | 'improve'
     | 'ledger'
     | 'other'
     | 'trends'
@@ -2086,6 +2089,8 @@ export default function App() {
       {tab === 'transfers' && <TransferPlanner />}
 
       {tab === 'offers2' && <OfferInbox />}
+
+      {tab === 'improve' && <PortfolioGaps />}
 
       {tab === 'review' && <Review />}
 

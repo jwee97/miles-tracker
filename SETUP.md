@@ -2330,6 +2330,114 @@ POST /api/admin/promotions/:id/publish
 POST /api/admin/promotions/duplicates   { keep, drop }
 ```
 
+## Is a card missing from my setup?
+
+**More → Improve my setup.** Gaps first, cards second — and that order is the
+whole design. A screen that starts from products is a list of things somebody
+might sell you. Starting from your own spending can reach the answer *nothing is
+missing*, which is the more valuable half of this feature and one a card-first
+pipeline can never produce.
+
+### Gaps
+
+```
+Your biggest reward gaps
+From 2026-03-18 to 2026-09-18 · 4 months with transactions   medium confidence
+
+dining
+$540.00 a month on dining with no card of yours paying a bonus on it —
+it earns about 1.80% in value.
+```
+
+A gap is a category where real money goes through with **no bonus coverage**.
+An absolute return threshold does not work: a flat 1.2 mpd card returns the same
+percentage on dining as on stamps, so by that measure nothing is ever uncovered
+— even though a dining card paying four times as much exists. The question that
+matters is whether anything you hold treats the category as special.
+
+A rule for a category that pays no more than the catch-all is not coverage; it
+is the base rate written out twice. Spend past a cap is its own kind of gap:
+the category *is* covered, just not all of it.
+
+### Candidates, simulated properly
+
+The naive version assigns the candidate to every transaction and reports the
+difference, which is how comparison sites arrive at numbers nobody ever sees. A
+card only earns on a purchase if it **beats what you would otherwise have
+used**, so every historical transaction is re-priced on the candidate and only
+the purchases where it wins count.
+
+Caps, channel restrictions, excluded codes and overlap then fall out of the
+arithmetic instead of needing to be argued about. The candidate's own caps are
+tallied forwards through the history, per window — a monthly cap that never
+resets is exhausted by the first purchase and makes a capped card look
+worthless, which is the same error in the opposite direction.
+
+### Three things it refuses to do
+
+**It does not add the welcome bonus to the ongoing value.** One recurs and one
+happens once; the sum is a number that means nothing.
+
+```
+Could add about $276.00 a year in value (18,400 miles) · $196.00 annual fee
+Separately, a welcome offer: 25,000 miles for $800.00 of spend.
+```
+
+**It does not rank on gross rewards.** A fee is real money, and the net is what
+is left after it.
+
+**It does not treat another card as free.** Another cap to watch, another
+minimum, another statement date and another programme are a cost even when
+nobody bills you for it — so every candidate is charged a complexity cost, and
+"keep the wallet simple" charges triple.
+
+### Where it does not help
+
+```
+Where the improvement comes from
+  dining: $248.00 over 36 purchases
+
+Where it does not help
+  online: $120.00 a month, already as well covered as this card would manage
+
+Extra value a year      $276.00
+Annual fee             −$196.00
+Another card to manage   −$20.00
+Worth                    $60.00
+```
+
+And the section that prevents a purchase rather than making one:
+
+```
+Considered and not worth it
+  Another Plain Card — it mostly repeats a card you already hold
+  Expensive Dining Card — its $500.00 fee is more than the $280.00 a year it would add
+```
+
+### Eligibility is deterministic or unknown
+
+The only eligibility facts the app actually holds are its own records, so a
+recently closed card is reported as ineligible with the reason, and everything
+else is `unknown` — *"income and existing-relationship requirements are not
+known to the app"*. A confident wrong answer here costs somebody a hard credit
+search.
+
+### Confidence
+
+Below three months of transactions the numbers are indicative and the report
+says so. Unconfirmed merchant codes and unverified card rates both lower it too,
+and the assumption is printed on the candidate itself:
+
+```
+Based on 4 month(s) of transactions, which is not much to go on.
+Assumes you would have used this card wherever it beat what you actually used.
+```
+
+```
+GET  /api/cards/portfolio-gaps?history_months=6
+POST /api/cards/acquisition/simulate   { history_months?, objective? }
+```
+
 ## Verify end to end
 
 ```

@@ -332,6 +332,7 @@ let onboardingStatus = 'completed';
 let appliedMcc: any = null;
 let optimised: any = null;
 let trackedOffer: number | null = null;
+let simulated: any = null;
 let added: any[] = [];
 
 /** innerText reflects CSS casing, so every text assertion compares lowercased. */
@@ -429,6 +430,47 @@ async function stub(page: Page) {
         body: JSON.parse(route.request().postData() ?? '{}'),
       };
       return send({ ok: true, applied: 'Kopitiam 88 Outlet 3 is 5814 from now on' });
+    }
+    if (u.pathname === '/api/cards/acquisition/simulate') {
+      simulated = JSON.parse(route.request().postData() ?? '{}');
+      return send({
+        as_of: '2026-09-18',
+        objective: simulated.objective,
+        confidence: 'medium',
+        history: { months: 6, months_with_data: 4, from: '2026-03-18', to: '2026-09-18' },
+        gaps: [
+          {
+            category: 'dining',
+            monthly_cents: 54000,
+            return_pct: 1.8,
+            detail: '$540.00 a month on dining with no card of yours paying a bonus on it — it earns about 1.80% in value.',
+            severity: 'high',
+          },
+        ],
+        suggestions: [
+          {
+            product: { id: 3, product_key: 'uob_ladys', issuer: 'UOB', product_name: "Lady's Card", annual_fee_cents: 19600 },
+            eligibility: 'unknown',
+            eligibility_note: 'Income and existing-relationship requirements are not known to the app.',
+            projected_annual_incremental_value_cents: 27600,
+            projected_extra_miles: 18400,
+            annual_fee_cents: 19600,
+            net_value_cents: 8000,
+            affected_spend_cents: 610000,
+            categories_improved: [{ category: 'dining', spend_cents: 610000, extra_value_cents: 24800, transactions: 36 }],
+            overlap_score: 0.2,
+            no_improvement: ['online: $120.00 a month, already as well covered as this card would manage'],
+            welcome_offer: { title: '25,000 welcome miles', reward: '25,000 miles', requires: '$800.00 of spend' },
+            assumptions: ['Based on 4 month(s) of transactions, which is not much to go on.', 'Assumes you would have used this card wherever it beat what you actually used.'],
+            reasons: ['dining: about $248.00 a year more'],
+            confidence: 'medium',
+            score_cents: 6000,
+            complexity_cost_cents: 2000,
+            closes_gaps: ['dining'],
+          },
+        ],
+        not_worth_it: [{ product_name: 'Another Plain Card', why: 'it mostly repeats a card you already hold' }],
+      });
     }
     if (u.pathname === '/api/promotions' && route.request().method() === 'GET') {
       const offer = {
@@ -872,6 +914,41 @@ async function main() {
       'and says what it taught the app, not just that it worked',
       (await page.locator('.ok-text').innerText()).includes('from now on')
     );
+
+    // --- is a card missing from my setup? --------------------------------
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Improve my setup' }).click();
+    await page.locator('.gaps').waitFor();
+
+    const gapsText = await page.locator('main').innerText();
+    check('gaps come before any card', says(gapsText, 'Your biggest reward gaps'), gapsText.slice(0, 200));
+    check('naming the spend and what it earns', says(gapsText, '$540.00 a month on dining'), gapsText.slice(0, 500));
+    check('and that nothing held pays a bonus on it', says(gapsText, 'no card of yours'), gapsText.slice(0, 600));
+    check('with the history it is based on', says(gapsText, '4 months with transactions'), gapsText.slice(0, 600));
+    check('and the confidence that follows from it', says(gapsText, 'medium confidence'), gapsText.slice(0, 600));
+
+    check('the simulation was asked for', simulated !== null, JSON.stringify(simulated));
+
+    const acq = await page.locator('.acq').first().innerText();
+    check('a candidate says what it would add', says(acq, '$276.00 a year'), acq.slice(0, 300));
+    check('with its annual fee shown separately', says(acq, '$196.00 annual fee'), acq.slice(0, 300));
+    check(
+      'and the welcome offer kept apart from the ongoing value',
+      says(acq, 'Separately, a welcome offer') && says(acq, '25,000 miles'),
+      acq.slice(0, 500)
+    );
+    check('eligibility is not claimed', says(acq, 'needs a check'), acq.slice(0, 500));
+
+    await page.locator('.acq').first().getByRole('button', { name: 'See the analysis' }).click();
+    const analysis = await page.locator('.acq-detail').innerText();
+    check('the analysis says where the value comes from', says(analysis, 'Where the improvement comes from'), analysis.slice(0, 200));
+    check('and where it does not help', says(analysis, 'Where it does not help') && says(analysis, 'already as well covered'), analysis.slice(0, 400));
+    check('another card is charged for', says(analysis, 'Another card to manage'), analysis.slice(0, 500));
+    check('and what it assumed is stated', says(analysis, 'not much to go on'), analysis.slice(0, 600));
+
+    const rejected = await page.locator('.card', { hasText: 'not worth it' }).innerText();
+    check('cards considered and rejected are shown', says(rejected, 'Another Plain Card'), rejected.slice(0, 300));
+    check('with the reason', says(rejected, 'repeats a card you already hold'), rejected.slice(0, 300));
 
     // --- offers worth your attention -------------------------------------
     await page.getByRole('button', { name: /^More/ }).click();

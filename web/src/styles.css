@@ -972,3 +972,19 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .offer2-title { font-size: 14.5px; font-weight: 600; }
 .offer2-why { margin: 6px 0 0; font-size: 12.5px; color: var(--mid); }
 .offer2-why b { color: var(--dim); font-weight: 500; }
+
+/* --- portfolio gaps and acquisition -------------------------------------- */
+.gaps { list-style: none; padding: 0; margin: 12px 0 0; }
+.gaps li { padding: 10px 0 10px 12px; border-left: 2px solid var(--line); border-top: 1px solid var(--line); }
+.gaps li:first-child { border-top: none; }
+.gaps li.high { border-left-color: var(--bad); }
+.gaps li.medium { border-left-color: var(--mid); }
+.gap-cat { margin: 0; font-size: 14px; font-weight: 600; text-transform: capitalize; }
+.acqs { list-style: none; padding: 0; margin: 12px 0 0; }
+.acq { padding: 14px 0; border-top: 1px solid var(--line); }
+.acq:first-child { border-top: none; }
+.acq-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.acq-name { margin: 0; font-size: 15px; font-weight: 600; }
+.acq-detail { margin-top: 12px; padding-left: 12px; border-left: 2px solid var(--line); }
+.acq-detail h4 { margin: 12px 0 0; font-size: 13px; color: var(--dim); }
+.acq-detail h4:first-child { margin-top: 0; }

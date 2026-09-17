@@ -137,6 +137,26 @@ A welcome bonus with two months to run is pending, not missing. Reporting it as
 a shortfall would make the check useless for the rewards people most want
 checked.
 
+## What to do with the points, and what is missing
+
+The wallet plans transfers rather than listing balances: whole blocks, what gets
+stranded, the fee over the miles it buys, expiring points first if you ask. The
+app never transfers anything — it writes the instruction and you carry it out.
+Bonuses are dated rows on top of routes, never written into the ratio, and one
+that needs registering is shown but not counted.
+
+Offers are filtered to this wallet and this spending, and every one says why it
+is being shown. Tracking an offer creates an ordinary minimum-spend requirement,
+and completing it writes what the bank now owes — which the rewards check then
+looks for.
+
+**Improve my setup** starts from gaps in your own spending, not from a list of
+cards. Candidates are re-run through the real recommendation engine over your
+real transactions, so a card only counts where it would have beaten the one you
+used. The annual fee, the welcome bonus and the cost of having another card to
+manage are all kept separate, and the section listing cards that are *not* worth
+it is the half that prevents an unnecessary purchase.
+
 ## Re-pricing the past
 
 Correct a rate, confirm a merchant code, fix a category — and every purchase

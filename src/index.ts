@@ -39,6 +39,8 @@ import { findDuplicate, merge } from './promotions/dedupe';
 import { inbox, rate } from './promotions/relevance';
 import { dismissPromotion, sweepCompleted, trackedOffers, trackPromotion } from './promotions/tracking';
 import { syncTransferBonuses } from './promotions/bridge';
+import { portfolioGaps, spendingProfile } from './acquisition/gaps';
+import { acquisitionReport } from './acquisition/economics';
 import { extractRewards, pendingCandidates, saveCandidates } from './rewards/extract';
 import { onboardingView, writeState } from './onboarding/state';
 import { searchProducts } from './onboarding/search';
@@ -1274,6 +1276,36 @@ export default {
           const p = await env.DB.prepare(`SELECT * FROM promotions WHERE id = ?`).bind(id).first<any>();
           if (!p) return json({ error: 'no such promotion' }, 404);
           return json({ duplicate: await findDuplicate(env, p) });
+        }
+
+        // --- is a card missing from my setup? (P2 phase 6) ------------------
+        // Gaps first, candidates second. Starting from cards produces a list of
+        // products someone might sell you; starting from your own spending can
+        // reach the answer "nothing is missing", which the other never does.
+        if (url.pathname === '/api/cards/portfolio-gaps') {
+          const months = Math.min(12, Math.max(1, parseInt(url.searchParams.get('history_months') ?? '6', 10) || 6));
+          return json({
+            gaps: await portfolioGaps(env, months),
+            profile: await spendingProfile(env, months),
+            as_of: today(env),
+          });
+        }
+
+        if (url.pathname === '/api/cards/acquisition/simulate' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as {
+            history_months?: number;
+            objective?: string;
+            limit?: number;
+          };
+          const months = Math.min(12, Math.max(1, Number(b.history_months) || 6));
+          const OBJECTIVES = ['maximise_miles', 'minimise_fees', 'simpler_wallet', 'balanced'];
+          return json(
+            await acquisitionReport(env, {
+              months,
+              objective: OBJECTIVES.includes(String(b.objective)) ? (b.objective as any) : 'balanced',
+              limit: typeof b.limit === 'number' ? b.limit : undefined,
+            })
+          );
         }
 
         // --- onboarding (P1 phase 1) ---------------------------------------

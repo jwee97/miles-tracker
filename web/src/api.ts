@@ -792,6 +792,53 @@ export const dismissOffer = (id: number) => post<{ ok: boolean }>(`/api/promotio
 export const sweepPromotions = () =>
   post<{ completed: { title: string; expected: string }[] }>('/api/promotions/sweep', {});
 
+/* --- is a card missing from my setup? ------------------------------------- */
+
+export interface PortfolioGap {
+  category: string;
+  monthly_cents: number;
+  return_pct: number;
+  detail: string;
+  severity: 'high' | 'medium' | 'low';
+}
+
+export interface AcquisitionSuggestion {
+  product: { id: number; product_key: string; issuer: string; product_name: string; annual_fee_cents: number | null };
+  eligibility: 'eligible' | 'ineligible' | 'unknown';
+  eligibility_note: string | null;
+  projected_annual_incremental_value_cents: number;
+  projected_extra_miles: number;
+  annual_fee_cents: number;
+  net_value_cents: number;
+  affected_spend_cents: number;
+  categories_improved: { category: string; spend_cents: number; extra_value_cents: number; transactions: number }[];
+  overlap_score: number;
+  no_improvement: string[];
+  welcome_offer: { title: string; reward: string; requires: string | null } | null;
+  assumptions: string[];
+  reasons: string[];
+  confidence: 'high' | 'medium' | 'low';
+  score_cents: number;
+  complexity_cost_cents: number;
+  closes_gaps: string[];
+}
+
+export interface AcquisitionReport {
+  gaps: PortfolioGap[];
+  suggestions: AcquisitionSuggestion[];
+  not_worth_it: { product_name: string; why: string }[];
+  history: { months: number; months_with_data: number; from: string; to: string };
+  objective: string;
+  confidence: 'high' | 'medium' | 'low';
+  as_of: string;
+}
+
+export const fetchPortfolioGaps = (months = 6) =>
+  get<{ gaps: PortfolioGap[]; as_of: string }>(`/api/cards/portfolio-gaps?history_months=${months}`);
+
+export const simulateAcquisition = (body: { history_months?: number; objective?: string }) =>
+  post<AcquisitionReport>('/api/cards/acquisition/simulate', body);
+
 /* --- onboarding ---------------------------------------------------------- */
 
 export interface OnboardingField {
