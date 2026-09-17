@@ -2216,6 +2216,120 @@ POST /api/rewards/goals
 POST /api/rewards/goals/:id               { status }
 ```
 
+## Offers worth your attention
+
+**More → Offers for you.** The feed scanner finds pages; this is the structured
+thing underneath — what a promotion requires, what it pays, which cards and
+programmes it applies to, and where the claim came from.
+
+A feed of every offer every bank is running is not a feature. It is a list
+nobody reads, with the two that mattered buried in it. So the inbox is sectioned
+by *reason to look*, and every offer carries the sentence answering **why am I
+seeing this**:
+
+```
+Worth checking (1)
+
+Spend $300 on eligible online purchases              12d
+DBS · Spend $300.00 → 2,000 bonus points · by 2026-09-30
+
+Why you're seeing this: You hold DBS Woman's World Card.
+You normally spend about $430.00 a month where this applies.
+Registration required.
+
+[ Track this offer ]  [ Not interested ]  View terms
+```
+
+An offer for a card nobody holds is `not_applicable` rather than low-priority —
+saying so is more useful than ranking it. Everything, including those, stays
+available in a list with the reason it does not apply.
+
+### Nothing is published on a guess
+
+```
+source discovered → extracted → reviewed → published
+```
+
+Extraction reads thresholds, windows, rewards, end dates and registration
+wording, and keeps the sentence each number came from. **It always saves a
+draft, whatever its confidence.** An offer with a wrong threshold is worse than
+no offer, because somebody spends against it.
+
+Publishing is refused while a term that decides money is unknown, and the
+refusal names them:
+
+```
+the terms that decide money are not known yet
+  · how much has to be spent
+  · what it pays
+```
+
+Confidence is `low` both when something is missing and when nothing at all was
+read — a page the extractor understood none of is a guess with a title, not a
+medium-confidence promotion.
+
+### Tracking is not a second progress system
+
+Tracking an offer creates an **ordinary requirement**. The minimum-spend engine
+already counts spend in a window against a threshold, excludes codes that do not
+qualify, and knows how many days are left. A parallel implementation would drift
+and then disagree with the Cards tab.
+
+```
+Spend $300 on eligible online purchases
+$186.00 of $300.00 on wwmc · 12 days left
+████████░░░░░
+```
+
+Dismissing an offer retires its requirement too — a minimum nobody is chasing
+would otherwise keep pulling spend toward a card for no reason.
+
+### Completion connects to the rewards check
+
+When the spend is done, the app writes an **expected reward** and credits
+nothing. The bank has not paid yet, and noticing if it never does is the
+reconciliation's job. `expected_by` is set generously (45 days past the offer's
+end), because calling a campaign reward overdue on day two would make the check
+noise.
+
+That is the closed loop: offer → requirement → progress → expected reward →
+reconciliation.
+
+### Transfer bonuses reach the optimiser through the route
+
+The optimiser knows one thing: a dated bonus attached to a route. Teaching it
+about promotions as well would mean two places to fix when a bonus is wrong. So
+a published `transfer_bonus` is **projected** onto the routes it names, carrying
+the promotion's id; withdrawing the promotion takes the projection with it,
+rather than leaving a dead bonus inflating every plan.
+
+A bonus with no destination programme named is not projected at all — it would
+otherwise apply to every route out of the source, including ones it has nothing
+to do with.
+
+### Duplicates and expiry
+
+Several feeds cover the same bank, so one offer arrives as three headlines. The
+same page merges automatically; the same issuer with matching terms and
+overlapping dates merges automatically; a mere resemblance is flagged and left
+alone, because a wrong merge hides a second, better offer. The survivor gains
+what it did not know — two partial extractions often know different halves.
+
+Expired promotions are marked, never deleted: a tracked requirement and a
+reconciled reward both point back at the promotion that caused them.
+
+```
+GET  /api/promotions                    the inbox, sectioned by relevance
+GET  /api/promotions/tracked
+POST /api/promotions/:id/track
+POST /api/promotions/:id/dismiss
+POST /api/promotions/sweep              completions → expected rewards
+
+POST /api/admin/promotions              { text } reads a page into a draft
+POST /api/admin/promotions/:id/publish
+POST /api/admin/promotions/duplicates   { keep, drop }
+```
+
 ## Verify end to end
 
 ```

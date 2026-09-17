@@ -331,6 +331,7 @@ let repriced: any = null;
 let onboardingStatus = 'completed';
 let appliedMcc: any = null;
 let optimised: any = null;
+let trackedOffer: number | null = null;
 let added: any[] = [];
 
 /** innerText reflects CSS casing, so every text assertion compares lowercased. */
@@ -429,6 +430,67 @@ async function stub(page: Page) {
       };
       return send({ ok: true, applied: 'Kopitiam 88 Outlet 3 is 5814 from now on' });
     }
+    if (u.pathname === '/api/promotions' && route.request().method() === 'GET') {
+      const offer = {
+        promotion: {
+          id: 7,
+          promotion_type: 'spend_bonus',
+          issuer: 'DBS',
+          title: "Spend $300 on eligible online purchases",
+          description: null,
+          start_at: '2026-09-01',
+          end_at: '2026-09-30',
+          registration_required: 1,
+          source_url: 'https://example.invalid/offer',
+          source_quote: 'Spend $300 · within 30 days · 2,000 bonus points',
+          confidence: 'high',
+          status: 'published',
+        },
+        terms: { minimum_spend_cents: 30000, reward_points: 2000, window_days: 30 },
+        relevance: 'high',
+        why: ["You hold DBS Woman's World Card.", 'You normally spend about $430.00 a month where this applies.', 'Registration required.'],
+        blockers: [],
+        days_left: 12,
+        card: { id: 1, nickname: 'wwmc', product: "Woman's World Card" },
+        reachable: true,
+        monthly_spend_cents: 43000,
+        tracked: false,
+      };
+      const irrelevant = {
+        ...offer,
+        promotion: { ...offer.promotion, id: 8, title: 'Offer for a card you do not hold' },
+        relevance: 'not_applicable',
+        why: [],
+        blockers: ['You do not hold the card this applies to.'],
+        card: null,
+      };
+      return send({
+        as_of: '2026-09-18',
+        worth_checking: [offer],
+        ending_soon: [offer],
+        your_cards: [offer],
+        transfers: [],
+        everything: [offer, irrelevant],
+      });
+    }
+    if (u.pathname === '/api/promotions/tracked')
+      return send({
+        as_of: '2026-09-18',
+        offers: [
+          {
+            tracking_id: 1,
+            promotion: { id: 7, title: 'Spend $300 on eligible online purchases', promotion_type: 'spend_bonus', issuer: 'DBS', description: null, start_at: null, end_at: '2026-09-30', registration_required: 1, source_url: null, source_quote: null, confidence: 'high', status: 'published' },
+            card: { id: 1, nickname: 'wwmc', product: "Woman's World Card" },
+            progress: { spent_cents: 18600, required_cents: 30000, remaining_cents: 11400, days_left: 12, met: false },
+            status: 'tracked',
+          },
+        ],
+      });
+    if (u.pathname.match(/^\/api\/promotions\/\d+\/track$/)) {
+      trackedOffer = Number(u.pathname.split('/')[3]);
+      return send({ ok: true, summary: '$300.00 on wwmc by 2026-09-30 — 12 days left.' });
+    }
+    if (u.pathname.startsWith('/api/promotions/')) return send({ ok: true, completed: [] });
     if (u.pathname === '/api/rewards/programmes')
       return send({
         programmes: [
@@ -810,6 +872,42 @@ async function main() {
       'and says what it taught the app, not just that it worked',
       (await page.locator('.ok-text').innerText()).includes('from now on')
     );
+
+    // --- offers worth your attention -------------------------------------
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Offers for you' }).click();
+    await page.locator('.offers2').first().waitFor();
+
+    const offersText = await page.locator('main').innerText();
+    check('relevant offers lead', says(offersText, 'Worth checking'), offersText.slice(0, 300));
+    check('and every one says why it is shown', says(offersText, "Why you're seeing this"), offersText.slice(0, 500));
+    check('in terms of this wallet', says(offersText, 'You normally spend about $430.00'), offersText.slice(0, 600));
+    check('registration is not assumed away', says(offersText, 'Registration required'), offersText.slice(0, 600));
+
+    const tracking = await page.locator('.card', { hasText: 'chasing' }).innerText();
+    check('a tracked offer shows real progress', tracking.includes('186.00') && tracking.includes('300.00'), tracking.slice(0, 300));
+    check(
+      'from the same engine the cards use',
+      says(tracking, 'not a second one'),
+      tracking.slice(0, 400)
+    );
+
+    // The tracked section renders first and its rows share the class, so target
+    // the offer inside "Worth checking" rather than the first one on the page.
+    const worth = page.locator('.card', { hasText: 'Worth checking' });
+    await worth.locator('.offer2').first().getByRole('button', { name: 'Track this offer' }).click();
+    await worth.locator('.ok-text').first().waitFor();
+    check('an offer can be tracked in one tap', trackedOffer === 7, String(trackedOffer));
+    check(
+      'and it says what will be watched',
+      says(await worth.locator('.ok-text').first().innerText(), '300.00'),
+      await worth.locator('.ok-text').first().innerText()
+    );
+
+    await page.locator('.card', { hasText: 'Everything' }).getByRole('button', { name: 'Show' }).click();
+    const everything = await page.locator('.card', { hasText: 'Everything' }).innerText();
+    check('offers that do not apply are still listed', says(everything, 'do not hold'), everything.slice(0, 400));
+    check('with the reason they do not', says(everything, 'not_applicable'), everything.slice(0, 400));
 
     // --- what to do with the points --------------------------------------
     await page.getByRole('button', { name: /^More/ }).click();

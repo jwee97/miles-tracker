@@ -1766,6 +1766,54 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('a goal needs a target', (await authed('/api/rewards/goals', { program_key: 'krisflyer' })).status === 400, '');
 }
 
+// --- offers worth your attention -----------------------------------------------
+{
+  // Extraction proposes; it never publishes.
+  const drafted = (await (
+    await authed('/api/admin/promotions', {
+      text: 'Spend $300 on eligible online purchases within 30 days and receive 2,000 bonus points.',
+      issuer: 'Citi',
+      title: 'Online spend bonus',
+      source_url: 'https://example.invalid/promo',
+    })
+  ).json()) as any;
+  check('a page can be read into a promotion', drafted.ok === true, JSON.stringify(drafted).slice(0, 200));
+  check('with the terms it found', drafted.extracted.terms.minimum_spend_cents === 30000, JSON.stringify(drafted.extracted?.terms));
+  check('and the sentences they came from', typeof drafted.extracted.source_quote === 'string', '');
+  check('saved as a draft, never published', (db.prepare('SELECT status FROM promotions WHERE id = ?').get(drafted.id) as any).status === 'draft');
+
+  const published = await authed(`/api/admin/promotions/${drafted.id}/publish`, {});
+  check('a complete draft can be published', ((await published.json()) as any).ok === true, String(published.status));
+
+  const vague = (await (
+    await authed('/api/admin/promotions', { promotion_type: 'spend_bonus', title: 'Something good', status: 'published' })
+  ).json()) as any;
+  check('one with unknown terms cannot be', vague.ok === false, JSON.stringify(vague));
+  check('and it says which terms are missing', Array.isArray(vague.missing) && vague.missing.length > 0, JSON.stringify(vague.missing));
+
+  const box = (await (await authed('/api/promotions')).json()) as any;
+  check('the inbox is sectioned', 'worth_checking' in box && 'ending_soon' in box, JSON.stringify(Object.keys(box)));
+  check('and every entry carries its reasons', box.everything.every((o: any) => Array.isArray(o.why)), '');
+
+  const detail = await authed(`/api/promotions/${drafted.id}`);
+  check('one promotion can be opened', detail.status === 200, String(detail.status));
+  check('an unknown one is a 404', (await authed('/api/promotions/99999')).status === 404, '');
+
+  const tracked = (await (await authed(`/api/promotions/${drafted.id}/track`, { nickname: 'crw' })).json()) as any;
+  if (tracked.ok) {
+    check('tracking creates an ordinary requirement', (db.prepare('SELECT COUNT(*) AS n FROM requirements WHERE promotion_id = ?').get(drafted.id) as any).n === 1, '');
+    check('and says what is being watched', typeof tracked.summary === 'string', tracked.summary);
+  } else {
+    check('tracking explains why it could not', typeof tracked.error === 'string', JSON.stringify(tracked));
+  }
+
+  check('offers being chased are listable', Array.isArray(((await (await authed('/api/promotions/tracked')).json()) as any).offers), '');
+  check('a sweep reports completions', 'completed' in ((await (await authed('/api/promotions/sweep', {})).json()) as any), '');
+  check('an offer can be dismissed', ((await (await authed(`/api/promotions/${drafted.id}/dismiss`, {})).json()) as any).ok === true, '');
+
+  check('merging needs both promotions', (await authed('/api/admin/promotions/duplicates', { keep: 1 })).status === 400, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

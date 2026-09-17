@@ -7,6 +7,7 @@ import Onboarding from './features/onboarding/Onboarding';
 import Review from './Review';
 import RewardCheck from './features/rewards/RewardCheck';
 import TransferPlanner from './features/rewards/TransferPlanner';
+import OfferInbox from './features/offers/OfferInbox';
 import Audit from './Audit';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
@@ -1882,7 +1883,8 @@ const MORE: [string, string][] = [
   ['trends', 'Trends'],
   ['audit', 'Audit'],
   ['codes', 'Codes'],
-  ['offers', 'Offers'],
+  ['offers2', 'Offers for you'],
+  ['offers', 'Offer feed'],
   ['settings', 'Settings'],
 ];
 
@@ -1897,6 +1899,7 @@ export default function App() {
     | 'setup'
     | 'rewardcheck'
     | 'transfers'
+    | 'offers2'
     | 'ledger'
     | 'other'
     | 'trends'
@@ -2081,6 +2084,8 @@ export default function App() {
       {tab === 'rewardcheck' && <RewardCheck />}
 
       {tab === 'transfers' && <TransferPlanner />}
+
+      {tab === 'offers2' && <OfferInbox />}
 
       {tab === 'review' && <Review />}
 

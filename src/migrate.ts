@@ -85,6 +85,13 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: 'programs', column: 'programme_type', ddl: "ALTER TABLE programs ADD COLUMN programme_type TEXT" },
   { table: 'programs', column: 'expiry_policy', ddl: 'ALTER TABLE programs ADD COLUMN expiry_policy TEXT' },
   { table: 'programs', column: 'status', ddl: "ALTER TABLE programs ADD COLUMN status TEXT NOT NULL DEFAULT 'active'" },
+  // --- promotions (P2 phase 5) ---
+  // A tracked offer's requirement points back at the promotion it came from,
+  // so "where did this minimum come from" keeps an answer.
+  { table: 'requirements', column: 'promotion_id', ddl: 'ALTER TABLE requirements ADD COLUMN promotion_id INTEGER' },
+  // The older offers table keeps its eligibility engine; this links a row to
+  // the structured promotion rather than duplicating one into the other.
+  { table: 'offers', column: 'promotion_id', ddl: 'ALTER TABLE offers ADD COLUMN promotion_id INTEGER' },
   { table: 'conversions', column: 'verified_at', ddl: 'ALTER TABLE conversions ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
   { table: 'conversions', column: 'note', ddl: 'ALTER TABLE conversions ADD COLUMN note TEXT' },

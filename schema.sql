@@ -706,3 +706,86 @@ CREATE TABLE IF NOT EXISTS reward_goals (
   created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS goal_active ON reward_goals(status, program_key);
+
+-- ===========================================================================
+-- Promotions (P2 phase 5)
+--
+-- The feed scanner found pages. This is the structured thing underneath: what
+-- a promotion actually requires and pays, which cards and programmes it applies
+-- to, and where the claim came from. Nothing is published automatically when
+-- the economic terms are uncertain — an offer with a wrong threshold is worse
+-- than no offer, because someone will spend against it.
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS promotions (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  promotion_key         TEXT    UNIQUE,
+  -- welcome_offer | spend_bonus | merchant_offer | transfer_bonus
+  --   | annual_fee_offer | points_conversion_offer | category_bonus
+  --   | cardholder_offer | bank_campaign
+  promotion_type        TEXT    NOT NULL,
+  issuer                TEXT,
+  title                 TEXT    NOT NULL,
+  description           TEXT,
+  start_at              TEXT,
+  end_at                TEXT,
+  registration_required INTEGER NOT NULL DEFAULT 0,
+  source_url            TEXT,
+  source_type           TEXT,
+  retrieved_at          TEXT,
+  verified_at           TEXT,
+  -- draft | published | expired | rejected. A draft is invisible to the app.
+  status                TEXT    NOT NULL DEFAULT 'draft',
+  -- The machine-readable terms: thresholds, rewards, windows.
+  terms_json            TEXT,
+  -- The sentence the terms were read out of, kept as provenance.
+  source_quote          TEXT,
+  confidence            TEXT    NOT NULL DEFAULT 'medium',
+  -- Set when this was merged into another as a duplicate.
+  duplicate_of          INTEGER REFERENCES promotions(id) ON DELETE SET NULL,
+  dismissed_at          TEXT,
+  created_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS promo_status ON promotions(status, promotion_type, end_at);
+
+-- Who a promotion applies to. Separate tables rather than a CSV column, so a
+-- promotion can be found from a card, a programme or a merchant code.
+CREATE TABLE IF NOT EXISTS promotion_card_products (
+  promotion_id INTEGER NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+  product_id   INTEGER NOT NULL REFERENCES card_products(id) ON DELETE CASCADE,
+  PRIMARY KEY (promotion_id, product_id)
+);
+
+CREATE TABLE IF NOT EXISTS promotion_programmes (
+  promotion_id INTEGER NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+  program_key  TEXT    NOT NULL REFERENCES programs(key) ON DELETE CASCADE,
+  -- source | destination, for a transfer bonus.
+  role         TEXT    NOT NULL DEFAULT 'source',
+  PRIMARY KEY (promotion_id, program_key, role)
+);
+
+CREATE TABLE IF NOT EXISTS promotion_merchants (
+  promotion_id INTEGER NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+  merchant_key TEXT    NOT NULL,
+  PRIMARY KEY (promotion_id, merchant_key)
+);
+
+CREATE TABLE IF NOT EXISTS promotion_mccs (
+  promotion_id INTEGER NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+  mcc          TEXT    NOT NULL,
+  PRIMARY KEY (promotion_id, mcc)
+);
+
+-- What has been decided about a promotion: tracked, dismissed, completed.
+CREATE TABLE IF NOT EXISTS promotion_tracking (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  promotion_id   INTEGER NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+  card_id        INTEGER REFERENCES cards(id) ON DELETE CASCADE,
+  -- The requirement it became, so progress uses the existing engine.
+  requirement_id INTEGER REFERENCES requirements(id) ON DELETE SET NULL,
+  status         TEXT    NOT NULL DEFAULT 'tracked', -- tracked | completed | dismissed
+  tracked_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  completed_at   TEXT,
+  UNIQUE(promotion_id, card_id)
+);
+CREATE INDEX IF NOT EXISTS ptrack_status ON promotion_tracking(status);

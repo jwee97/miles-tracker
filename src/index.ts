@@ -33,6 +33,12 @@ import { applyActualMcc, reconcileAll, reconcileRewardPeriod } from './rewards/r
 import { optimiseTransfer } from './transfers/optimiser';
 import { promotionsFor } from './transfers/routes';
 import { goalProgress, listGoals, reservedFor, saveGoal, setGoalStatus } from './transfers/goals';
+import { expirePromotions, linkApplicability, publishPromotion, savePromotion } from './promotions/model';
+import { extractPromotion, saveDraft } from './promotions/extract';
+import { findDuplicate, merge } from './promotions/dedupe';
+import { inbox, rate } from './promotions/relevance';
+import { dismissPromotion, sweepCompleted, trackedOffers, trackPromotion } from './promotions/tracking';
+import { syncTransferBonuses } from './promotions/bridge';
 import { extractRewards, pendingCandidates, saveCandidates } from './rewards/extract';
 import { onboardingView, writeState } from './onboarding/state';
 import { searchProducts } from './onboarding/search';
@@ -1164,6 +1170,110 @@ export default {
           if (!['active', 'met', 'abandoned'].includes(status)) return json({ error: 'bad status' }, 400);
           await setGoalStatus(env, id, status as any);
           return json({ ok: true });
+        }
+
+        // --- promotions (P2 phase 5) ----------------------------------------
+        // Relevance first: a feed of every offer every bank runs is a list
+        // nobody reads, and the two that mattered are buried in it.
+        if (url.pathname === '/api/promotions' && req.method === 'GET') {
+          await expirePromotions(env);
+          return json(await inbox(env));
+        }
+
+        if (url.pathname === '/api/promotions/tracked') {
+          return json({ offers: await trackedOffers(env), as_of: today(env) });
+        }
+
+        if (url.pathname.match(/^\/api\/promotions\/\d+\/track$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[3]);
+          const b = (await req.json().catch(() => ({}))) as { card_id?: number; nickname?: string };
+          let cardId = typeof b.card_id === 'number' ? b.card_id : undefined;
+          if (!cardId && b.nickname) {
+            const c = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+              .bind(String(b.nickname))
+              .first<{ id: number }>();
+            cardId = c?.id;
+          }
+          const r = await trackPromotion(env, id, cardId);
+          return json(r, r.ok ? 200 : 400);
+        }
+
+        if (url.pathname.match(/^\/api\/promotions\/\d+\/dismiss$/) && req.method === 'POST') {
+          return json(await dismissPromotion(env, Number(url.pathname.split('/')[3])));
+        }
+
+        // Offers whose spend is done. Completing one writes what the bank now
+        // owes, which is what connects an offer to the rewards check.
+        if (url.pathname === '/api/promotions/sweep' && req.method === 'POST') {
+          const done = await sweepCompleted(env);
+          const bridged = await syncTransferBonuses(env);
+          return json({ ...done, transfer_bonuses: bridged });
+        }
+
+        if (url.pathname.match(/^\/api\/promotions\/\d+$/) && req.method === 'GET') {
+          const id = Number(url.pathname.split('/')[3]);
+          const p = await env.DB.prepare(`SELECT * FROM promotions WHERE id = ?`).bind(id).first<any>();
+          if (!p) return json({ error: 'no such promotion' }, 404);
+          return json({ promotion: await rate(env, p) });
+        }
+
+        // --- admin: extraction proposes, a person publishes -----------------
+        if (url.pathname === '/api/admin/promotions' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+
+          // Reading a page produces a draft and nothing else, whatever its
+          // confidence: an offer with a wrong threshold is worse than none,
+          // because somebody spends against it.
+          if (b.text) {
+            const e = extractPromotion(String(b.text), { issuer: b.issuer ?? null, title: b.title });
+            const saved = await saveDraft(env, e, { url: b.source_url ?? null, type: b.source_type ?? null });
+            if (saved.ok && saved.id && b.links) await linkApplicability(env, saved.id, b.links);
+            return json({ ...saved, extracted: e }, saved.ok ? 200 : 400);
+          }
+
+          const r = await savePromotion(env, {
+            id: typeof b.id === 'number' ? b.id : undefined,
+            promotion_type: b.promotion_type,
+            issuer: b.issuer ?? null,
+            title: String(b.title ?? ''),
+            description: b.description ?? null,
+            start_at: b.start_at ?? null,
+            end_at: b.end_at ?? null,
+            registration_required: !!b.registration_required,
+            source_url: b.source_url ?? null,
+            source_type: b.source_type ?? null,
+            source_quote: b.source_quote ?? null,
+            confidence: b.confidence,
+            terms: b.terms ?? {},
+            status: b.status,
+          });
+          if (r.ok && r.id && b.links) await linkApplicability(env, r.id, b.links);
+          return json(r, r.ok ? 200 : 400);
+        }
+
+        if (url.pathname.match(/^\/api\/admin\/promotions\/\d+\/publish$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          const r = await publishPromotion(env, id);
+          // A published transfer bonus reaches the optimiser through the route
+          // it applies to, rather than the optimiser learning about promotions.
+          if (r.ok) await syncTransferBonuses(env);
+          return json(r, r.ok ? 200 : 400);
+        }
+
+        if (url.pathname === '/api/admin/promotions/duplicates' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as { keep?: number; drop?: number };
+          if (typeof b.keep !== 'number' || typeof b.drop !== 'number') {
+            return json({ error: 'both promotions are required' }, 400);
+          }
+          const r = await merge(env, b.keep, b.drop);
+          return json(r, r.ok ? 200 : 400);
+        }
+
+        if (url.pathname.match(/^\/api\/admin\/promotions\/\d+\/duplicate$/)) {
+          const id = Number(url.pathname.split('/')[4]);
+          const p = await env.DB.prepare(`SELECT * FROM promotions WHERE id = ?`).bind(id).first<any>();
+          if (!p) return json({ error: 'no such promotion' }, 404);
+          return json({ duplicate: await findDuplicate(env, p) });
         }
 
         // --- onboarding (P1 phase 1) ---------------------------------------

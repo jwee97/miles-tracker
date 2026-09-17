@@ -731,6 +731,67 @@ export const saveRewardGoal = (body: {
 export const setGoalStatus = (id: number, status: 'active' | 'met' | 'abandoned') =>
   post<{ ok: true }>(`/api/rewards/goals/${id}`, { status });
 
+/* --- promotions ----------------------------------------------------------- */
+
+export interface Promotion {
+  id: number;
+  promotion_type: string;
+  issuer: string | null;
+  title: string;
+  description: string | null;
+  start_at: string | null;
+  end_at: string | null;
+  registration_required: number;
+  source_url: string | null;
+  source_quote: string | null;
+  confidence: string;
+  status: string;
+}
+
+export interface RelevantPromotion {
+  promotion: Promotion;
+  terms: Record<string, unknown>;
+  relevance: 'high' | 'medium' | 'low' | 'not_applicable';
+  why: string[];
+  blockers: string[];
+  days_left: number | null;
+  card: { id: number; nickname: string; product: string } | null;
+  reachable: boolean | null;
+  monthly_spend_cents: number | null;
+  tracked: boolean;
+}
+
+export interface OfferInbox {
+  worth_checking: RelevantPromotion[];
+  ending_soon: RelevantPromotion[];
+  your_cards: RelevantPromotion[];
+  transfers: RelevantPromotion[];
+  everything: RelevantPromotion[];
+  as_of: string;
+}
+
+export interface TrackedOffer {
+  tracking_id: number;
+  promotion: Promotion;
+  card: { id: number; nickname: string; product: string } | null;
+  progress: { spent_cents: number; required_cents: number; remaining_cents: number; days_left: number; met: boolean } | null;
+  status: string;
+}
+
+export const fetchOffers2 = () => get<OfferInbox>('/api/promotions');
+
+export const fetchTrackedOffers = () => get<{ offers: TrackedOffer[]; as_of: string }>('/api/promotions/tracked');
+
+export const trackOffer = (id: number, nickname?: string) =>
+  post<{ ok: boolean; error?: string; summary?: string }>(`/api/promotions/${id}/track`, { nickname });
+
+export const dismissOffer = (id: number) => post<{ ok: boolean }>(`/api/promotions/${id}/dismiss`, {});
+
+// Named apart from the older sweepOffers, which retires expired feed items —
+// two different sweeps, and one name for both would be a silent mix-up.
+export const sweepPromotions = () =>
+  post<{ completed: { title: string; expected: string }[] }>('/api/promotions/sweep', {});
+
 /* --- onboarding ---------------------------------------------------------- */
 
 export interface OnboardingField {
