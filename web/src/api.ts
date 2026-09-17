@@ -597,6 +597,72 @@ export const recommendV2 = (b: {
   occurred_at?: string;
 }) => post<RecommendationV2>('/api/recommend', b);
 
+/* --- onboarding ---------------------------------------------------------- */
+
+export interface OnboardingField {
+  key: string;
+  type: 'date' | 'day_of_month' | 'money' | 'number' | 'choice' | 'boolean';
+  label: string;
+  help_text: string | null;
+  required: boolean;
+  affects: string;
+  sort: number;
+}
+
+export interface CardSetup {
+  card_id: number;
+  nickname: string;
+  product: string;
+  status: 'ready' | 'usable_with_limits' | 'needs_setup';
+  missing: { field_key: string; label: string; affects: string; required: boolean }[];
+  consequence: string | null;
+}
+
+export interface OnboardingState {
+  status: 'not_started' | 'in_progress' | 'completed';
+  cards_completed: number;
+  statements_offered: number;
+  wallet_offered: number;
+  completed_at: string | null;
+}
+
+export interface OnboardingView {
+  state: OnboardingState;
+  cards: CardSetup[];
+  repairs: CardSetup[];
+  ready: boolean;
+}
+
+export interface CardMatch {
+  product: CatalogProduct;
+  matched_on: 'alias' | 'name' | 'issuer' | 'initials';
+  score: number;
+  held_as: string | null;
+}
+
+export const fetchOnboarding = () => get<OnboardingView>('/api/onboarding');
+
+export const searchCatalogue = (q: string) =>
+  get<{ matches: CardMatch[] }>(`/api/onboarding/search?q=${encodeURIComponent(q)}`);
+
+export const onboardingFields = (productId?: number) =>
+  get<{ fields: OnboardingField[] }>(`/api/onboarding/fields${productId ? `?product_id=${productId}` : ''}`);
+
+export const setOnboardingState = (body: Partial<OnboardingState>) =>
+  post<{ ok: true; state: OnboardingState }>('/api/onboarding/state', body);
+
+export const completeOnboarding = () =>
+  post<{ ok: true; state: OnboardingState; repairs: CardSetup[] }>('/api/onboarding/complete', {});
+
+export const attachOffer = (
+  cardId: number,
+  body: { amount: string; window_days: number; reward_note: string }
+) =>
+  post<{ ok: boolean; error?: string; deadline?: string; summary?: string }>(
+    `/api/onboarding/cards/${cardId}/offers`,
+    body
+  );
+
 /* --- the action centre --------------------------------------------------- */
 
 export type ActionKind =

@@ -3,10 +3,12 @@ import Advisor from './Advisor';
 import Action from './components/ActionItem';
 import {
   fetchActions,
+  fetchOnboarding,
   fetchTransactions,
   logUsed,
   money,
   type ActionItem,
+  type OnboardingView,
   type RecommendationV2,
   type Txn,
 } from './api';
@@ -108,6 +110,7 @@ export default function Home({ onGo }: { onGo: (target: string) => void }) {
   const [err, setErr] = useState<string | null>(null);
   const [logged, setLogged] = useState<{ id: number; text: string } | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [setup, setSetup] = useState<OnboardingView | null>(null);
 
   function load() {
     fetchActions()
@@ -122,7 +125,10 @@ export default function Home({ onGo }: { onGo: (target: string) => void }) {
         setErr((e as Error).message);
       });
     fetchTransactions(8)
-      .then((d) => setRecent(d.transactions))
+      .then((d) => setRecent(d.transactions ?? []))
+      .catch(() => void 0);
+    fetchOnboarding()
+      .then(setSetup)
       .catch(() => void 0);
   }
   useEffect(load, []);
@@ -172,6 +178,43 @@ export default function Home({ onGo }: { onGo: (target: string) => void }) {
 
   return (
     <>
+      {setup && setup.state.status === 'not_started' && (
+        <section className="card">
+          <h2>Set up Miles Tracker</h2>
+          <p className="sub">
+            Add your cards and it can start answering which one to use. It takes about a minute and never asks for
+            reward rates.
+          </p>
+          <div className="entry-foot">
+            <button onClick={() => onGo('setup')}>Get started</button>
+          </div>
+        </section>
+      )}
+
+      {/*
+        A gap in an existing setup is a repair, not an onboarding. Someone with
+        four cards and two years of history being shown a welcome screen would
+        be told the app had forgotten who they were.
+      */}
+      {setup && setup.state.status === 'completed' && setup.repairs.length > 0 && (
+        <section className="card">
+          <h2>A few details would improve recommendations</h2>
+          <ul className="onb-list">
+            {setup.repairs.map((r) => (
+              <li key={r.card_id}>
+                <b>{r.product}</b> — {r.missing.map((m) => m.label).join(', ')}
+                {r.consequence && <span className="sub"> {r.consequence}</span>}
+              </li>
+            ))}
+          </ul>
+          <div className="entry-foot">
+            <button className="secondary" onClick={() => onGo('cards')}>
+              Complete setup
+            </button>
+          </div>
+        </section>
+      )}
+
       <Advisor action={usedButton} />
 
       <section className="card">

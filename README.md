@@ -185,6 +185,26 @@ When a bonus cap will run out mid-purchase it also says what to put where and
 what the split is worth; under `SPLIT_MIN_GAIN_CENTS` (default $1.50) it keeps
 quiet, because two taps at the counter should be worth something.
 
+## Setting up
+
+Three steps, and not one of them asks for a reward rate. Search the catalogue by
+whatever you call the card — `wwmc` works — pick the ones you hold, and answer
+only what the catalogue cannot know: when you got it, when its statement closes.
+The rates, codes, caps and programme come with the product.
+
+The questions vary by card. UOB One needs its opening date because its quarters
+are counted from the month it was issued; an ordinary card does not. A statement
+day nobody supplied still works — the card says the cycle is assumed rather than
+pretending it bills on the 1st.
+
+A recently opened card is asked once whether it came with a welcome offer, and
+the offer becomes an ordinary minimum-spend requirement rather than a second
+progress system.
+
+Someone who already has cards is never shown a welcome screen. Gaps in an
+existing setup appear on Home as a repair, naming the card and what the gap
+costs.
+
 ## The home screen
 
 One question at the top — which card should I use — and the answer to it gets

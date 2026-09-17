@@ -40,6 +40,8 @@ export interface Card {
   nickname: string;
   credit_limit_cents: number;
   statement_day: number;
+  /** 0 when nobody has told us the day and the default is standing in. */
+  statement_day_known?: number;
   opened_at: string | null;
   closed_at: string | null;
   signup_bonus_at: string | null;

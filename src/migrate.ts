@@ -3,6 +3,8 @@ import seedSql from '../seed.sql';
 import { statements } from './sql';
 import { migrateCardsToProducts, type ProductMigrationReport } from './catalog/migrate-products';
 import { seedCardProducts, type SeedReport } from './catalog/seed-products';
+import { seedAliases } from './onboarding/search';
+import { seedOnboardingFields } from './onboarding/questions';
 import { today } from './spend';
 import type { Env } from './types';
 
@@ -51,6 +53,16 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   // from the original, and the original is gone the moment it is overwritten.
   { table: 'transactions', column: 'merchant_raw', ddl: 'ALTER TABLE transactions ADD COLUMN merchant_raw TEXT' },
   { table: 'transactions', column: 'merchant_id', ddl: 'ALTER TABLE transactions ADD COLUMN merchant_id INTEGER' },
+  // --- onboarding (P1 phase 1) ---
+  // A requirement created from a welcome offer keeps a link to the offer it
+  // came from, so "where did this minimum come from" has an answer later.
+  { table: 'requirements', column: 'source_note', ddl: 'ALTER TABLE requirements ADD COLUMN source_note TEXT' },
+  // Existing cards were set up by hand, so their statement day was answered.
+  {
+    table: 'cards',
+    column: 'statement_day_known',
+    ddl: 'ALTER TABLE cards ADD COLUMN statement_day_known INTEGER NOT NULL DEFAULT 1',
+  },
   { table: 'conversions', column: 'verified_at', ddl: 'ALTER TABLE conversions ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
   { table: 'conversions', column: 'note', ddl: 'ALTER TABLE conversions ADD COLUMN note TEXT' },
@@ -251,7 +263,13 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
 }
 
 /** Loads the default feeds, programmes and transfer routes. INSERT OR IGNORE, so safe to repeat. */
-export async function runSeed(env: Env): Promise<{ applied: number; errors: string[]; catalog?: SeedReport }> {
+export async function runSeed(env: Env): Promise<{
+  applied: number;
+  errors: string[];
+  catalog?: SeedReport;
+  aliases?: { added: number };
+  onboarding?: { declared: number };
+}> {
   const errors: string[] = [];
   let applied = 0;
   for (const stmt of statements(seedSql)) {
@@ -271,5 +289,17 @@ export async function runSeed(env: Env): Promise<{ applied: number; errors: stri
     errors.push(`seeding the card catalogue — ${(e as Error).message}`);
   }
 
-  return { applied, errors, catalog };
+  // Aliases and per-product questions are derived from the catalogue, so a card
+  // added tomorrow is searchable and asks for the right details the same day,
+  // without anyone remembering to write its nicknames down.
+  let aliases: { added: number } | undefined;
+  let onboarding: { declared: number } | undefined;
+  try {
+    aliases = await seedAliases(env);
+    onboarding = await seedOnboardingFields(env);
+  } catch (e) {
+    errors.push(`seeding card aliases — ${(e as Error).message}`);
+  }
+
+  return { applied, errors, catalog, aliases, onboarding };
 }

@@ -8,6 +8,11 @@ CREATE TABLE IF NOT EXISTS cards (
   nickname            TEXT    NOT NULL,          -- short alias used when logging: 'wwmc'
   credit_limit_cents  INTEGER NOT NULL DEFAULT 0,
   statement_day       INTEGER NOT NULL DEFAULT 1,-- day of month the statement closes
+  -- Whether that day was told to us or is just the default. Every window
+  -- calculation needs a number, so the column stays NOT NULL — but a card
+  -- billing on the 1st because nobody said otherwise must not look the same
+  -- as one that genuinely bills on the 1st.
+  statement_day_known INTEGER NOT NULL DEFAULT 1,
   opened_at           TEXT,                      -- YYYY-MM-DD, drives eligibility
   closed_at           TEXT,                      -- YYYY-MM-DD, NULL while held
   signup_bonus_at     TEXT,                      -- when a sign-up bonus was received
@@ -505,3 +510,53 @@ CREATE TABLE IF NOT EXISTS review_items (
 );
 CREATE INDEX IF NOT EXISTS review_open ON review_items(status, reason);
 CREATE INDEX IF NOT EXISTS review_tx ON review_items(transaction_id);
+
+-- ===========================================================================
+-- Onboarding (P1 phase 1)
+--
+-- Setting the app up used to mean understanding merchant codes, cap windows
+-- and rule configuration before it could answer a single question. The point
+-- of these tables is that a person supplies only what the catalogue cannot
+-- know — when they got the card, when its statement closes — and everything
+-- else comes from the product.
+-- ===========================================================================
+
+-- How far through setup we are. One row, because this is a single-user app;
+-- a multi-user version would key it by user and nothing else would change.
+CREATE TABLE IF NOT EXISTS onboarding_state (
+  id                 INTEGER PRIMARY KEY CHECK (id = 1),
+  status             TEXT    NOT NULL DEFAULT 'not_started', -- not_started | in_progress | completed
+  cards_completed    INTEGER NOT NULL DEFAULT 0,
+  statements_offered INTEGER NOT NULL DEFAULT 0,
+  wallet_offered     INTEGER NOT NULL DEFAULT 0,
+  completed_at       TEXT,
+  updated_at         TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- What people actually type when they mean a card. "wwmc" is not the product
+-- name and never will be, and a search that only matches the official name is
+-- a search that fails for everyone who knows the card by its nickname.
+CREATE TABLE IF NOT EXISTS card_product_aliases (
+  alias_key  TEXT    PRIMARY KEY,               -- lowercased, punctuation stripped
+  product_id INTEGER NOT NULL REFERENCES card_products(id) ON DELETE CASCADE,
+  source     TEXT    NOT NULL DEFAULT 'seed'    -- seed | user | legacy_name
+);
+CREATE INDEX IF NOT EXISTS alias_product ON card_product_aliases(product_id);
+
+-- Which personal details a given product actually needs, so the questions can
+-- vary by card without a screen hardcoded per card. A field is here only if it
+-- changes a calculation: anything that does not is not worth asking for.
+CREATE TABLE IF NOT EXISTS product_onboarding_fields (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES card_products(id) ON DELETE CASCADE,
+  field_key  TEXT    NOT NULL,                  -- statement_day | opened_at | credit_limit | …
+  field_type TEXT    NOT NULL,                  -- date | day_of_month | money | number | choice | boolean
+  label      TEXT    NOT NULL,
+  help_text  TEXT,
+  required   INTEGER NOT NULL DEFAULT 0,
+  -- What breaks without it, so "why are you asking" has an answer.
+  affects    TEXT    NOT NULL,                  -- reward_calculation | statement_window
+                                                --   | minimum_spend | eligibility | notification
+  sort       INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(product_id, field_key)
+);

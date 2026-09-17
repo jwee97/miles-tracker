@@ -1865,6 +1865,91 @@ A reward that went down is shown as having gone down. Refunds are skipped rather
 than reported as errors: a negative amount earns nothing, and pricing one would
 predict miles on it.
 
+## Setting up
+
+A new user reaches a working recommendation in three steps and is never shown a
+merchant code, a cap window or a reward rate. The rule the whole flow follows:
+**ask only for what the catalogue cannot know.** The rates, the excluded codes,
+the programme and the cap rules are facts about the product; asking a person for
+them is asking them to look something up and to be wrong about it alone.
+
+```
+Welcome  →  Add cards  →  A few details  →  (optional)  →  Ready
+```
+
+### Finding your cards
+
+Nobody types "DBS Woman's World Card". They type `wwmc`, or `womans world`, or
+`dbs woman`. Search matches the official name, the issuer, initials, and a table
+of aliases seeded from each product's own name — so a card added to the
+catalogue tomorrow is findable the same day without anyone writing its nicknames
+down. An exact alias wins outright.
+
+An alias two cards would both claim is dropped rather than kept: it would send
+half the people who type it to the wrong card, silently.
+
+### The questions, which vary by card
+
+Each product declares what it needs, so the questions differ without a screen
+hardcoded per card:
+
+| | |
+|---|---|
+| **statement day** | needed by everything — it decides which month a cap belongs to |
+| **opening date** | optional in general; **required** on UOB One and the Lady's cards, because their quarters are counted from the month the card was issued |
+| **credit limit** | optional, and says so — recommendations do not use it |
+
+A question earns its place only if the answer changes a number.
+
+### Cards that are not quite ready
+
+```
+ready                 everything it asked for is answered
+usable_with_limits    earns and gets recommended; something is less accurate
+needs_setup           a field the reward calculation cannot do without
+```
+
+A statement day nobody supplied is `usable_with_limits`, not a blocker. Every
+window calculation needs a number, so the column keeps its default — but the
+card records whether that day was *told to us*, because one billing on the 1st
+because nobody said must not look identical to one that genuinely does. The card
+still earns; it says the cycle is assumed.
+
+### Welcome offers
+
+A card opened recently is usually mid-way through a sign-up minimum, and that is
+the most consequential thing about it — miss it and the whole bonus is gone.
+Setup asks once, at the moment the card is added.
+
+The offer becomes an **ordinary requirement**. There is deliberately no second
+progress system for sign-up bonuses: the minimum-spend engine already counts
+spend in a window against a threshold, and a parallel one would drift from it.
+The window runs from the opening date, and without one the app says so rather
+than inventing a deadline someone would then plan around.
+
+Offers the app already knows come from published promotions. Until those exist
+the list is empty and it asks — a welcome offer written from memory would put a
+number and a date in front of someone who would act on it.
+
+### Existing users, and repairs
+
+Having cards is what marks setup complete. Someone with four cards and two years
+of history is never shown a welcome screen — that would be the app telling them
+it had forgotten who they were. Outstanding gaps appear on Home as *"a few
+details would improve recommendations"*, naming the card, the detail and what
+the gap costs. That is a repair, not an onboarding.
+
+Setup can be left half done and resumed; nothing forces a restart.
+
+```
+GET  /api/onboarding                        where setup stands, per card
+GET  /api/onboarding/search?q=              the catalogue, by whatever you call it
+GET  /api/onboarding/fields?product_id=     what this card needs asked
+POST /api/onboarding/complete
+GET  /api/onboarding/cards/:id/offers       welcome offers the app knows about
+POST /api/onboarding/cards/:id/offers       attach one
+```
+
 ## Verify end to end
 
 ```

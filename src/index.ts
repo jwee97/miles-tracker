@@ -25,6 +25,10 @@ import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from '.
 import { platformReport } from './platform';
 import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
 import { actionCentre } from './actions';
+import { onboardingView, writeState } from './onboarding/state';
+import { searchProducts } from './onboarding/search';
+import { fieldsFor } from './onboarding/questions';
+import { attachWelcomeOffer, knownOffers } from './onboarding/welcome';
 import { ingestTransaction } from './transactions/ingest';
 import { commitStatement, previewStatement, type ClassifiedRow } from './transactions/reconcile';
 import { recalculateMany, recalculateTransaction } from './transactions/recalculate';
@@ -873,6 +877,86 @@ export default {
           return json({ products: out });
         }
 
+        // --- onboarding (P1 phase 1) ---------------------------------------
+        // Where setup stands. Someone with cards is never shown a welcome
+        // screen; they may still be missing a statement day, and that is a
+        // repair rather than an onboarding.
+        if (url.pathname === '/api/onboarding' && req.method === 'GET') {
+          return json(await onboardingView(env));
+        }
+
+        if (url.pathname === '/api/onboarding/search') {
+          const q = url.searchParams.get('q') ?? '';
+          return json({ matches: await searchProducts(env, q) });
+        }
+
+        // The questions this particular card needs, which is not the same set
+        // for every card and is never the rates — those come from the product.
+        if (url.pathname === '/api/onboarding/fields') {
+          const pid = url.searchParams.get('product_id');
+          return json({ fields: await fieldsFor(env, pid ? Number(pid) : null) });
+        }
+
+        if (url.pathname === '/api/onboarding/state' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Partial<{
+            status: string;
+            statements_offered: number;
+            wallet_offered: number;
+          }>;
+          const patch: Record<string, unknown> = {};
+          if (b.status && ['not_started', 'in_progress', 'completed'].includes(b.status)) {
+            patch.status = b.status;
+            if (b.status === 'completed') patch.completed_at = today(env);
+          }
+          if (typeof b.statements_offered === 'number') patch.statements_offered = b.statements_offered;
+          if (typeof b.wallet_offered === 'number') patch.wallet_offered = b.wallet_offered;
+          return json({ ok: true, state: await writeState(env, patch as any) });
+        }
+
+        if (url.pathname === '/api/onboarding/complete' && req.method === 'POST') {
+          const view = await onboardingView(env);
+          const state = await writeState(env, {
+            status: 'completed',
+            cards_completed: view.cards.length,
+            completed_at: today(env),
+          });
+          return json({ ok: true, state, repairs: view.repairs });
+        }
+
+        // Welcome offers. Known ones come from published promotions; when
+        // nothing is known the app asks rather than inventing a deadline
+        // somebody would then plan their spending around.
+        if (url.pathname.match(/^\/api\/onboarding\/cards\/\d+\/offers$/) && req.method === 'GET') {
+          const cardId = Number(url.pathname.split('/')[4]);
+          const card = await env.DB.prepare(`SELECT product_id FROM cards WHERE id = ?`)
+            .bind(cardId)
+            .first<{ product_id: number | null }>();
+          if (!card) return json({ error: 'no such card' }, 404);
+          return json({ offers: card.product_id ? await knownOffers(env, card.product_id) : [] });
+        }
+
+        if (url.pathname.match(/^\/api\/onboarding\/cards\/\d+\/offers$/) && req.method === 'POST') {
+          const cardId = Number(url.pathname.split('/')[4]);
+          const b = (await req.json().catch(() => ({}))) as {
+            amount?: string | number;
+            amount_cents?: number;
+            window_days?: number;
+            reward_note?: string;
+            min_txns?: number | null;
+          };
+          const cents =
+            typeof b.amount_cents === 'number' ? b.amount_cents : b.amount ? parseMoney(String(b.amount)) : null;
+          if (cents === null) return json({ error: 'bad amount' }, 400);
+
+          const r = await attachWelcomeOffer(env, cardId, {
+            amount_cents: cents,
+            window_days: Number(b.window_days ?? 0),
+            reward_note: String(b.reward_note ?? 'welcome offer').trim() || 'welcome offer',
+            min_txns: typeof b.min_txns === 'number' ? b.min_txns : null,
+          });
+          return json(r, r.ok ? 200 : 400);
+        }
+
         // --- catalogue operations (P0 phase 5) -----------------------------
         // Everything that changes what a card is believed to pay. The shape of
         // this section is the safety property: a draft can be written by
@@ -1138,6 +1222,10 @@ export default {
             .first();
           if (exists) return json({ error: `the nickname ${nickname} is already taken` }, 400);
 
+          // A day that was not given is the default standing in, and the card
+          // records which of the two it is — otherwise a card billing on the
+          // 1st because nobody said looks identical to one that really does.
+          const dayGiven = b.statement_day !== undefined && b.statement_day !== null && String(b.statement_day) !== '';
           const day = Math.min(Math.max(parseInt(String(b.statement_day ?? 1), 10) || 1, 1), 28);
           const opened = b.opened_at ? parseDateToken(String(b.opened_at), env) : null;
           if (b.opened_at && !opened) return json({ error: 'bad opening date' }, 400);
@@ -1148,8 +1236,8 @@ export default {
             chosen?.program_key ?? (b.program_key === undefined ? await guessProgram(env, issuer) : b.program_key || null);
           const ins = await env.DB.prepare(
             `INSERT INTO cards (issuer, product, product_key, nickname, credit_limit_cents, statement_day,
-               opened_at, base_mpd, program_key, product_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+               statement_day_known, opened_at, base_mpd, program_key, product_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
             .bind(
               issuer,
@@ -1158,6 +1246,7 @@ export default {
               nickname,
               parseMoney(String(b.limit ?? '0')) ?? 0,
               day,
+              dayGiven ? 1 : 0,
               opened,
               chosen?.base_mpd ?? (parseFloat(String(b.base_mpd ?? '0')) || 0),
               program,

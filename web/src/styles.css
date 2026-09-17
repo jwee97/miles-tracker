@@ -923,3 +923,14 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .repricer .advisor-row { margin-top: 10px; flex-wrap: wrap; }
 .recalc-report { margin-top: 12px; }
 .recalc-report .diff-list { margin-top: 8px; }
+
+/* --- onboarding ---------------------------------------------------------- */
+.onb h3 { margin: 18px 0 8px; font-size: 15px; }
+.onb-list { margin: 10px 0; padding-left: 20px; font-size: 13.5px; color: var(--dim); }
+.onb-list li { padding: 3px 0; }
+.onb-list li b { color: var(--text); }
+.onb-chosen { list-style: none; padding: 0; margin: 8px 0 0; font-size: 13.5px; }
+.onb-chosen li { padding: 5px 0; display: flex; gap: 10px; align-items: baseline; }
+.onb-card { padding: 14px 0; border-top: 1px solid var(--line); }
+.onb-card h3 { margin-top: 0; }
+.req { font-style: normal; font-size: 11px; color: var(--mid); margin-left: 6px; }

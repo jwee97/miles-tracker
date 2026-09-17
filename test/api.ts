@@ -1620,6 +1620,54 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('a bad date is refused', (await authed('/api/transactions/recalculate', { from: 'nonsense' })).status === 400, '');
 }
 
+// --- setting up ----------------------------------------------------------------
+{
+  const v = (await (await authed('/api/onboarding')).json()) as any;
+  check('the app can say where setup stands', typeof v.state.status === 'string', JSON.stringify(v.state));
+  check('someone with cards is not treated as new', v.state.status === 'completed', v.state?.status);
+  check('and each card reports whether it is ready', Array.isArray(v.cards) && typeof v.cards[0]?.status === 'string', JSON.stringify(v.cards?.[0]));
+
+  const found = (await (await authed('/api/onboarding/search?q=citi')).json()) as any;
+  check('the catalogue is searchable by issuer', found.matches.length > 0, String(found.matches?.length));
+  check('and says why each one matched', typeof found.matches[0].matched_on === 'string', found.matches?.[0]?.matched_on);
+
+  const fields = (await (await authed('/api/onboarding/fields')).json()) as any;
+  check('the questions are listed', Array.isArray(fields.fields), JSON.stringify(Object.keys(fields)));
+  check('the statement day is asked for', fields.fields.some((f: any) => f.key === 'statement_day'), '');
+  check('and nothing asks for a rate', !fields.fields.some((f: any) => /mpd|rate|mcc/i.test(f.key)), JSON.stringify(fields.fields.map((f: any) => f.key)));
+
+  check('setup can be marked complete', (await authed('/api/onboarding/complete', {})).status === 200, '');
+
+  // A welcome offer becomes a requirement, and needs a date to count from.
+  const card = db.prepare(`SELECT id, opened_at FROM cards WHERE nickname = 'crw'`).get() as any;
+  const offer = await authed(`/api/onboarding/cards/${card.id}/offers`, {
+    amount: '800',
+    window_days: 60,
+    reward_note: '20,000 bonus points',
+  });
+  const o = (await offer.json()) as any;
+  if (card.opened_at) {
+    check('a welcome offer can be attached', o.ok === true, JSON.stringify(o));
+    // Active ones only: a sign-up offer that was closed off earlier is history,
+    // and correctly does not stand in the way of a new card's offer.
+    const reqCount = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM requirements WHERE card_id = ? AND kind = 'signup_min' AND active = 1`)
+        .get(card.id) as any
+    ).n;
+    check('and is tracked as an ordinary requirement', reqCount === 1, String(reqCount));
+    check(
+      'a spent offer does not block a new one',
+      (db.prepare(`SELECT COUNT(*) AS n FROM requirements WHERE card_id = ? AND kind = 'signup_min'`).get(card.id) as any).n === 2,
+      ''
+    );
+  } else {
+    check('an offer without an opening date is refused', o.ok === false, JSON.stringify(o));
+  }
+
+  check('an offer for an unknown card is refused', (await authed('/api/onboarding/cards/99999/offers', { amount: '100', window_days: 30 })).status === 400, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

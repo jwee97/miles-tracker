@@ -328,6 +328,11 @@ let published = 0;
 let slowActions = false;
 let breakTransactions = false;
 let repriced: any = null;
+let onboardingStatus = 'completed';
+let added: any[] = [];
+
+/** innerText reflects CSS casing, so every text assertion compares lowercased. */
+const says = (haystack: string, needle: string) => haystack.toLowerCase().includes(needle.toLowerCase());
 
 const DRAFT = {
   id: 5,
@@ -393,6 +398,7 @@ async function serve(): Promise<{ url: string; close: () => Promise<void> }> {
 /** Every API call the app can make, answered from fixtures rather than a Worker. */
 async function stub(page: Page) {
   await page.route('**/api/**', async (route) => {
+    try {
     const u = new URL(route.request().url());
     // no-store, so a reload re-asks the stub instead of the browser answering
     // from its own cache with whatever the last scenario returned.
@@ -420,6 +426,45 @@ async function stub(page: Page) {
         body: JSON.parse(route.request().postData() ?? '{}'),
       };
       return send({ ok: true, applied: 'Kopitiam 88 Outlet 3 is 5814 from now on' });
+    }
+    if (u.pathname === '/api/onboarding')
+      return send({
+        state: { status: onboardingStatus, cards_completed: 2, statements_offered: 0, wallet_offered: 0, completed_at: null },
+        cards: [],
+        repairs:
+          onboardingStatus === 'completed'
+            ? [
+                {
+                  card_id: 2,
+                  nickname: 'one',
+                  product: 'One Card',
+                  status: 'usable_with_limits',
+                  missing: [{ field_key: 'opened_at', label: 'When did you get this card?', affects: 'minimum_spend', required: true }],
+                  consequence: 'Progress toward its minimum cannot be tracked.',
+                },
+              ]
+            : [],
+        ready: false,
+      });
+    if (u.pathname === '/api/onboarding/search')
+      return send({
+        matches: [
+          { product: { ...CATALOG.products[0], rules: 2 }, matched_on: 'alias', score: 100, held_as: null },
+          { product: { ...CATALOG.products[1], rules: 0 }, matched_on: 'name', score: 40, held_as: null },
+        ],
+      });
+    if (u.pathname === '/api/onboarding/fields')
+      return send({
+        fields: [
+          { key: 'opened_at', type: 'date', label: 'When did you get this card?', help_text: 'This card pays by the quarter.', required: true, affects: 'minimum_spend', sort: 10 },
+          { key: 'statement_day', type: 'day_of_month', label: 'When does your statement close?', help_text: null, required: true, affects: 'statement_window', sort: 20 },
+        ],
+      });
+    if (u.pathname === '/api/onboarding/state' || u.pathname === '/api/onboarding/complete')
+      return send({ ok: true, state: { status: 'completed' }, repairs: [] });
+    if (u.pathname === '/api/card') {
+      added.push(JSON.parse(route.request().postData() ?? '{}'));
+      return send({ ok: true, id: 7, nickname: 'dwwc', program_key: 'dbs_points', product_id: 7, issuer: 'DBS', product: "Woman's World Card", from_catalog: true, rules: 2 });
     }
     if (u.pathname === '/api/summary')
       return send({ cards: [{ nickname: 'wwmc' }, { nickname: 'crw' }], overall: {} });
@@ -485,6 +530,10 @@ async function stub(page: Page) {
     if (u.pathname.endsWith('/diff')) return send(DIFF);
     if (u.pathname.startsWith('/api/catalog/cards/')) return send(CATALOG_WITH_DRAFT);
     return send({});
+    } catch (e) {
+      console.log('ROUTE ERROR', route.request().url(), (e as Error).message);
+      return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+    }
   });
 }
 
@@ -651,6 +700,60 @@ async function main() {
       'and says what it taught the app, not just that it worked',
       (await page.locator('.ok-text').innerText()).includes('from now on')
     );
+
+    // --- setting up ------------------------------------------------------
+    // A gap in an existing setup is a repair, not an onboarding: someone with
+    // cards and history must never be shown a welcome screen.
+    await page.getByRole('button', { name: 'Home' }).click();
+    await page.locator('.advisor').waitFor();
+    // Wait for the banner itself rather than for a fixed time: the onboarding
+    // fetch races the advisor, and a sleep long enough today is a flaky test
+    // tomorrow.
+    await page.locator('.card', { hasText: 'would improve recommendations' }).first().waitFor();
+    const repair = await page.locator('main').innerText();
+    check('an existing user is offered a repair', says(repair, 'would improve recommendations'), repair.slice(0, 200));
+    check('naming the card and the detail', says(repair, 'One Card') && says(repair, 'When did you get this card?'), repair.slice(0, 300));
+    check('and never a welcome screen', !says(repair, 'Welcome to Miles Tracker'));
+
+    onboardingStatus = 'not_started';
+    await open();
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Setup' }).click();
+    await page.locator('.onb').first().waitFor();
+    check('a new user gets a welcome', says(await page.locator('.onb').first().innerText(), 'Welcome to Miles Tracker'));
+    check(
+      'that promises not to ask for rates',
+      says(await page.locator('.onb').first().innerText(), 'not be asked for reward rates')
+    );
+
+    await page.getByRole('button', { name: 'Get started' }).last().click();
+    await page.locator('.big-search').waitFor();
+    check('cards are searched, not described', says(await page.locator('.onb').innerText(), 'whatever you call it'));
+    check('and the catalogue says which have rates', says(await page.locator('.picker').innerText(), 'rates known'));
+    check('and which do not', says(await page.locator('.picker').innerText(), 'no rates yet'));
+
+    await page.locator('.picker button', { hasText: 'Add' }).first().click();
+    check('a chosen card is listed back', says(await page.locator('.onb-chosen').innerText(), "Woman's World Card"));
+    await page.getByRole('button', { name: 'Continue' }).click();
+
+    await page.locator('.onb-card').waitFor();
+    await page.locator('.onb-card .sub').first().waitFor();
+    const details = await page.locator('.onb-card').first().innerText();
+    check('only personal details are asked for', says(details, 'Statement closes on') && says(details, 'Nickname'), details);
+    check('the credit limit is marked optional', says(details, 'Credit limit (optional)'), details);
+    check('a card that runs in quarters says why it needs a date', says(details, 'pays by the quarter'), details);
+    check('and nothing asks about rates or codes', !/mpd|merchant code|mcc/i.test(details), details.slice(0, 300));
+
+    await page.getByRole('button', { name: 'Save cards' }).click();
+    await page.locator('.onb').filter({ hasText: 'Two optional things' }).waitFor();
+    check('the card was created from the catalogue', added[0]?.product_id === 7, JSON.stringify(added));
+    check('statements and points are offered, not required', says(await page.locator('.onb').innerText(), 'neither is required'));
+
+    await page.getByRole('button', { name: 'Do these later' }).click();
+    await page.locator('.onb').filter({ hasText: "You're ready" }).waitFor();
+    check('setup ends by demonstrating value', (await page.getByRole('button', { name: 'Find the best card' }).count()) === 1);
+    onboardingStatus = 'completed';
+    await open();
 
     // --- re-pricing what the app believed --------------------------------
     await page.getByRole('button', { name: 'Activity' }).click();

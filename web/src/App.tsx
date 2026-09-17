@@ -3,6 +3,7 @@ import Advisor from './Advisor';
 import Catalog from './Catalog';
 import Boundary from './Boundary';
 import Home from './Home';
+import Onboarding from './features/onboarding/Onboarding';
 import Review from './Review';
 import Audit from './Audit';
 import Analytics from './Analytics';
@@ -1869,6 +1870,7 @@ function PointsTab() {
  */
 const MORE: [string, string][] = [
   ['use', 'Advisor'],
+  ['setup', 'Setup'],
   ['review', 'Review'],
   ['catalog', 'Catalogue'],
   ['other', 'Off-card'],
@@ -1888,6 +1890,7 @@ export default function App() {
     | 'cards'
     | 'catalog'
     | 'review'
+    | 'setup'
     | 'ledger'
     | 'other'
     | 'trends'
@@ -2066,6 +2069,8 @@ export default function App() {
       {tab === 'home' && <Home onGo={(t) => setTab(t as typeof tab)} />}
 
       {tab === 'use' && <Advisor />}
+
+      {tab === 'setup' && <Onboarding onGo={(t) => setTab(t as typeof tab)} />}
 
       {tab === 'review' && <Review />}
 
