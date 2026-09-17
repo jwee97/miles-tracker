@@ -887,3 +887,17 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .activity-main { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; }
 .activity-merchant { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-meta { display: flex; gap: 4px 12px; flex-wrap: wrap; align-items: baseline; font-size: 12.5px; color: var(--dim); margin-top: 2px; }
+
+/* --- the review inbox ---------------------------------------------------- */
+.review-list { list-style: none; padding: 0; margin: 12px 0 0; }
+.review-item { padding: 14px 0; border-top: 1px solid var(--line); }
+.review-item:first-child { border-top: none; }
+.review-item.possible_duplicate { border-left: 2px solid var(--bad); padding-left: 12px; }
+.review-head { display: flex; justify-content: space-between; gap: 10px; font-size: 15px; font-weight: 600; }
+.review-meta { margin: 2px 0 0; font-size: 12.5px; color: var(--dim); }
+.review-question { margin: 10px 0 0; font-size: 13.5px; font-weight: 600; }
+.review-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.review-item .advisor-row { margin-top: 10px; }
+
+.stmt-summary { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--dim); }
+.stmt-summary .mono { color: var(--text); font-weight: 600; }

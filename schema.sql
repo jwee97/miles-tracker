@@ -137,6 +137,11 @@ CREATE TABLE IF NOT EXISTS transactions (
   credited_at  TEXT,                              -- when you accepted it into the wallet
   credited_tranche_id INTEGER,                    -- which balance tranche took it
   source       TEXT    NOT NULL DEFAULT 'manual',-- manual | sms | import
+  -- The merchant as the statement printed it, and the entity it resolved to.
+  -- Both, not one: a tidied name is a judgement, and a judgement you cannot
+  -- see the input to is one you cannot correct.
+  merchant_raw TEXT,
+  merchant_id  INTEGER REFERENCES merchants(id) ON DELETE SET NULL,
   -- Where the row is in its life: pending | posted | reversed | refunded.
   -- A purchase logged the moment it is made is pending until the bank confirms
   -- it; the default is 'posted' so every row that predates this column keeps
@@ -414,3 +419,89 @@ CREATE TABLE IF NOT EXISTS earn_rules (
   active      INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS earn_card ON earn_rules(card_id, active);
+
+-- ===========================================================================
+-- Transaction capture (P0 phase 4)
+--
+-- A purchase can reach the app more than once: an SMS the moment it is made,
+-- then the same purchase on a statement three days later. Those are one
+-- transaction, and the tables below exist so the second arrival can be
+-- recognised as the first rather than doubling the month's spend.
+-- ===========================================================================
+
+-- Every arrival of a transaction, whatever channel it came through. A
+-- transaction can have several: one row per time the world told us about it.
+CREATE TABLE IF NOT EXISTS transaction_sources (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  transaction_id  INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  source          TEXT    NOT NULL,            -- manual | telegram | sms | statement | csv | advisor
+  -- The source's own identifier, when it has one. UNIQUE with source, so the
+  -- same statement row can never be imported twice however often it is offered.
+  external_id     TEXT,
+  imported_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  raw_hash        TEXT,                        -- hash of the raw line, for exact repeats
+  raw_description TEXT,                        -- the statement text, never overwritten
+  metadata_json   TEXT,
+  UNIQUE(source, external_id)
+);
+CREATE INDEX IF NOT EXISTS txsrc_tx ON transaction_sources(transaction_id);
+CREATE INDEX IF NOT EXISTS txsrc_hash ON transaction_sources(raw_hash);
+
+-- A merchant as a thing, rather than as whatever string a statement printed.
+-- GRAB*RIDE, GRAB SINGAPORE and GRAB.COM are one merchant with three aliases.
+CREATE TABLE IF NOT EXISTS merchants (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  canonical_name TEXT NOT NULL,
+  normalized_key TEXT NOT NULL UNIQUE,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS merchant_aliases (
+  alias_key   TEXT PRIMARY KEY,                -- normalised form of the raw text
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  raw_example TEXT,                            -- one real spelling, for the UI
+  source      TEXT,                            -- statement | sms | manual
+  confidence  TEXT NOT NULL DEFAULT 'guess'    -- guess | confirmed
+);
+CREATE INDEX IF NOT EXISTS alias_merchant ON merchant_aliases(merchant_id);
+
+-- A merchant's code is not one eternal truth: it is set by the acquirer, it
+-- differs between outlets and channels, and it changes. So observations are
+-- recorded as evidence and the current best guess is derived from them.
+CREATE TABLE IF NOT EXISTS merchant_mcc_evidence (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id     INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  mcc             TEXT    NOT NULL,
+  channel         TEXT,
+  card_product_id INTEGER REFERENCES card_products(id),
+  observed_at     TEXT,
+  source          TEXT    NOT NULL,            -- statement | user | seed | sms
+  confidence      TEXT    NOT NULL DEFAULT 'guess',
+  transaction_id  INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  note            TEXT,
+  created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS evidence_merchant ON merchant_mcc_evidence(merchant_id, mcc);
+
+-- Things the pipeline could not decide, queued rather than guessed at. One row
+-- per open question, so answering it is one action and not a hunt through the
+-- ledger.
+CREATE TABLE IF NOT EXISTS review_items (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  reason         TEXT    NOT NULL,             -- unknown_card | unknown_merchant | unknown_mcc
+                                               --   | ambiguous_mcc | possible_duplicate
+                                               --   | unknown_category | reward_rule_uncertain
+                                               --   | statement_match_ambiguous
+  detail         TEXT,
+  -- What the pipeline would choose if forced, so the answer is usually one tap.
+  suggestion     TEXT,
+  -- The other transaction, for a possible duplicate.
+  other_id       INTEGER REFERENCES transactions(id) ON DELETE CASCADE,
+  status         TEXT    NOT NULL DEFAULT 'open', -- open | resolved | ignored
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  resolved_at    TEXT,
+  resolution     TEXT
+);
+CREATE INDEX IF NOT EXISTS review_open ON review_items(status, reason);
+CREATE INDEX IF NOT EXISTS review_tx ON review_items(transaction_id);

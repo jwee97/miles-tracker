@@ -45,6 +45,12 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
     column: 'status',
     ddl: "ALTER TABLE transactions ADD COLUMN status TEXT NOT NULL DEFAULT 'posted'",
   },
+  // --- transaction capture (P0 phase 4) ---
+  // The statement text as printed, kept beside the tidied name rather than
+  // instead of it: a normaliser that got a merchant wrong must be correctable
+  // from the original, and the original is gone the moment it is overwritten.
+  { table: 'transactions', column: 'merchant_raw', ddl: 'ALTER TABLE transactions ADD COLUMN merchant_raw TEXT' },
+  { table: 'transactions', column: 'merchant_id', ddl: 'ALTER TABLE transactions ADD COLUMN merchant_id INTEGER' },
   { table: 'conversions', column: 'verified_at', ddl: 'ALTER TABLE conversions ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
   { table: 'conversions', column: 'note', ddl: 'ALTER TABLE conversions ADD COLUMN note TEXT' },

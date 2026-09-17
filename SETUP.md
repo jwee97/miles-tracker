@@ -1576,6 +1576,133 @@ off-card spending, expiry, trends, the reward audit, merchant codes, offers and
 settings. They are management tools, and they had top-level tabs because the app
 was built in that order, not because the everyday product needs them there.
 
+## One way in
+
+Every channel — the form, the bot, an SMS, a statement, a CSV, "I used this
+card" — now goes through the same pipeline:
+
+```
+parse → normalise → deduplicate → match card → resolve merchant
+      → resolve code and category → save → price → queue what is unsure
+```
+
+There used to be four inserts, four ideas of when to evaluate a reward, and
+four opinions about duplicates, which meant a bug fixed in one stayed broken in
+the other three.
+
+`POST /api/transactions/ingest` is the general door. It answers with what
+happened — `created`, `duplicate`, `updated`, `needs_review` or `rejected` —
+what it resolved the transaction to, and what it expects the purchase to earn.
+
+### The same purchase, twice
+
+A purchase can arrive more than once: an SMS the moment it is made, a statement
+line three days later, with a different date and a different spelling. Getting
+this wrong in one direction doubles a month's spend and wrecks the minimum-spend
+advice; in the other it silently deletes a purchase. So certainty is graded, and
+only the certain end merges by itself:
+
+| level | what matches | what happens |
+|---|---|---|
+| 1 | the source's own identifier, or the identical raw line | merged |
+| 2 | same card, amount and merchant, within three days | merged |
+| 3 | same card and amount, within three days, a similar merchant | **asked about** |
+
+A resemblance is a question, not an answer. It is queued under Review with both
+transactions intact, because nothing in the data can tell a real duplicate from
+two genuinely similar purchases, and a wrong merge is invisible afterwards.
+
+The later arrival is not discarded when it merges. A statement knows the posting
+date and often the code; the SMS it matched knows neither. So empty fields are
+filled, a pending purchase becomes posted, and the arrival is recorded as
+another source — but nothing already there is overwritten.
+
+### Pending and posted
+
+A transaction now has a status: `pending`, `posted`, `reversed` or `refunded`.
+Anything logged as it happens starts pending, because the bank has not confirmed
+it. A statement is what turns it posted, with the bank's own date.
+
+### A statement is a reconciliation
+
+Importing one is no longer "create transactions from a PDF". Each row is
+classified against what the app already believes, before anything is written:
+
+```
+42 already known
+ 8 new
+ 2 possibly a duplicate
+ 1 refund
+ 1 bill payment
+ 1 fee
+```
+
+Bill payments, fees and interest are the bank's accounting, not spend, and are
+never imported as purchases. **Importing the same statement twice creates
+nothing the second time** — a test, not an intention.
+
+### Merchants, and the codes they present
+
+`GRAB*RIDE 8829`, `GRAB SINGAPORE SG` and `GRAB.COM` are one merchant with three
+spellings. Statement text is normalised — processor prefixes, reference numbers
+and country suffixes removed — and the original is always kept beside the tidied
+name, because a normaliser that got something wrong has to be correctable from
+the input.
+
+Normalisation is deliberately conservative. `KOPITIAM 88 OUTLET 3` does **not**
+merge into `KOPITIAM 88`: the resemblance is offered in the review queue with
+the likely code pre-filled, and a person decides. Merging two merchants that
+were genuinely different changes which card the app advises and leaves no trace.
+
+A name you typed yourself is never re-spelled. Only shouted machine output is
+re-cased, so `FairPrice` stays `FairPrice`.
+
+Merchant codes became evidence rather than one eternal truth, because a merchant
+legitimately has several — a supermarket with a petrol kiosk, outlets onboarded
+by different acquirers, an online arm routed separately. Observations accumulate
+with a weight by source, and the current answer is derived:
+
+```
+user (confirmed)  ████████████  a person said so
+statement         ████          what the bank actually charged
+sms               ██
+seed              ·             someone's note about what it usually does
+```
+
+No pile of guesses outvotes one confirmation. When two codes have comparable
+evidence the answer is reported as **ambiguous** rather than decided quietly —
+that is a real state of the world, and it is exactly the case where the choice
+changes which card wins.
+
+### Needs an answer
+
+Under **More → Review** are the questions the pipeline declined to guess at:
+
+```
+Grab*RIDE 8829                          $24.70
+Is this the same purchase twice?
+same card and amount, 1 day apart, and a similar merchant
+[ Merge — it is one purchase ]  [ Keep both ]
+
+Kopitiam 88 Outlet 3                    $11.50
+We could not confirm its merchant code
+no code on file — it may be Kopitiam 88
+[ Confirm 5814 — Fast food restaurants ]  [ 5812 — Eating places ]
+```
+
+Worst first: a possible duplicate can double a month's spend, an uncategorised
+coffee cannot. An answer is written to the transaction **and** to the merchant,
+so it is worth giving once — the next purchase from the same place does not ask.
+
+```
+GET  /api/review/queue
+POST /api/review/:id/resolve   { action: confirm | ignore | merge | keep_both }
+```
+
+(`/api/review` is still the older "needs a category" list the ledger uses.
+Taking its path for the new queue would have been tidier and would have broken a
+working screen.)
+
 ## Verify end to end
 
 ```

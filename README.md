@@ -280,6 +280,30 @@ moment you're deciding whether to apply anyway.
 
 ---
 
+## One way in
+
+Every channel — the form, the bot, an SMS, a statement, a CSV, "I used this
+card" — goes through one pipeline: normalised, deduplicated, merchant resolved,
+coded, priced, and queued where something could not be decided.
+
+The same purchase often arrives twice: an SMS when you pay, a statement line
+three days later with a different date and spelling. Certainty is graded. The
+source's own identifier, or the same card, amount and merchant within three
+days, merges by itself; a mere resemblance is queued as a question with both
+transactions intact, because nothing in the data distinguishes a real duplicate
+from two similar purchases and a wrong merge leaves no trace.
+
+Importing a statement is a reconciliation, not a create: rows are classified
+against what the app already believes, bill payments and fees are never counted
+as spend, and importing the same statement twice creates nothing the second
+time.
+
+Merchant codes are evidence, not fact. A merchant legitimately presents several,
+so observations accumulate with a weight by source and the answer is derived —
+and when two codes have comparable support the app says *ambiguous* rather than
+choosing quietly, because that is exactly the case where the choice changes
+which card wins.
+
 ## Automatic transaction logging
 
 **Android.** Your bank's SMS alerts can be forwarded straight in. Install any

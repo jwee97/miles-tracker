@@ -807,6 +807,16 @@ export const deleteOther = (id: number) => post<{ ok: true }>('/api/other/delete
 
 // --- pasting a statement ----------------------------------------------------
 
+export type RowKind =
+  | 'matched'
+  | 'new'
+  | 'possible_duplicate'
+  | 'refund'
+  | 'payment'
+  | 'fee'
+  | 'interest'
+  | 'needs_review';
+
 export interface ParsedRow {
   occurred_at: string;
   posted_at: string | null;
@@ -817,6 +827,11 @@ export interface ParsedRow {
   duplicate?: boolean;
   mcc?: string | null;
   category?: string | null;
+  /** Set once a card is named and the rows can be checked against the ledger. */
+  kind?: RowKind;
+  matched_id?: number | null;
+  detail?: string;
+  external_id?: string;
 }
 
 export interface StatementParse {
@@ -824,14 +839,65 @@ export interface StatementParse {
   skipped: { raw: string; reason: string }[];
   total_cents: number;
   duplicates: number;
+  summary: Record<RowKind, number> | null;
   statement_date: string | null;
+}
+
+export interface ImportReport {
+  ok: true;
+  imported: number;
+  already_known: number;
+  reconciled: number;
+  queued_for_review: number;
+  processed: number;
+  skipped: { kind: RowKind; count: number }[];
+  expected_miles: number;
 }
 
 export const parseStatement = (text: string, nickname?: string, statement_date?: string | null) =>
   post<StatementParse>('/api/statement/parse', { text, nickname, statement_date });
 
 export const importStatement = (nickname: string, rows: ParsedRow[]) =>
-  post<{ ok: true; imported: number; expected_miles: number }>('/api/statement/import', { nickname, rows });
+  post<ImportReport>('/api/statement/import', { nickname, rows });
+
+/* --- the review inbox ---------------------------------------------------- */
+
+export type ReviewReason =
+  | 'unknown_card'
+  | 'unknown_merchant'
+  | 'unknown_mcc'
+  | 'ambiguous_mcc'
+  | 'possible_duplicate'
+  | 'unknown_category'
+  | 'reward_rule_uncertain'
+  | 'statement_match_ambiguous';
+
+export interface ReviewItem {
+  id: number;
+  transaction_id: number;
+  reason: ReviewReason;
+  detail: string | null;
+  suggestion: string | null;
+  other_id: number | null;
+  merchant: string | null;
+  merchant_raw: string | null;
+  merchant_id: number | null;
+  amount_cents: number;
+  occurred_at: string;
+  mcc: string | null;
+  channel: string | null;
+  category: string | null;
+  nickname: string;
+  product: string;
+  options: { mcc: string; description: string | null; observations: number }[];
+}
+
+export const fetchReviewQueue = () => get<{ items: ReviewItem[] }>('/api/review/queue');
+
+export const resolveReview = (
+  id: number,
+  body: { action: 'confirm' | 'ignore' | 'merge' | 'keep_both'; mcc?: string; category?: string; merchant?: string }
+) => post<{ ok: boolean; error?: string; applied?: string; merged_into?: number }>(`/api/review/${id}/resolve`, body);
 
 // --- cards and their earn rules ---------------------------------------------
 

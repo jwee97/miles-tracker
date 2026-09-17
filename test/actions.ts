@@ -125,7 +125,7 @@ sql(`INSERT INTO transactions (card_id,amount_cents,occurred_at,merchant,needs_r
 const withQueues = await actionCentre(env);
 const review = withQueues.find((i) => i.kind === 'unreviewed_import')!;
 check('unreviewed rows are one job, not many', review.count === 2, String(review?.count));
-check('and they say so in one line', review.title === '2 transactions need a category', review.title);
+check('and they say so in one line', review.title === '2 transactions have no category', review.title);
 
 const codes = withQueues.find((i) => i.kind === 'unknown_code')!;
 check('merchants with no code are counted once each', codes.count === 2, String(codes?.count));
@@ -137,6 +137,16 @@ check(
   q.join(',')
 );
 check('nor does an unknown code', q.indexOf('unknown_code') > q.indexOf('cap_nearly_gone'), q.join(','));
+
+// A question the pipeline queued is named by what it is asking, because
+// "5 things need review" says nothing about whether it is worth opening.
+sql(`INSERT INTO review_items (transaction_id, reason, detail) VALUES
+     ((SELECT MAX(id) FROM transactions), 'possible_duplicate', 'same card and amount, 1 day apart')`);
+const withReview = await actionCentre(env);
+const asked = withReview.find((i) => i.kind === 'unreviewed_import' && i.subject === 'Review')!;
+check('an open question is an action', asked !== undefined);
+check('named by what it is asking', asked.detail.includes('counted twice'), asked?.detail);
+check('and a possible duplicate is not merely watched', asked.urgency === 'soon', asked?.urgency);
 
 // An ignored merchant is a decision already taken, not an outstanding job.
 sql(`INSERT INTO merchant_ignored (merchant) VALUES ('Toast Box')`);

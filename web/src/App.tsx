@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Advisor from './Advisor';
 import Catalog from './Catalog';
 import Home from './Home';
+import Review from './Review';
 import Audit from './Audit';
 import Analytics from './Analytics';
 import Ledger from './Ledger';
@@ -1867,6 +1868,7 @@ function PointsTab() {
  */
 const MORE: [string, string][] = [
   ['use', 'Advisor'],
+  ['review', 'Review'],
   ['catalog', 'Catalogue'],
   ['other', 'Off-card'],
   ['expiry', 'Expiry'],
@@ -1884,6 +1886,7 @@ export default function App() {
     | 'use'
     | 'cards'
     | 'catalog'
+    | 'review'
     | 'ledger'
     | 'other'
     | 'trends'
@@ -2061,6 +2064,8 @@ export default function App() {
       {tab === 'home' && <Home onGo={(t) => setTab(t as typeof tab)} />}
 
       {tab === 'use' && <Advisor />}
+
+      {tab === 'review' && <Review />}
 
       {tab === 'catalog' && <Catalog />}
 

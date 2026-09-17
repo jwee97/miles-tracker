@@ -25,6 +25,9 @@ import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from '.
 import { platformReport } from './platform';
 import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
 import { actionCentre } from './actions';
+import { ingestTransaction } from './transactions/ingest';
+import { commitStatement, previewStatement, type ClassifiedRow } from './transactions/reconcile';
+import { resolveReview, reviewQueue } from './transactions/review';
 import { buildAudit } from './audit';
 import { optimise } from './advice';
 import { mccMatrix } from './mcc';
@@ -467,53 +470,102 @@ export default {
           const date = b.occurred_at ? parseDateToken(String(b.occurred_at), env) : today(env);
           if (!date) return json({ error: 'bad date' }, 400);
 
-          const merchant = (b.merchant ?? '').trim() || null;
-          const channel = (b.channel as Channel) ?? null;
-          let category = (b.category ?? '').trim().toLowerCase() || null;
-          let categorySource: string | null = category ? 'manual' : null;
-          if (!category) {
-            category = await categoryForMerchant(env, merchant);
-            if (category) categorySource = 'learned';
-          }
+          const result = await ingestTransaction(env, {
+            source: 'advisor',
+            card_id: card.id,
+            amount_cents: cents,
+            occurred_at: date,
+            merchant: (b.merchant ?? '').trim() || null,
+            mcc: b.mcc ?? null,
+            category: b.category ?? null,
+            channel: (b.channel as Channel) ?? null,
+          });
+          if (result.status === 'rejected') return json({ error: result.warnings[0]?.detail ?? 'rejected' }, 400);
 
-          const expected = await evaluate(env, card, { amount_cents: cents, mcc: b.mcc ?? null, category, channel });
-          const program = expected.miles > 0 ? await programForCard(env, card.id, expected.rule?.id) : null;
-
-          const ins = await env.DB.prepare(
-            `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category,
-               category_source, needs_review, mcc, channel, expected_miles, expected_cashback_cents,
-               expected_program, evaluated_rule_set_id, evaluated_at, status, source)
-             VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'advisor')`
-          )
-            .bind(
-              card.id,
-              cents,
-              date,
-              merchant,
-              category,
-              categorySource,
-              category ? 0 : 1,
-              b.mcc ?? null,
-              channel,
-              expected.miles,
-              expected.cashback_cents,
-              program,
-              expected.rule_set_id,
-              today(env)
-            )
-            .run();
+          const row = await env.DB.prepare(`SELECT status, needs_review FROM transactions WHERE id = ?`)
+            .bind(result.transaction_id)
+            .first<{ status: string; needs_review: number }>();
 
           return json({
             ok: true,
-            id: ins.meta.last_row_id,
-            status: 'pending',
+            id: result.transaction_id,
+            status: row?.status ?? 'pending',
             card: { id: card.id, nickname: card.nickname, product: card.product },
             occurred_at: date,
             amount_cents: cents,
-            category,
-            needs_review: category ? 0 : 1,
-            expected: { miles: expected.miles, cashback_cents: expected.cashback_cents },
+            category: result.resolved.category,
+            needs_review: row?.needs_review ?? 0,
+            duplicate_of: result.duplicate_of ?? null,
+            review: result.warnings,
+            expected: {
+              miles: result.reward?.miles ?? 0,
+              cashback_cents: result.reward?.cashback_cents ?? 0,
+            },
           });
+        }
+
+        // --- everything else that arrives as a transaction ------------------
+        // One endpoint for every other channel: an iOS Shortcut, a CSV, an SMS
+        // forwarder. The pipeline decides whether it is new, already known, or
+        // something it has to ask about.
+        if (url.pathname === '/api/transactions/ingest' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const cents =
+            typeof b.amount_cents === 'number' ? b.amount_cents : b.amount ? parseMoney(String(b.amount)) : null;
+          if (cents === null) return json({ error: 'bad amount' }, 400);
+          const when = b.occurred_at ? parseDateToken(String(b.occurred_at), env) : today(env);
+          if (!when) return json({ error: 'bad date' }, 400);
+          const postedAt = b.posted_at ? parseDateToken(String(b.posted_at), env) : null;
+          if (b.posted_at && !postedAt) return json({ error: 'bad posted date' }, 400);
+
+          const result = await ingestTransaction(env, {
+            source: (String(b.source ?? 'manual') as any) || 'manual',
+            external_id: b.external_id ? String(b.external_id) : null,
+            card_id: typeof b.card_id === 'number' ? b.card_id : null,
+            card_hint: b.card_hint ? String(b.card_hint) : b.nickname ? String(b.nickname) : null,
+            amount_cents: cents,
+            occurred_at: when,
+            posted_at: postedAt,
+            merchant: b.merchant ? String(b.merchant) : null,
+            mcc: b.mcc ? String(b.mcc) : null,
+            category: b.category ? String(b.category) : null,
+            channel: (b.channel as Channel) ?? null,
+            raw_description: b.raw_description ? String(b.raw_description) : null,
+            status: (b.status as any) ?? undefined,
+            metadata: (b.metadata as Record<string, unknown>) ?? undefined,
+          });
+          return json(result, result.status === 'rejected' ? 400 : 200);
+        }
+
+        // --- the review inbox ------------------------------------------------
+        // Not `/api/review`: that is the older "needs a category" list the
+        // ledger uses, and quietly taking its path would have broken a working
+        // screen for the sake of a tidier name.
+        if (url.pathname === '/api/review/queue' && req.method === 'GET') {
+          const limit = Math.min(200, parseInt(url.searchParams.get('limit') ?? '50', 10) || 50);
+          return json({ items: await reviewQueue(env, limit) });
+        }
+
+        if (url.pathname.startsWith('/api/review/') && url.pathname.endsWith('/resolve') && req.method === 'POST') {
+          const id = Number(url.pathname.slice('/api/review/'.length, -'/resolve'.length));
+          if (!id) return json({ error: 'bad review id' }, 400);
+          const b = (await req.json().catch(() => ({}))) as {
+            action?: string;
+            mcc?: string | null;
+            category?: string | null;
+            merchant?: string | null;
+          };
+          const action = String(b.action ?? 'confirm');
+          if (!['confirm', 'ignore', 'merge', 'keep_both'].includes(action)) {
+            return json({ error: 'action must be confirm, ignore, merge or keep_both' }, 400);
+          }
+          const r = await resolveReview(env, id, {
+            action: action as any,
+            mcc: b.mcc ?? null,
+            category: b.category ?? null,
+            merchant: b.merchant ?? null,
+          });
+          return json(r, r.ok ? 200 : 400);
         }
 
         if (url.pathname === '/api/settings' && req.method === 'GET') {
@@ -715,19 +767,27 @@ export default {
             });
           }
 
+          // With a card named, the preview is a reconciliation: each row is
+          // classified against what the app already believes, so the summary
+          // says what would change rather than only what was pasted.
+          const preview = card ? await previewStatement(env, card, enriched, stmtDate) : null;
+
           return json({
-            rows: enriched,
+            rows: preview ? preview.rows : enriched,
             skipped: parsed.skipped,
             total_cents: parsed.total_cents,
-            duplicates: enriched.filter((r) => r.duplicate).length,
+            duplicates: (preview ? preview.rows : enriched).filter((r) => r.duplicate).length,
+            summary: preview?.summary ?? null,
             statement_date: stmtDate,
           });
         }
 
-        // Write the rows you kept, through the same path a single entry takes:
-        // evaluated, categorised, and queued for the wallet.
+        // Write the rows you kept, through the one pipeline every other
+        // channel uses. A statement is the bank's record checked against what
+        // the app already believes, not a list of things to create: running the
+        // same statement twice must add nothing the second time.
         if (url.pathname === '/api/statement/import' && req.method === 'POST') {
-          const b = (await req.json()) as { nickname?: string; rows?: ParsedRow[] };
+          const b = (await req.json()) as { nickname?: string; rows?: ClassifiedRow[] };
           const card = await env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`)
             .bind(String(b.nickname ?? '').trim())
             .first<any>();
@@ -736,49 +796,23 @@ export default {
           if (!rows.length) return json({ error: 'nothing to import' }, 400);
           if (rows.length > 500) return json({ error: 'at most 500 rows at a time' }, 400);
 
-          let imported = 0;
-          let miles = 0;
-          for (const r of rows) {
-            const merchant = (r.merchant ?? '').trim() || null;
-            let category = r.category ?? (await categoryForMerchant(env, merchant));
-            const guess = merchant ? await lookupMerchant(env, merchant) : null;
-            const mcc = r.mcc ?? (guess?.confidence === 'unknown' ? null : guess?.mcc ?? null);
-            if (!category && guess?.category) category = guess.category;
+          // A caller that has not previewed still gets classified rows, so the
+          // endpoint cannot be used to bypass the duplicate check.
+          const classified = rows.every((r) => r.kind && r.external_id)
+            ? rows
+            : (await previewStatement(env, card, rows as any, null)).rows;
 
-            // A refund earns nothing; evaluating it would predict miles on a
-            // negative amount.
-            const expected =
-              r.amount_cents > 0
-                ? await evaluate(env, card, { amount_cents: r.amount_cents, mcc, category, channel: null })
-                : null;
-            const program = expected && expected.miles > 0 ? await programForCard(env, card.id, expected.rule?.id) : null;
-
-            await env.DB.prepare(
-              `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category,
-                 category_source, needs_review, mcc, channel, expected_miles, expected_cashback_cents,
-                 expected_program, source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'statement')`
-            )
-              .bind(
-                card.id,
-                r.amount_cents,
-                r.occurred_at,
-                r.posted_at ?? null,
-                merchant,
-                category,
-                category ? 'learned' : null,
-                category ? 0 : 1,
-                mcc,
-                expected?.miles ?? 0,
-                expected?.cashback_cents ?? 0,
-                program
-              )
-              .run();
-            imported++;
-            miles += expected?.miles ?? 0;
-          }
-
-          return json({ ok: true, imported, expected_miles: miles });
+          const report = await commitStatement(env, card, classified);
+          return json({
+            ok: true,
+            imported: report.created,
+            already_known: report.already_known,
+            reconciled: report.reconciled,
+            queued_for_review: report.queued_for_review,
+            skipped: report.skipped,
+            processed: report.processed,
+            expected_miles: report.expected_miles,
+          });
         }
 
         // --- the catalogue -----------------------------------------------
@@ -1829,70 +1863,52 @@ export default {
             if (posted > today(env)) return json({ error: 'posted date is in the future' }, 400);
           }
 
-          // Same merchant learning the bot uses, so the dashboard benefits too.
+          // Everything an entry needs is the same wherever it came from, so
+          // the typed form goes through the one pipeline: deduplicated, merchant
+          // resolved, coded, priced, and queued where it could not be decided.
           const note = body.note?.trim() || null;
           let category = body.category?.trim().toLowerCase() || null;
           // '?' means "I don't know yet" — an explicit unknown, not a guess.
           if (category === '?' || category === 'unknown') category = null;
-          let source: string | null = null;
-          if (category) {
-            source = 'manual';
-            await rememberMerchant(env, note, category);
-          } else {
-            category = await categoryForMerchant(env, note);
-            if (category) source = 'learned';
-          }
+          if (category) await rememberMerchant(env, note, category);
 
-          // Resolve the merchant code and record what the rules say this should
-          // earn, so the audit later has a prediction to reconcile against.
-          const guess = note ? await lookupMerchant(env, note) : null;
-          const mcc = (body as any).mcc ?? guess?.mcc ?? null;
-          const channel = ((body as any).channel as Channel) ?? guess?.channel ?? null;
-          if (!category && guess?.category) {
-            category = guess.category;
-            source = 'learned';
-          }
-          const expected = await evaluate(env, card as any, {
+          const result = await ingestTransaction(env, {
+            source: 'manual',
+            card_id: card.id,
             amount_cents: cents,
-            mcc,
+            occurred_at: date,
+            posted_at: posted,
+            merchant: note,
+            mcc: (body as any).mcc ?? null,
             category,
-            channel,
+            channel: ((body as any).channel as Channel) ?? null,
           });
+          if (result.status === 'rejected') return json({ error: result.warnings[0]?.detail ?? 'rejected' }, 400);
 
-          // Which wallet these points land in, resolved now rather than when
-          // you accept them: changing a card's programme later must not
-          // retroactively move points you already earned.
-          const program = expected.miles > 0 ? await programForCard(env, card.id, expected.rule?.id) : null;
-
-          const ins = await env.DB.prepare(
-            `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category,
-               category_source, needs_review, mcc, channel, expected_miles, expected_cashback_cents,
-               expected_program, source)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`
-          )
-            .bind(
-              card.id, cents, date, posted, note, category, source, category ? 0 : 1,
-              mcc, channel, expected.miles, expected.cashback_cents, program
-            )
-            .run();
+          const row = await env.DB.prepare(`SELECT * FROM transactions WHERE id = ?`)
+            .bind(result.transaction_id)
+            .first<any>();
 
           const alerts = await checkAlerts(env, card);
           for (const a of alerts) await send(env, env.OWNER_CHAT_ID, a);
           return json({
             ok: true,
-            id: ins.meta.last_row_id,
+            id: result.transaction_id,
             card: card.product,
             date,
             posted_at: posted,
-            category,
-            category_source: source,
-            needs_review: category ? 0 : 1,
-            mcc,
-            channel,
-            expected_miles: expected.miles,
-            expected_cashback_cents: expected.cashback_cents,
-            expected_program: program,
-            trace: expected.trace,
+            status: row?.status ?? 'pending',
+            category: result.resolved.category,
+            category_source: row?.category_source ?? null,
+            needs_review: row?.needs_review ?? 0,
+            mcc: result.resolved.mcc,
+            channel: result.resolved.channel,
+            expected_miles: result.reward?.miles ?? 0,
+            expected_cashback_cents: result.reward?.cashback_cents ?? 0,
+            expected_program: result.reward?.program ?? null,
+            trace: result.reward?.trace ?? [],
+            duplicate_of: result.duplicate_of ?? null,
+            review: result.warnings,
             alerts: alerts.length,
           });
         }

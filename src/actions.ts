@@ -1,4 +1,5 @@
 import { tranchesByExpiry } from './points';
+import { openReviewCount, REASON_ORDER } from './transactions/review';
 import { money, standings, today, type Progress, type Standing } from './spend';
 import type { Env } from './types';
 
@@ -182,25 +183,49 @@ export async function actionCentre(env: Env): Promise<ActionItem[]> {
     });
   }
 
-  // The two housekeeping queues. Grouped rather than listed: forty unreviewed
-  // rows are one job, not forty actions, and listing them individually would
-  // bury every deadline above.
-  const review = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM transactions WHERE needs_review = 1`
+  // The housekeeping queues. Grouped rather than listed: forty unanswered
+  // questions are one job, not forty actions, and listing them individually
+  // would bury every deadline above.
+  const open = await openReviewCount(env);
+  if (open.total) {
+    // Named by what is actually being asked, because "5 things need review"
+    // tells you nothing about whether it is worth opening.
+    const worst = REASON_ORDER.find((r) => open.by_reason[r]);
+    items.push({
+      kind: 'unreviewed_import',
+      subject: 'Review',
+      title: `${open.total} transaction${open.total > 1 ? 's' : ''} need an answer`,
+      detail: worst ? `${open.by_reason[worst]} of them: ${REASON_WORDS[worst]}.` : 'Imported with something undecided.',
+      amount_cents: null,
+      deadline: null,
+      days_left: null,
+      urgency: open.by_reason.possible_duplicate ? 'soon' : 'watch',
+      target: 'review',
+      priority: PRIORITY.unreviewed_import,
+      count: open.total,
+    });
+  }
+
+  // Rows that predate the review queue, and anything categorised by hand
+  // outside it, still show up as uncategorised spend.
+  const uncategorised = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM transactions t
+      WHERE t.needs_review = 1
+        AND NOT EXISTS (SELECT 1 FROM review_items r WHERE r.transaction_id = t.id AND r.status = 'open')`
   ).first<{ n: number }>();
-  if (review?.n) {
+  if (uncategorised?.n) {
     items.push({
       kind: 'unreviewed_import',
       subject: 'Ledger',
-      title: `${review.n} transaction${review.n > 1 ? 's' : ''} need a category`,
-      detail: 'Imported without one. Until they have it they are guessed at in every total.',
+      title: `${uncategorised.n} transaction${uncategorised.n > 1 ? 's' : ''} have no category`,
+      detail: 'Until they have one they are grouped as other in every total.',
       amount_cents: null,
       deadline: null,
       days_left: null,
       urgency: 'watch',
       target: 'ledger',
       priority: PRIORITY.unreviewed_import,
-      count: review.n,
+      count: uncategorised.n,
     });
   }
 
@@ -238,3 +263,15 @@ export async function actionCentre(env: Env): Promise<ActionItem[]> {
 
 /** Today's date, so the caller can say what the list was true of. */
 export const asOf = (env: Env) => today(env);
+
+/** What each review reason is about, for a one-line summary. */
+const REASON_WORDS: Record<string, string> = {
+  possible_duplicate: 'the same purchase may have been counted twice',
+  unknown_card: 'no card could be matched',
+  ambiguous_mcc: 'the merchant presents more than one code',
+  unknown_mcc: 'no merchant code, so a bonus cannot be judged',
+  reward_rule_uncertain: 'the rules do not clearly say what it earns',
+  statement_match_ambiguous: 'a statement row matched more than one thing',
+  unknown_merchant: 'nothing to identify the merchant by',
+  unknown_category: 'no category',
+};

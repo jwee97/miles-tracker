@@ -1440,6 +1440,57 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('and so is a nonsense amount', (await authed('/api/tx/used', { nickname: 'crw', amount_cents: 0 })).status === 400, '');
 }
 
+// --- one way in, and the questions it leaves ----------------------------------
+{
+  const ing = await authed('/api/transactions/ingest', {
+    source: 'sms',
+    card_hint: 'crw',
+    amount_cents: 3390,
+    occurred_at: '2026-09-14',
+    merchant: 'GRAB*RIDE 4410',
+  });
+  const r = (await ing.json()) as any;
+  check('any channel can post a transaction', ing.status === 200, String(ing.status));
+  check('and is told what happened to it', ['created', 'needs_review'].includes(r.status), r.status);
+  check('with what it resolved to', r.resolved.merchant !== null, JSON.stringify(r.resolved));
+
+  const again = (await (
+    await authed('/api/transactions/ingest', {
+      source: 'sms',
+      card_hint: 'crw',
+      amount_cents: 3390,
+      occurred_at: '2026-09-14',
+      merchant: 'GRAB*RIDE 4410',
+    })
+  ).json()) as any;
+  check('the same arrival twice creates nothing', again.status === 'duplicate', again.status);
+  check('and says which transaction it already had', again.duplicate_of === r.transaction_id);
+
+  check('an unknown card is rejected, not guessed', (await authed('/api/transactions/ingest', { source: 'sms', card_hint: 'nope', amount_cents: 100, occurred_at: '2026-09-14' })).status === 400, '');
+
+  // The queue, and answering something in it.
+  const q = (await (await authed('/api/review/queue')).json()) as any;
+  check('the questions are readable from the app', Array.isArray(q.items), JSON.stringify(Object.keys(q)));
+
+  const item = q.items.find((i: any) => i.reason === 'unknown_mcc');
+  if (item) {
+    const done = await authed(`/api/review/${item.id}/resolve`, { action: 'confirm', mcc: '4121' });
+    const d = (await done.json()) as any;
+    check('a code can be confirmed in one call', d.ok === true, JSON.stringify(d));
+    check('and it says what it taught the app', typeof d.applied === 'string', d.applied);
+    check('the transaction has it', rowFor(item.transaction_id).mcc === '4121', rowFor(item.transaction_id).mcc);
+
+    const after = (await (await authed('/api/review/queue')).json()) as any;
+    check('and the question is gone', !after.items.some((i: any) => i.id === item.id));
+  }
+
+  check('a nonsense action is refused', (await authed('/api/review/1/resolve', { action: 'whatever' })).status === 400, '');
+  check('and so is answering a question that is not open', (await authed('/api/review/99999/resolve', { action: 'ignore' })).status === 400, '');
+
+  // The older category list still answers on its own path.
+  check('the ledger\'s category list is untouched', (await authed('/api/review')).status === 200, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

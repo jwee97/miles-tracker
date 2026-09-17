@@ -6,6 +6,7 @@ import { daysUntil, OFFER_STATUSES, parseExtraction, saveExtraction, sweepExpire
 import { feedStorage, ignoreFeedItem, purgeFeedItems, retentionDays, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import type { ScanResult } from './rss';
 import { currentRuleSetFor } from './catalog/migrate-products';
+import { ingestTransaction } from './transactions/ingest';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
 import { runMigrations, runSeed } from './migrate';
@@ -1567,30 +1568,34 @@ async function logSpend(env: Env, chatId: string, input: string) {
     if (resolved) source = 'learned';
   }
 
-  // The same evaluation the dashboard does. Logging through the bot used to
-  // store no prediction at all, which left the reward audit with nothing to
-  // reconcile and the wallet with nothing to credit.
-  const guess = note ? await lookupMerchant(env, note) : null;
-  const mcc = guess?.mcc ?? null;
-  const channel = guess?.channel ?? null;
-  if (!resolved && guess?.category) {
-    resolved = guess.category;
-    source = 'learned';
+  // The bot goes through the same pipeline as everything else, so a swipe
+  // logged here is deduplicated against the statement that will arrive days
+  // later, and priced by the rules that applied on its date.
+  const result = await ingestTransaction(env, {
+    source: 'telegram',
+    card_id: card.id,
+    amount_cents: amount,
+    occurred_at: date,
+    merchant: note || null,
+    category: resolved,
+  });
+  if (result.status === 'rejected') return send(env, chatId, result.warnings[0]?.detail ?? 'Could not log that.');
+
+  const row = await env.DB.prepare(`SELECT category, category_source, mcc FROM transactions WHERE id = ?`)
+    .bind(result.transaction_id)
+    .first<{ category: string | null; category_source: string | null; mcc: string | null }>();
+  if (!resolved && row?.category) {
+    resolved = row.category;
+    source = row.category_source;
     learned = true;
   }
-  const expected = await evaluate(env, card, { amount_cents: amount, mcc, category: resolved, channel });
-  const program = expected.miles > 0 ? await programForCard(env, card.id, expected.rule?.id) : null;
-
-  const ins = await env.DB.prepare(
-    `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, category, category_source,
-       needs_review, mcc, channel, expected_miles, expected_cashback_cents, expected_program, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`
-  )
-    .bind(
-      card.id, amount, date, note || null, resolved, source, resolved ? 0 : 1,
-      mcc, channel, expected.miles, expected.cashback_cents, program
-    )
-    .run();
+  const expected = {
+    miles: result.reward?.miles ?? 0,
+    cashback_cents: result.reward?.cashback_cents ?? 0,
+    reward_type: (result.reward?.miles ?? 0) > 0 ? 'miles' : 'cashback',
+  };
+  const program = result.reward?.program ?? null;
+  const ins = { meta: { last_row_id: result.transaction_id! } };
 
   // Immediate feedback: what this swipe did to the limit and to any minimum.
   const reqs = await requirementsFor(env, card.id);

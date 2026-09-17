@@ -87,8 +87,17 @@ export default function Statement({ cards, onImported }: { cards: CardSummary[];
     try {
       const rows = parsed.rows.filter((_, i) => keep.has(i));
       const r = await importStatement(nickname, rows);
+      // What changed, not what was sent: most of a statement is usually
+      // already known, and "52 imported" when 48 were already there is the
+      // sentence that makes people stop trusting the number.
+      const parts = [`${r.imported} new transaction${r.imported === 1 ? '' : 's'}`];
+      if (r.already_known) parts.push(`${r.already_known} already known`);
+      if (r.reconciled) parts.push(`${r.reconciled} confirmed as posted`);
+      if (r.queued_for_review) parts.push(`${r.queued_for_review} to answer under Review`);
+      const skipped = (r.skipped ?? []).reduce((t, x) => t + x.count, 0);
+      if (skipped) parts.push(`${skipped} payment/fee row${skipped === 1 ? '' : 's'} skipped`);
       setMsg(
-        `Imported ${r.imported} transaction${r.imported === 1 ? '' : 's'}` +
+        parts.join(' · ') +
           (r.expected_miles ? ` · ${r.expected_miles.toLocaleString()} points expected, waiting on the Points tab` : '')
       );
       setParsed(null);
@@ -202,6 +211,28 @@ export default function Statement({ cards, onImported }: { cards: CardSummary[];
             {parsed.skipped.length ? ` · ${parsed.skipped.length} line(s) not understood` : ''}
           </p>
 
+          {parsed.summary && (
+            <ul className="stmt-summary">
+              {(
+                [
+                  ['matched', 'already known'],
+                  ['new', 'new'],
+                  ['possible_duplicate', 'possibly a duplicate'],
+                  ['refund', 'refunds'],
+                  ['payment', 'bill payments'],
+                  ['fee', 'fees'],
+                  ['interest', 'interest'],
+                ] as const
+              )
+                .filter(([k]) => parsed.summary![k])
+                .map(([k, label]) => (
+                  <li key={k} className={k === 'possible_duplicate' ? 'warn-num' : ''}>
+                    <span className="mono">{parsed.summary![k]}</span> {label}
+                  </li>
+                ))}
+            </ul>
+          )}
+
           <ul className="txns statement">
             {parsed.rows.map((r, i) => (
               <li key={i} className={r.duplicate ? 'unposted' : ''}>
@@ -219,7 +250,8 @@ export default function Statement({ cards, onImported }: { cards: CardSummary[];
                 <span className="t-date">{r.occurred_at.slice(5)}</span>
                 <span className="t-note">
                   {r.merchant}
-                  {r.duplicate ? ' · already logged' : ''}
+                  {r.kind && r.kind !== 'new' ? ` · ${r.detail ?? r.kind}` : ''}
+                  {!r.kind && r.duplicate ? ' · already logged' : ''}
                 </span>
                 <span className="t-card">{r.category ?? (r.mcc ? `mcc ${r.mcc}` : 'no category')}</span>
                 <span className={`t-amt ${r.credit ? 'ok-text' : ''}`}>

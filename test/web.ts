@@ -267,6 +267,54 @@ const USED = {
 
 let usedCalls = 0;
 
+const REVIEW = {
+  items: [
+    {
+      id: 1,
+      transaction_id: 11,
+      reason: 'possible_duplicate',
+      detail: 'same card and amount, 1 day apart, and a similar merchant',
+      suggestion: null,
+      other_id: 10,
+      merchant: 'Grab',
+      merchant_raw: 'GRAB*RIDE 8829',
+      merchant_id: 3,
+      amount_cents: 2470,
+      occurred_at: '2026-09-16',
+      mcc: null,
+      channel: null,
+      category: 'transport',
+      nickname: 'crw',
+      product: 'Rewards Card',
+      options: [],
+    },
+    {
+      id: 2,
+      transaction_id: 12,
+      reason: 'unknown_mcc',
+      detail: 'no code on file for Kopitiam 88 Outlet 3 — it may be Kopitiam 88',
+      suggestion: '5814',
+      other_id: null,
+      merchant: 'Kopitiam 88 Outlet 3',
+      merchant_raw: 'KOPITIAM 88 OUTLET 3',
+      merchant_id: 4,
+      amount_cents: 1150,
+      occurred_at: '2026-09-16',
+      mcc: null,
+      channel: null,
+      category: 'dining',
+      nickname: 'wwmc',
+      product: "Woman's World Card",
+      options: [
+        { mcc: '5814', description: 'Fast food restaurants', observations: 3 },
+        { mcc: '5812', description: 'Eating places', observations: 1 },
+      ],
+    },
+  ],
+};
+
+let resolved: { id: number; body: any } | null = null;
+
 async function serve(): Promise<{ url: string; close: () => Promise<void> }> {
   const server = createServer(async (req, res) => {
     const path = (req.url ?? '/').split('?')[0];
@@ -296,6 +344,14 @@ async function stub(page: Page) {
 
     if (u.pathname === '/api/recommend') return send(RECOMMENDATION);
     if (u.pathname === '/api/actions') return send(ACTIONS);
+    if (u.pathname === '/api/review/queue') return send(REVIEW);
+    if (u.pathname.startsWith('/api/review/') && u.pathname.endsWith('/resolve')) {
+      resolved = {
+        id: Number(u.pathname.split('/')[3]),
+        body: JSON.parse(route.request().postData() ?? '{}'),
+      };
+      return send({ ok: true, applied: 'Kopitiam 88 Outlet 3 is 5814 from now on' });
+    }
     if (u.pathname === '/api/transactions') return send(TRANSACTIONS);
     if (u.pathname === '/api/tx/used') {
       usedCalls++;
@@ -403,6 +459,34 @@ async function main() {
       'and it says the bank has not confirmed it yet',
       (await page.locator('.ok-text').innerText()).includes('pending'),
       await page.locator('.ok-text').innerText()
+    );
+
+    // --- the review inbox -----------------------------------------------
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Review' }).click();
+    await page.locator('.review-list').waitFor();
+
+    const items = page.locator('.review-item');
+    check('the questions are listed', (await items.count()) === 2, String(await items.count()));
+    check(
+      'a possible duplicate is asked as a question, not reported as a fact',
+      (await items.first().innerText()).includes('Is this the same purchase twice?')
+    );
+    check('with both answers offered', (await items.first().getByRole('button', { name: /Merge|Keep both/ }).count()) === 2);
+
+    const code = items.nth(1);
+    check('an unknown code offers the likely answer first', (await code.innerText()).includes('Confirm 5814'));
+    check('with what that code means', (await code.innerText()).includes('Fast food restaurants'));
+    check('the other possibilities are there too', (await code.innerText()).includes('5812'));
+    check('and the resemblance that suggested it is named', (await code.innerText()).includes('it may be Kopitiam 88'));
+
+    await code.getByRole('button', { name: /^Confirm 5814/ }).click();
+    await page.locator('.ok-text').waitFor();
+    check('answering sends the code', resolved?.body.mcc === '5814', JSON.stringify(resolved));
+    check('against the right question', resolved?.id === 2, JSON.stringify(resolved));
+    check(
+      'and says what it taught the app, not just that it worked',
+      (await page.locator('.ok-text').innerText()).includes('from now on')
     );
 
     // --- the catalogue --------------------------------------------------
