@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import Advisor from './Advisor';
 import Catalog from './Catalog';
+import Boundary from './Boundary';
 import Home from './Home';
 import Review from './Review';
 import Audit from './Audit';
@@ -1999,6 +2000,7 @@ export default function App() {
         </nav>
       )}
 
+      <Boundary where={`the ${tab} tab`}>
       {tab === 'cards' &&
         (summary ? (
           <>
@@ -2134,6 +2136,7 @@ export default function App() {
           <Sources />
         </>
       )}
+      </Boundary>
     </main>
   );
 }

@@ -119,6 +119,21 @@ and a rate written from memory is worse than a blank, because a blank asks you
 and a wrong rate answers you. Read a rewards page onto a card you hold and
 those rates become that product's current version, shared by every card on it.
 
+## Re-pricing the past
+
+Correct a rate, confirm a merchant code, fix a category — and every purchase
+priced before that is carrying an old prediction. The ledger can re-price them.
+
+It uses the rules as they now read **for the day each purchase happened**, with
+that purchase's cap window and the cap position as it stood earlier in the
+ledger. So August is re-priced by August, running it twice changes nothing the
+second time, and the answer does not drift as later purchases arrive.
+
+It never touches what the bank actually paid. That is an observation, and it is
+the only thing the reward audit has to check a prediction against — after a
+re-pricing the audit often shows a *bigger* gap, which is the gap that was
+always there behind a stale number.
+
 ## Changing what a card pays
 
 One rule holds the whole catalogue layer up: the only way rules a calculation

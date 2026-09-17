@@ -1584,6 +1584,42 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('and is not claimed to have come from the catalogue', custom.from_catalog === false, String(custom.from_catalog));
 }
 
+// --- re-pricing what the app believed ------------------------------------------
+{
+  const made = (await (
+    await authed('/api/transactions/ingest', {
+      source: 'manual',
+      card_hint: 'crw',
+      amount_cents: 5000,
+      occurred_at: '2026-09-09',
+      merchant: 'Recalc Test',
+      category: 'dining',
+    })
+  ).json()) as any;
+
+  // What the bank actually paid, which a recalculation must never touch.
+  db.prepare(`UPDATE transactions SET actual_miles = 999 WHERE id = ?`).run(made.transaction_id);
+
+  const res = await authed(`/api/transactions/${made.transaction_id}/recalculate`, {});
+  const r = (await res.json()) as any;
+  check('one transaction can be re-priced', res.status === 200 && r.ok === true, JSON.stringify(r).slice(0, 200));
+  check('and it says what changed, in words', typeof r.change.summary === 'string', r.change?.summary);
+  check('what the bank paid is left alone', rowFor(made.transaction_id).actual_miles === 999, String(rowFor(made.transaction_id).actual_miles));
+  check('and the date it was priced is recorded', typeof rowFor(made.transaction_id).evaluated_at === 'string', '');
+
+  check('an unknown transaction is a 404', (await authed('/api/transactions/99999/recalculate', {})).status === 404, '');
+
+  const batch = (await (await authed('/api/transactions/recalculate', { nickname: 'crw' })).json()) as any;
+  check('a batch reports what it looked at', typeof batch.considered === 'number', JSON.stringify(Object.keys(batch)));
+  check('and how much of it moved', typeof batch.changed === 'number' && Array.isArray(batch.changes), '');
+  check('with the totals either side', typeof batch.miles_before === 'number' && typeof batch.miles_after === 'number', '');
+
+  const twice = (await (await authed('/api/transactions/recalculate', { nickname: 'crw' })).json()) as any;
+  check('running it again changes nothing', twice.changed === 0, JSON.stringify(twice.changes?.map((c: any) => c.summary)));
+
+  check('a bad date is refused', (await authed('/api/transactions/recalculate', { from: 'nonsense' })).status === 400, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

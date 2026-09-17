@@ -1817,6 +1817,54 @@ POST /api/catalog/rule-sets/:id/publish      make it so
 GET  /api/catalog/stale                      what to re-check
 ```
 
+## Re-pricing what the app believed
+
+A transaction records what the engine predicted and which rule version produced
+it. That prediction can turn out to be wrong for reasons that have nothing to do
+with the purchase: a rate read wrong off a bank page and corrected later, a
+merchant code confirmed in the review queue, a category fixed by hand.
+
+**Ledger → Re-price against the current rules** replaces the predictions.
+
+```
+POST /api/transactions/:id/recalculate
+POST /api/transactions/recalculate      { nickname?, from?, rule_set_id?, unpriced?, limit? }
+```
+
+Two rules hold it up.
+
+**It never touches what the bank actually paid.** `actual_miles` and
+`actual_cashback_cents` are observations — typed in, or read off a statement.
+Overwriting an observation with a prediction destroys the only thing the reward
+audit can check a prediction against, and it does it silently. After a
+re-pricing the audit shows a *bigger* gap, which is the point: the gap was
+always there and the app was hiding it behind a stale prediction.
+
+**It re-prices the day it happened, not today.** Three things follow from that,
+and each was a real bug before this:
+
+- the rules used are the version in force on the transaction's date, so a card
+  repriced in October does not rewrite what August earned;
+- the cap window is the month or cycle the purchase fell in, not the current one;
+- the cap position counts what came *earlier in the ledger* and nothing at or
+  after it, tie-broken by id.
+
+That last one is what makes the answer reproducible. A cap fills in order, so
+"how much headroom did this purchase have" has one answer forever; asking "how
+much is left now" would give a different number after every subsequent purchase.
+A batch therefore runs oldest first, and running it twice changes nothing the
+second time — a test, not an intention.
+
+```
+42 looked at · 2 changed · 40 already right
+-2,400 miles
+2026-08-05 · Shopee (wwmc) — 2,400 miles → 1,200 miles
+```
+
+A reward that went down is shown as having gone down. Refunds are skipped rather
+than reported as errors: a negative amount earns nothing, and pricing one would
+predict miles on it.
+
 ## Verify end to end
 
 ```

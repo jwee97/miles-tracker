@@ -948,6 +948,37 @@ export const parseStatement = (text: string, nickname?: string, statement_date?:
 export const importStatement = (nickname: string, rows: ParsedRow[]) =>
   post<ImportReport>('/api/statement/import', { nickname, rows });
 
+/* --- re-pricing what the app believed ------------------------------------ */
+
+export interface RecalcChange {
+  id: number;
+  occurred_at: string;
+  merchant: string | null;
+  card: string;
+  before: { miles: number; cashback_cents: number; rule_set_id: number | null };
+  after: { miles: number; cashback_cents: number; rule_set_id: number | null };
+  summary: string;
+  changed: boolean;
+}
+
+export interface RecalcReport {
+  considered: number;
+  changed: number;
+  unchanged: number;
+  failed: { id: number; error: string }[];
+  changes: RecalcChange[];
+  miles_before: number;
+  miles_after: number;
+  cashback_before_cents: number;
+  cashback_after_cents: number;
+}
+
+export const recalculateAll = (body: { nickname?: string; from?: string; unpriced?: boolean }) =>
+  post<RecalcReport>('/api/transactions/recalculate', body);
+
+export const recalculateOne = (id: number) =>
+  post<{ ok: boolean; error?: string; change?: RecalcChange }>(`/api/transactions/${id}/recalculate`, {});
+
 /* --- the review inbox ---------------------------------------------------- */
 
 export type ReviewReason =

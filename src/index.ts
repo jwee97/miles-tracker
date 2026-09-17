@@ -27,6 +27,7 @@ import { evaluate, lookupMerchant, recommend, type Channel, type Objective } fro
 import { actionCentre } from './actions';
 import { ingestTransaction } from './transactions/ingest';
 import { commitStatement, previewStatement, type ClassifiedRow } from './transactions/reconcile';
+import { recalculateMany, recalculateTransaction } from './transactions/recalculate';
 import { resolveReview, reviewQueue } from './transactions/review';
 import { buildAudit } from './audit';
 import { optimise } from './advice';
@@ -537,6 +538,38 @@ export default {
             metadata: (b.metadata as Record<string, unknown>) ?? undefined,
           });
           return json(result, result.status === 'rejected' ? 400 : 200);
+        }
+
+        // --- re-pricing what the app believed --------------------------------
+        // Rules get corrected, codes get confirmed, categories get fixed. This
+        // replaces the PREDICTION with what the rules — as they now read for
+        // that day — actually say, and never touches what the bank paid.
+        if (url.pathname.match(/^\/api\/transactions\/\d+\/recalculate$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[3]);
+          const r = await recalculateTransaction(env, id);
+          return json(r, r.ok ? 200 : 404);
+        }
+
+        if (url.pathname === '/api/transactions/recalculate' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as {
+            nickname?: string;
+            from?: string;
+            rule_set_id?: number;
+            unpriced?: boolean;
+            limit?: number;
+          };
+          const from = b.from ? parseDateToken(String(b.from), env) : null;
+          if (b.from && !from) return json({ error: 'bad date' }, 400);
+
+          return json(
+            await recalculateMany(env, {
+              nickname: b.nickname ? String(b.nickname).trim() : null,
+              from,
+              rule_set_id: typeof b.rule_set_id === 'number' ? b.rule_set_id : null,
+              unpriced: !!b.unpriced,
+              limit: typeof b.limit === 'number' ? b.limit : undefined,
+            })
+          );
         }
 
         // --- the review inbox ------------------------------------------------

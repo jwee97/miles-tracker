@@ -919,3 +919,7 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .stale-note ul { margin: 0 0 6px; padding-left: 18px; }
 
 .picker li { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+
+.repricer .advisor-row { margin-top: 10px; flex-wrap: wrap; }
+.recalc-report { margin-top: 12px; }
+.recalc-report .diff-list { margin-top: 8px; }

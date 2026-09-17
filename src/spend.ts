@@ -211,6 +211,33 @@ export function calendarMonth(env: Env): { start: string; end: string } {
 }
 
 /**
+ * The calendar month and quarter a given date falls in.
+ *
+ * The versions above answer for today, which is what a recommendation needs.
+ * Re-pricing a purchase from August is a different question: its cap filled up
+ * against August's month, not against this one, and asking today's window how
+ * much of a cap an old purchase had left is how a recalculation invents a
+ * number nobody can reproduce.
+ */
+export function calendarMonthOf(date: string): { start: string; end: string } {
+  const d = new Date(`${date}T00:00:00Z`);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  return { start: isoDate(new Date(Date.UTC(y, m, 1))), end: isoDate(new Date(Date.UTC(y, m, daysInMonth(y, m)))) };
+}
+
+export function calendarQuarterOf(date: string): { start: string; end: string } {
+  const d = new Date(`${date}T00:00:00Z`);
+  const y = d.getUTCFullYear();
+  const startM = Math.floor(d.getUTCMonth() / 3) * 3;
+  const endM = startM + 2;
+  return {
+    start: isoDate(new Date(Date.UTC(y, startM, 1))),
+    end: isoDate(new Date(Date.UTC(y, endM, daysInMonth(y, endM)))),
+  };
+}
+
+/**
  * Reads a date written the way someone actually types one into a chat:
  * `2026-09-05`, `5/9` (day/month), `yesterday`, or `-3` for three days ago.
  * Returns null for anything that isn't a date, so callers can treat the token

@@ -26,10 +26,22 @@ const rewardOf = (t: Txn) => {
   return '—';
 };
 
-/** Today, yesterday, then the date — the way a person reads a statement. */
+/**
+ * Today, yesterday, then the date — the way a person reads a statement.
+ *
+ * `today` comes from the action centre, which is much slower to answer than the
+ * ledger: it walks every card's standings, the expiry tranches and the stale
+ * catalogue, against one indexed query. So the activity list routinely renders
+ * before there is a day to compare against, and the date has to survive that.
+ * It used to be formatted regardless, which threw on an empty string and took
+ * the whole screen down with it — a crash reads as a blank page, not as a
+ * missing section.
+ */
 function dayLabel(date: string, today: string): string {
+  const now = Date.parse(today);
+  if (!Number.isFinite(now)) return date;
   if (date === today) return 'Today';
-  const y = new Date(Date.parse(today) - 86_400_000).toISOString().slice(0, 10);
+  const y = new Date(now - 86_400_000).toISOString().slice(0, 10);
   if (date === y) return 'Yesterday';
   return date;
 }
@@ -100,10 +112,15 @@ export default function Home({ onGo }: { onGo: (target: string) => void }) {
   function load() {
     fetchActions()
       .then((d) => {
-        setActions(d.actions);
-        setAsOf(d.as_of);
+        setActions(d.actions ?? []);
+        setAsOf(d.as_of ?? '');
       })
-      .catch((e) => setErr((e as Error).message));
+      .catch((e) => {
+        // An empty list, not a permanent "Loading…": a section that never
+        // finishes loading is indistinguishable from one that is broken.
+        setActions([]);
+        setErr((e as Error).message);
+      });
     fetchTransactions(8)
       .then((d) => setRecent(d.transactions))
       .catch(() => void 0);

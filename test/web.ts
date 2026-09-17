@@ -325,6 +325,9 @@ const REVIEW = {
 
 let resolved: { id: number; body: any } | null = null;
 let published = 0;
+let slowActions = false;
+let breakTransactions = false;
+let repriced: any = null;
 
 const DRAFT = {
   id: 5,
@@ -391,11 +394,25 @@ async function serve(): Promise<{ url: string; close: () => Promise<void> }> {
 async function stub(page: Page) {
   await page.route('**/api/**', async (route) => {
     const u = new URL(route.request().url());
+    // no-store, so a reload re-asks the stub instead of the browser answering
+    // from its own cache with whatever the last scenario returned.
     const send = (body: unknown) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'cache-control': 'no-store' },
+        body: JSON.stringify(body),
+      });
 
     if (u.pathname === '/api/recommend') return send(RECOMMENDATION);
-    if (u.pathname === '/api/actions') return send(ACTIONS);
+    if (u.pathname === '/api/actions') {
+      // The real endpoint walks every card's standings, the expiry tranches and
+      // the stale catalogue; the ledger is one indexed query. So in production
+      // the transactions almost always land first, and a home screen that only
+      // renders in the other order is a home screen that only renders in tests.
+      if (slowActions) await new Promise((r) => setTimeout(r, 300));
+      return send(ACTIONS);
+    }
     if (u.pathname === '/api/review/queue') return send(REVIEW);
     if (u.pathname.startsWith('/api/review/') && u.pathname.endsWith('/resolve')) {
       resolved = {
@@ -404,7 +421,46 @@ async function stub(page: Page) {
       };
       return send({ ok: true, applied: 'Kopitiam 88 Outlet 3 is 5814 from now on' });
     }
-    if (u.pathname === '/api/transactions') return send(TRANSACTIONS);
+    if (u.pathname === '/api/summary')
+      return send({ cards: [{ nickname: 'wwmc' }, { nickname: 'crw' }], overall: {} });
+    if (u.pathname === '/api/categories') return send({ categories: ['dining', 'online'] });
+    if (u.pathname === '/api/review') return send({ ready: [], waiting: [] });
+    if (u.pathname === '/api/transactions/recalculate') {
+      repriced = JSON.parse(route.request().postData() ?? '{}');
+      return send({
+        considered: 42,
+        changed: 2,
+        unchanged: 40,
+        failed: [],
+        miles_before: 12000,
+        miles_after: 9600,
+        cashback_before_cents: 0,
+        cashback_after_cents: 0,
+        changes: [
+          {
+            id: 1,
+            occurred_at: '2026-08-05',
+            merchant: 'Shopee',
+            card: 'wwmc',
+            before: { miles: 2400, cashback_cents: 0, rule_set_id: 1 },
+            after: { miles: 1200, cashback_cents: 0, rule_set_id: 1 },
+            summary: '2,400 miles → 1,200 miles',
+            changed: true,
+          },
+        ],
+      });
+    }
+    if (u.pathname === '/api/transactions') {
+      // A shape the component cannot render: React refuses an object as a
+      // child, which is exactly the kind of contract drift a boundary is for.
+      if (breakTransactions) {
+        return send({
+          ...TRANSACTIONS,
+          transactions: [{ ...TRANSACTIONS.transactions[0], merchant: { boom: true } }],
+        });
+      }
+      return send(TRANSACTIONS);
+    }
     if (u.pathname === '/api/tx/used') {
       usedCalls++;
       return send(USED);
@@ -439,9 +495,47 @@ async function main() {
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium' });
     const page = await browser.newPage();
     await stub(page);
-    await page.goto(`${server.url}/#t=test-token`);
+
+    // The app moves the token out of the hash on boot, so revisiting the same
+    // path with a hash is a same-document fragment jump and nothing reloads.
+    // Each scenario therefore gets a URL of its own.
+    let visit = 0;
+    const open = () => page.goto(`${server.url}/?v=${++visit}#t=test-token`);
+    await open();
+
+    // --- home, with the ledger back before the action centre -------------
+    // Regression: the activity list dated its rows against a day the action
+    // centre had not answered with yet, and formatting that empty date threw —
+    // which unmounts React and leaves a blank screen, not a missing section.
+    slowActions = true;
+    await open();
+    await page.locator('.activity-list li').first().waitFor();
+    check('the ledger renders before the action centre has answered', true);
+    check(
+      'and the rows are dated, without a day to compare against',
+      (await page.locator('.activity-date').first().innerText()).length > 0
+    );
+    await page.locator('.actions .action').first().waitFor();
+    check('the action centre still arrives', (await page.locator('.actions .action').count()) === 3);
+    slowActions = false;
+
+    // A crash must read as a crash. React unmounts the whole tree when a render
+    // throws, so without a boundary one bad row anywhere is a blank page — the
+    // least diagnosable failure there is.
+    breakTransactions = true;
+    await open();
+    await page.locator('.card').first().waitFor();
+    const boundary = await page.locator('main').innerText();
+    check('a screen that throws says so', boundary.includes('could not be drawn'), boundary.slice(0, 200));
+    // The production build ships React's minified messages, so what matters is
+    // that the error is carried through at all rather than swallowed.
+    const said = await page.locator('.card .err-text').innerText();
+    check('and carries the error through instead of swallowing it', said.trim().length > 0, said);
+    check('while the tabs stay usable', (await page.locator('nav.tabs.primary button').count()) === 5);
+    breakTransactions = false;
 
     // --- home: the advisor is the first thing on the screen --------------
+    await open();
     await page.locator('.advisor').waitFor();
     check('the app opens on the advisor', await page.locator('.advisor h2').isVisible());
     check(
@@ -557,6 +651,28 @@ async function main() {
       'and says what it taught the app, not just that it worked',
       (await page.locator('.ok-text').innerText()).includes('from now on')
     );
+
+    // --- re-pricing what the app believed --------------------------------
+    await page.getByRole('button', { name: 'Activity' }).click();
+    await page.locator('.repricer').first().waitFor();
+    await page.locator('.repricer summary').first().click();
+    check(
+      'it says which day the rules are read for',
+      (await page.locator('.repricer').first().innerText()).includes('for the day each purchase happened')
+    );
+    check(
+      'and promises not to touch what the bank paid',
+      (await page.locator('.repricer').first().innerText()).includes('never changed')
+    );
+
+    await page.locator('.repricer').first().getByRole('button', { name: 'Re-price' }).click();
+    await page.locator('.recalc-report').waitFor();
+    const rep = await page.locator('.recalc-report').innerText();
+    check('the request goes out', repriced !== null, JSON.stringify(repriced));
+    check('the report says how much was looked at', rep.includes('42 looked at'), rep);
+    check('and how much moved', rep.includes('2') && rep.includes('40 already right'), rep);
+    check('a reward that went down is not dressed up as good news', rep.includes('-2,400 miles'), rep);
+    check('with the rows that changed', rep.includes('2,400 miles → 1,200 miles'), rep);
 
     // --- the catalogue --------------------------------------------------
     await page.getByRole('button', { name: /^More/ }).click();

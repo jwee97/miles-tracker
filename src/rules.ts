@@ -1,7 +1,10 @@
 import {
   calendarMonth,
+  calendarMonthOf,
   calendarQuarter,
+  calendarQuarterOf,
   currentTierCents,
+  cycleContaining,
   money,
   requirementProgress,
   requirementsFor,
@@ -195,25 +198,53 @@ export interface Evaluation {
   evaluated_on: string;
 }
 
-function windowFor(w: string | null, card: Card, env: Env) {
-  if (w === 'calendar_month') return calendarMonth(env);
-  if (w === 'calendar_quarter') return calendarQuarter(env);
-  return statementCycle(card.statement_day, env);
+/**
+ * The window a cap runs over.
+ *
+ * `on` moves the question from "this month" to "the month that date is in",
+ * which is the difference between advising a purchase and re-pricing one. They
+ * are the same window for a purchase made today, and a different one for every
+ * purchase that is not.
+ */
+function windowFor(w: string | null, card: Card, env: Env, on?: string) {
+  if (w === 'calendar_month') return on ? calendarMonthOf(on) : calendarMonth(env);
+  if (w === 'calendar_quarter') return on ? calendarQuarterOf(on) : calendarQuarter(env);
+  return on ? cycleContaining(on, card.statement_day) : statementCycle(card.statement_day, env);
 }
 
-/** Spend already counted against a rule's cap, including every rule sharing it. */
-async function capSpend(env: Env, card: Card, rule: EarnRule, rules: EarnRule[]): Promise<number> {
-  const win = windowFor(rule.cap_window, card, env);
+/**
+ * Spend already counted against a rule's cap, including every rule sharing it.
+ *
+ * `before` is what makes re-pricing an old purchase reproducible: a cap fills
+ * in ledger order, so the question for a transaction is how much of the cap was
+ * gone when it happened — not how much is gone now, which would include
+ * purchases made after it and would give a different answer every time.
+ */
+async function capSpend(
+  env: Env,
+  card: Card,
+  rule: EarnRule,
+  rules: EarnRule[],
+  opts: { on?: string; before?: { id: number; date: string } } = {}
+): Promise<number> {
+  const win = windowFor(rule.cap_window, card, env, opts.on);
   const group = rule.cap_group ? rules.filter((r) => r.cap_group === rule.cap_group) : [rule];
   const cats = group.map((r) => r.category);
   const ph = cats.map(() => '?').join(',');
 
+  // Ties on the effective date are broken by id, so the ledger has one order
+  // and two purchases on the same day cannot each claim the other's headroom.
+  const cutoff = opts.before
+    ? ` AND (${EFFECTIVE_DATE} < ? OR (${EFFECTIVE_DATE} = ? AND id < ?))`
+    : '';
+  const args = opts.before ? [opts.before.date, opts.before.date, opts.before.id] : [];
+
   const row = await env.DB.prepare(
     `SELECT COALESCE(SUM(amount_cents), 0) AS total FROM transactions
      WHERE card_id = ? AND ${EFFECTIVE_DATE} >= ? AND ${EFFECTIVE_DATE} <= ?
-       AND amount_cents > 0 AND COALESCE(category, '*') IN (${ph})`
+       AND amount_cents > 0 AND COALESCE(category, '*') IN (${ph})${cutoff}`
   )
-    .bind(card.id, win.start, win.end, ...cats)
+    .bind(card.id, win.start, win.end, ...cats, ...args)
     .first<{ total: number }>();
   return row?.total ?? 0;
 }
@@ -307,6 +338,11 @@ export async function evaluate(
     tier_cents?: number | null;
     /** The date to judge the rules on. Defaults to today. */
     on?: string;
+    /**
+     * Price this as it stood just before an existing transaction: the cap
+     * counts what came earlier in the ledger and nothing at or after it.
+     */
+    before?: { id: number; date: string };
   } = {}
 ): Promise<Evaluation> {
   const trace: RuleStep[] = [];
@@ -420,7 +456,7 @@ export async function evaluate(
   let headroom: number | null = null;
   let used = 0;
   if (rule.cap_cents) {
-    used = await capSpend(env, card, rule, mine);
+    used = await capSpend(env, card, rule, mine, { on: opts.on, before: opts.before });
     headroom = Math.max(0, rule.cap_cents - used);
     trace.push({
       check: 'Bonus cap',

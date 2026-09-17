@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Pager, { PageSize, usePageSize } from './Pager';
+import Repricer from './Repricer';
 import Statement from './Statement';
 import {
   addTransaction,
@@ -331,11 +332,14 @@ export default function Ledger() {
   useEffect(() => {
     fetchSummary()
       .then((s) => {
-        setCards(s.cards);
-        setNCard((c) => c || s.cards[0]?.nickname || '');
+        // Defaulted, not assumed. A list that arrives missing is a render that
+        // throws, and a render that throws is a blank screen rather than a
+        // missing dropdown.
+        setCards(s.cards ?? []);
+        setNCard((c) => c || s.cards?.[0]?.nickname || '');
       })
       .catch(() => void 0);
-    fetchCategories().then((d) => setCats(d.categories)).catch(() => void 0);
+    fetchCategories().then((d) => setCats(d.categories ?? [])).catch(() => void 0);
   }, []);
 
   useEffect(load, [limit, page, range, from, to]);
@@ -445,6 +449,8 @@ export default function Ledger() {
             <p className="sub">Click any cell to edit it</p>
           </div>
         </header>
+
+        <Repricer cards={cards.map((c) => c.nickname)} onDone={load} />
 
         <div className="seg wrap" role="group" aria-label="Time frame">
           {[
