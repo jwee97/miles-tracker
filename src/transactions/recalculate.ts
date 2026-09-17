@@ -2,6 +2,7 @@ import { deriveMcc } from '../merchants/evidence';
 import { evaluate } from '../rules';
 import { today } from '../spend';
 import { programForCard } from '../wallet';
+import { expectFromTransaction } from '../rewards/expected';
 import type { Env } from '../types';
 
 /**
@@ -124,6 +125,24 @@ export async function recalculateTransaction(env: Env, id: number): Promise<Reca
   )
     .bind(e.miles, e.cashback_cents, program, mcc, e.rule_set_id, today(env), id)
     .run();
+
+  // The component split is re-derived too, so a corrected rate does not leave
+  // the old base/bonus expectation standing beside the new total.
+  await expectFromTransaction(
+    env,
+    {
+      id,
+      card_id: t.card_id,
+      amount_cents: t.amount_cents,
+      occurred_at: t.occurred_at,
+      posted_at: t.posted_at,
+      mcc,
+      category: t.category,
+      channel: t.channel,
+      expected_program: program,
+    },
+    card
+  );
 
   const summary = !changed
     ? 'unchanged'

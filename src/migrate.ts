@@ -63,6 +63,15 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
     column: 'statement_day_known',
     ddl: 'ALTER TABLE cards ADD COLUMN statement_day_known INTEGER NOT NULL DEFAULT 1',
   },
+  // --- the reward ledger (P1 phase 2) ---
+  // How a bank rounds is a property of the card, not of the calculation. UOB
+  // pays per S$5 block; DBS rounds the statement total. Without this, every
+  // reconciliation invents discrepancies that are really just rounding.
+  {
+    table: 'rule_sets',
+    column: 'reward_rounding_json',
+    ddl: 'ALTER TABLE rule_sets ADD COLUMN reward_rounding_json TEXT',
+  },
   { table: 'conversions', column: 'verified_at', ddl: 'ALTER TABLE conversions ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
   { table: 'conversions', column: 'note', ddl: 'ALTER TABLE conversions ADD COLUMN note TEXT' },

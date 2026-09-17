@@ -7,6 +7,8 @@ import { canonicalUrl } from './rss';
 import { handleUpdate, pushFeedItem, pushFeedMatches, send } from './telegram';
 import { feedStorage, ignoreFeedItem, purgeFeedItems, retentionDays, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import {
+  cycleContaining,
+  calendarMonth,
   activeCards,
   addMonths,
   EFFECTIVE_DATE,
@@ -25,6 +27,9 @@ import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from '.
 import { platformReport } from './platform';
 import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
 import { actionCentre } from './actions';
+import { actualTotals, entriesIn, recordActual, recordManualTotal } from './rewards/ledger';
+import { expectedTotals } from './rewards/expected';
+import { extractRewards, pendingCandidates, saveCandidates } from './rewards/extract';
 import { onboardingView, writeState } from './onboarding/state';
 import { searchProducts } from './onboarding/search';
 import { fieldsFor } from './onboarding/questions';
@@ -811,12 +816,26 @@ export default {
           // says what would change rather than only what was pasted.
           const preview = card ? await previewStatement(env, card, enriched, stmtDate) : null;
 
+          // A statement carries a rewards summary as well as transactions, and
+          // that summary is what a reconciliation is checked against. Read as
+          // candidates only: a misread line that silently became "what the bank
+          // paid" would corrupt the one record worth having.
+          let rewards: ReturnType<typeof extractRewards> = [];
+          if (card) {
+            rewards = extractRewards(text, { program_key: card.program_key ?? null });
+            if (rewards.length && stmtDate) {
+              const cycle = cycleContaining(stmtDate, card.statement_day);
+              await saveCandidates(env, card.id, rewards, cycle);
+            }
+          }
+
           return json({
             rows: preview ? preview.rows : enriched,
             skipped: parsed.skipped,
             total_cents: parsed.total_cents,
             duplicates: (preview ? preview.rows : enriched).filter((r) => r.duplicate).length,
             summary: preview?.summary ?? null,
+            rewards,
             statement_date: stmtDate,
           });
         }
@@ -875,6 +894,117 @@ export default {
             });
           }
           return json({ products: out });
+        }
+
+        // --- the reward ledger (P1 phase 2) --------------------------------
+        // What the bank did, kept apart from what the app expected. Nothing
+        // here writes the other ledger; a discrepancy is information.
+        if (url.pathname === '/api/rewards/ledger') {
+          const nick = url.searchParams.get('card');
+          const card = nick
+            ? await env.DB.prepare(`SELECT id, nickname FROM cards WHERE nickname = ? COLLATE NOCASE`)
+                .bind(nick)
+                .first<{ id: number; nickname: string }>()
+            : null;
+          if (nick && !card) return json({ error: 'no such card' }, 404);
+
+          const start = url.searchParams.get('from') ?? calendarMonth(env).start;
+          const end = url.searchParams.get('to') ?? calendarMonth(env).end;
+
+          const cards = card
+            ? [card]
+            : ((await env.DB.prepare(`SELECT id, nickname FROM cards WHERE closed_at IS NULL ORDER BY nickname`).all<{
+                id: number;
+                nickname: string;
+              }>()).results ?? []);
+
+          const out = [];
+          for (const c of cards) {
+            out.push({
+              card: c,
+              expected: await expectedTotals(env, c.id, start, end, today(env)),
+              actual: await actualTotals(env, c.id, start, end),
+              entries: await entriesIn(env, c.id, start, end),
+            });
+          }
+          return json({ period: { start, end }, cards: out, as_of: today(env) });
+        }
+
+        // A figure read off a statement, or typed in when the statement does
+        // not expose one. Typed never displaces imported.
+        if (url.pathname === '/api/rewards/actual' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const card = await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(String(b.nickname ?? '').trim())
+            .first<{ id: number }>();
+          if (!card) return json({ error: 'no such card' }, 404);
+
+          const amount = Number(b.amount);
+          if (!Number.isFinite(amount)) return json({ error: 'bad amount' }, 400);
+          const from = b.from ? parseDateToken(String(b.from), env) : null;
+          const to = b.to ? parseDateToken(String(b.to), env) : null;
+          if (!from || !to) return json({ error: 'a period is required' }, 400);
+
+          const r = b.manual
+            ? await recordManualTotal(env, card.id, amount, String(b.unit ?? 'points'), { start: from, end: to }, (b.program_key as string) ?? null)
+            : await recordActual(env, {
+                card_id: card.id,
+                program_key: (b.program_key as string) ?? null,
+                entry_type: (String(b.entry_type ?? 'base_reward') as any),
+                amount,
+                unit: String(b.unit ?? 'points'),
+                period_start: from,
+                period_end: to,
+                credited_at: b.credited_at ? String(b.credited_at) : to,
+                source: String(b.source ?? 'manual'),
+                external_reference: b.external_reference ? String(b.external_reference) : null,
+                description: b.description ? String(b.description) : null,
+              });
+          return json(r, r.ok ? 200 : 400);
+        }
+
+        // Reward lines read off a statement, waiting to be accepted. Extraction
+        // proposes; nothing becomes an observation until someone agrees.
+        if (url.pathname === '/api/rewards/candidates') {
+          const nick = url.searchParams.get('card');
+          const card = nick
+            ? await env.DB.prepare(`SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE`).bind(nick).first<{ id: number }>()
+            : null;
+          if (nick && !card) return json({ error: 'no such card' }, 404);
+          return json({ candidates: await pendingCandidates(env, card?.id) });
+        }
+
+        if (url.pathname.match(/^\/api\/rewards\/candidates\/\d+$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          const b = (await req.json().catch(() => ({}))) as { action?: string };
+          const action = String(b.action ?? 'accept');
+          const c = await env.DB.prepare(`SELECT * FROM statement_reward_candidates WHERE id = ? AND status = 'pending'`)
+            .bind(id)
+            .first<any>();
+          if (!c) return json({ error: 'no such pending candidate' }, 404);
+
+          if (action === 'reject') {
+            await env.DB.prepare(`UPDATE statement_reward_candidates SET status = 'rejected' WHERE id = ?`).bind(id).run();
+            return json({ ok: true, applied: 'left out of the ledger' });
+          }
+          if (action !== 'accept') return json({ error: 'action must be accept or reject' }, 400);
+
+          const r = await recordActual(env, {
+            card_id: c.card_id,
+            program_key: c.program_key,
+            entry_type: c.entry_type,
+            amount: c.amount,
+            unit: c.unit,
+            period_start: c.period_start,
+            period_end: c.period_end,
+            credited_at: c.credited_at ?? c.period_end,
+            source: 'statement',
+            external_reference: `candidate:${id}`,
+            description: c.description,
+            raw_description: c.raw_line,
+          });
+          await env.DB.prepare(`UPDATE statement_reward_candidates SET status = 'accepted' WHERE id = ?`).bind(id).run();
+          return json({ ok: r.ok, ledger_id: r.id, duplicate_of: r.duplicate_of ?? null });
         }
 
         // --- onboarding (P1 phase 1) ---------------------------------------

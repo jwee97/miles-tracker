@@ -3,6 +3,7 @@ import { resolveMerchant, similarMerchants } from '../merchants/lookup';
 import { categoryForMerchant } from '../points';
 import { evaluate, type Channel, type RuleStep } from '../rules';
 import { today } from '../spend';
+import { expectFromTransaction } from '../rewards/expected';
 import { programForCard } from '../wallet';
 import type { Env } from '../types';
 import { findDuplicate, rawHash, type DuplicateMatch } from './dedupe';
@@ -247,6 +248,27 @@ export async function ingestTransaction(env: Env, c: TransactionCandidate): Prom
       c.metadata ? JSON.stringify(c.metadata) : null
     )
     .run();
+
+  // Break the prediction into the parts a bank credits separately. One opaque
+  // total cannot later say whether it was the base or the bonus that went
+  // missing, which is the only useful thing to say about a shortfall.
+  if (expected) {
+    await expectFromTransaction(
+      env,
+      {
+        id,
+        card_id: card.id,
+        amount_cents: c.amount_cents,
+        occurred_at: c.occurred_at,
+        posted_at: c.posted_at ?? null,
+        mcc,
+        category,
+        channel: c.channel ?? null,
+        expected_program: program,
+      },
+      card
+    );
+  }
 
   // A code that came with the transaction is an observation of what the
   // acquirer actually charged, which is the best evidence there is short of a

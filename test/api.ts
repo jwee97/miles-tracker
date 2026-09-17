@@ -1668,6 +1668,46 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('an offer for an unknown card is refused', (await authed('/api/onboarding/cards/99999/offers', { amount: '100', window_days: 30 })).status === 400, '');
 }
 
+// --- the two reward ledgers ----------------------------------------------------
+{
+  const led = (await (await authed('/api/rewards/ledger')).json()) as any;
+  check('the ledger is readable', Array.isArray(led.cards), JSON.stringify(Object.keys(led)));
+  check('for a period', typeof led.period.start === 'string' && typeof led.period.end === 'string', JSON.stringify(led.period));
+  check('with expected and actual kept apart', 'expected' in led.cards[0] && 'actual' in led.cards[0], JSON.stringify(Object.keys(led.cards?.[0] ?? {})));
+
+  const rec = await authed('/api/rewards/actual', {
+    nickname: 'crw',
+    amount: 6900,
+    unit: 'points',
+    from: '2026-08-01',
+    to: '2026-08-31',
+    entry_type: 'base_reward',
+    source: 'statement',
+    external_reference: 'api-test-1',
+  });
+  check('a credit can be recorded through the app', ((await rec.json()) as any).ok === true, String(rec.status));
+
+  const dup = (await (
+    await authed('/api/rewards/actual', {
+      nickname: 'crw',
+      amount: 6900,
+      unit: 'points',
+      from: '2026-08-01',
+      to: '2026-08-31',
+      source: 'statement',
+      external_reference: 'api-test-1',
+    })
+  ).json()) as any;
+  check('and the same one twice is recognised', typeof dup.duplicate_of === 'number', JSON.stringify(dup));
+
+  check('an unknown card is refused', (await authed('/api/rewards/actual', { nickname: 'nope', amount: 1, from: '2026-08-01', to: '2026-08-31' })).status === 404, '');
+  check('and a missing period too', (await authed('/api/rewards/actual', { nickname: 'crw', amount: 1 })).status === 400, '');
+
+  const cands = (await (await authed('/api/rewards/candidates')).json()) as any;
+  check('reward candidates are listable', Array.isArray(cands.candidates), JSON.stringify(Object.keys(cands)));
+  check('rejecting an unknown candidate is a 404', (await authed('/api/rewards/candidates/99999', { action: 'reject' })).status === 404, '');
+}
+
 // --- maintenance from the app --------------------------------------------------
 {
   const res = await authed('/api/migrate', {});

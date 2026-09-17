@@ -97,6 +97,10 @@ CREATE TABLE IF NOT EXISTS rule_sets (
   status           TEXT    NOT NULL DEFAULT 'draft', -- draft | published | superseded | withdrawn
   source_id        INTEGER REFERENCES product_sources(id),
   verified_at      TEXT,
+  -- How this card's bank rounds rewards: {unit_cents, mode}. A property of the
+  -- product, because it differs by bank and by card, and reconciliation without
+  -- it reports rounding as a shortfall.
+  reward_rounding_json TEXT,
   notes            TEXT,
   UNIQUE(product_id, version)
 );
@@ -560,3 +564,90 @@ CREATE TABLE IF NOT EXISTS product_onboarding_fields (
   sort       INTEGER NOT NULL DEFAULT 0,
   UNIQUE(product_id, field_key)
 );
+
+-- ===========================================================================
+-- The reward ledger (P1 phase 2)
+--
+-- The app used to hold one number per transaction for what it expected and one
+-- for what arrived. That cannot answer the question people actually have —
+-- "did the bank credit me correctly?" — because banks credit in aggregate, pay
+-- components on different days, round in their own way, and reverse things.
+--
+-- So expectations and observations become two ledgers, and they are never
+-- reconciled by editing one to match the other. A discrepancy is information.
+-- ===========================================================================
+
+-- What actually arrived. One row per credit, reversal or adjustment observed.
+CREATE TABLE IF NOT EXISTS reward_ledger_entries (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id            INTEGER REFERENCES cards(id) ON DELETE CASCADE,
+  program_key        TEXT    REFERENCES programs(key),
+  -- base_reward | bonus_reward | campaign_reward | cashback | adjustment
+  --   | reversal | expiry | transfer | manual
+  entry_type         TEXT    NOT NULL,
+  amount             REAL    NOT NULL,           -- negative for a reversal
+  unit               TEXT    NOT NULL,           -- miles | points | cents
+  period_start       TEXT,
+  period_end         TEXT,
+  credited_at        TEXT,
+  source             TEXT    NOT NULL,           -- statement | manual | import | bot
+  -- The bank's own reference, when there is one. UNIQUE with source, so the
+  -- same statement line cannot be counted twice however often it is imported.
+  external_reference TEXT,
+  statement_id       INTEGER,
+  transaction_id     INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  description        TEXT,
+  raw_description    TEXT,                       -- never overwritten
+  created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(source, external_reference)
+);
+CREATE INDEX IF NOT EXISTS ledger_card_period ON reward_ledger_entries(card_id, period_start, period_end);
+CREATE INDEX IF NOT EXISTS ledger_tx ON reward_ledger_entries(transaction_id);
+
+-- What the app believes is owed, broken into the parts a bank pays separately.
+-- Not derived from transactions.expected_miles at comparison time: banks credit
+-- base and bonus on different days, and one opaque total cannot say which half
+-- is missing.
+CREATE TABLE IF NOT EXISTS expected_reward_entries (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id           INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  transaction_id    INTEGER REFERENCES transactions(id) ON DELETE CASCADE,
+  -- The window this belongs to, for rewards that are not per transaction:
+  -- 'statement:2026-09' or 'quarter:2026-01-28'.
+  reward_period_key TEXT,
+  rule_set_id       INTEGER REFERENCES rule_sets(id),
+  -- base | category_bonus | campaign_bonus | minimum_spend_bonus
+  --   | quarterly_reward | manual_adjustment
+  component         TEXT    NOT NULL,
+  expected_amount   REAL    NOT NULL,
+  unit              TEXT    NOT NULL,
+  program_key       TEXT,
+  -- When the bank could first credit it, and when it is late. A welcome bonus
+  -- is not missing on day two; it is missing on day ninety-one.
+  available_from    TEXT,
+  expected_by       TEXT,
+  source_note       TEXT,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS expected_card ON expected_reward_entries(card_id, reward_period_key);
+CREATE INDEX IF NOT EXISTS expected_tx ON expected_reward_entries(transaction_id, component);
+
+-- Reward candidates read off a statement, before anything is written to either
+-- ledger. Extraction proposes; a person or a rule accepts.
+CREATE TABLE IF NOT EXISTS statement_reward_candidates (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id         INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  program_key     TEXT,
+  entry_type      TEXT    NOT NULL,
+  amount          REAL    NOT NULL,
+  unit            TEXT    NOT NULL,
+  description     TEXT    NOT NULL,
+  credited_at     TEXT,
+  period_start    TEXT,
+  period_end      TEXT,
+  confidence      TEXT    NOT NULL DEFAULT 'medium', -- high | medium | low
+  raw_line        TEXT,
+  status          TEXT    NOT NULL DEFAULT 'pending', -- pending | accepted | rejected
+  created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS candidate_card ON statement_reward_candidates(card_id, status);

@@ -1950,6 +1950,104 @@ GET  /api/onboarding/cards/:id/offers       welcome offers the app knows about
 POST /api/onboarding/cards/:id/offers       attach one
 ```
 
+## Two ledgers
+
+The app used to hold one number for what it expected and one for what arrived.
+That cannot answer the question people actually have — *did the bank credit me
+correctly?* — because banks credit in aggregate, pay the parts on different
+days, round in their own way, and reverse things.
+
+So expectations and observations became two ledgers, and **neither is ever
+reconciled by editing the other**. A discrepancy is information; the moment one
+ledger can rewrite the other it stops being able to carry any.
+
+### What is owed, in parts
+
+A purchase is not owed "400 miles". On a card paying 4 mpd over a 0.4 base, a
+$200 online purchase is owed:
+
+```
+base             80 miles     the rate everything earns
+category_bonus  720 miles     only the uplift above it
+```
+
+The bonus is the *difference* between the elevated rate and the base on the
+portion that qualified — not the whole elevated figure, which would count the
+base twice. Banks credit these separately, so when 6,900 arrives against 8,400
+the useful sentence is "the base matches, the bonus is short by 1,500", and one
+opaque total can never produce it.
+
+Re-pricing replaces a transaction's split rather than adding a second one; two
+rows for one component would read as the bank owing twice.
+
+### What arrived
+
+```
+base_reward  bonus_reward  campaign_reward  cashback
+adjustment   reversal      expiry           transfer   manual
+```
+
+Every row came from a statement, an import or a person. Nothing in the app
+writes one because a prediction said so.
+
+Two arrivals of one credit is the failure that matters: a statement imported
+twice would double the points the app thinks were paid and turn a real shortfall
+into an apparent over-credit. The bank's own reference is trusted first; without
+one, the same card, amount, type and day is the same event. Reversals net off,
+because that is what the bank did.
+
+A total typed in by hand is marked `manual` and **cannot displace an imported
+one**. A recollection of a statement is useful, and it is not the statement.
+
+### How a bank rounds
+
+Nobody pays 4 mpd on $17.40 and credits 69.6 miles.
+
+```
+reward_rounding_json  { "unit_cents": 500, "mode": "floor_per_transaction" }
+```
+
+A property of the rule set, because it differs by bank and by card. A card
+paying per S$5 block earns nothing on the last $3.40 of a $53.40 purchase — that
+is the deal, not a shortfall. Without this modelled, every reconciliation
+invents discrepancies that are really arithmetic, which trains people to ignore
+the ones that are real.
+
+Tolerances grow with the number of rows a difference could have come from: forty
+transactions rounded down can drift by forty units with nothing wrong.
+
+### Reading the rewards half of a statement
+
+Points earned, bonus points, cashback, redemptions and expiries are read as
+**candidates** and written to neither ledger until accepted:
+
+```
+Points earned this statement   8,422   →  base_reward  +8422   high
+Bonus points earned            1,500   →  bonus_reward +1500   high
+Cash back earned              $18.40   →  cashback     +1840   high
+Points redeemed                5,000   →  adjustment   -5000   high
+Opening points balance        42,180   →  skipped
+```
+
+Balances are skipped rather than guessed at: reading a closing balance as points
+earned would add a year's accumulation to one month. Bonus lines are matched
+before the generic "points earned", or every bonus would be filed as base and
+the split that makes reconciliation useful would be lost.
+
+```
+GET  /api/rewards/ledger?card=&from=&to=
+POST /api/rewards/actual
+GET  /api/rewards/candidates
+POST /api/rewards/candidates/:id   { action: accept | reject }
+```
+
+### Delayed rewards
+
+An expectation carries `available_from` and `expected_by`, and reads as
+`pending`, `due` or `overdue`. A welcome bonus with ninety days to run is not
+missing on day two — reporting it as a shortfall would make the whole check
+useless for exactly the rewards people most want checked.
+
 ## Verify end to end
 
 ```
