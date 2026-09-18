@@ -7,7 +7,10 @@ import {
   rejectCandidate,
   runDiscovery,
   runDiscoveryAll,
+  testDiscoverySource,
   type DiscoveryPipelineReport,
+  type DiscoverySourceHealth,
+  type SourceTestResult,
   type DiscoveryReport,
   type DiscoveryStatus,
   type PromotionReviewItem,
@@ -55,8 +58,37 @@ const CADENCE: Record<string, string> = {
   monthly: 'monthly',
 };
 
-/** A status count that has not happened yet is absent from the payload, not zero. */
-const n = (counts: Record<string, number>, key: string) => counts[key] ?? 0;
+const HEALTH_LABEL: Record<string, string> = {
+  healthy: 'Running normally',
+  degraded: 'Running, with a gap',
+  failing: 'Not discovering anything',
+  not_configured: 'Not configured',
+};
+
+const HEALTH_CLASS: Record<string, string> = {
+  healthy: 'pass',
+  degraded: 'unknown',
+  failing: 'fail',
+  not_configured: 'fail',
+};
+
+const STATE_LABEL: Record<string, string> = {
+  never_scanned: 'never scanned',
+  healthy: 'working',
+  quiet: 'working, nothing found',
+  degraded: 'unreliable',
+  failing: 'failing',
+  not_configured: 'not configured',
+};
+
+const STATE_CLASS: Record<string, string> = {
+  never_scanned: 'unknown',
+  healthy: 'pass',
+  quiet: 'pass',
+  degraded: 'unknown',
+  failing: 'fail',
+  not_configured: 'fail',
+};
 
 const host = (u: string) => {
   try {
@@ -261,32 +293,109 @@ function Funnel({ r }: { r: DiscoveryReport }) {
   );
 }
 
+/**
+ * One source, with a button that tells you why it is quiet.
+ *
+ * The test is diagnostic only — it reads the source and writes nothing back,
+ * so pressing it while debugging cannot demote a source or mark it failing.
+ * That matters because the moment you most want to press it is the moment the
+ * source is already in trouble.
+ */
+function Source({ h }: { h: DiscoverySourceHealth }) {
+  const [result, setResult] = useState<SourceTestResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const s = h.source;
+
+  return (
+    <li className={STATE_CLASS[h.state] ?? 'unknown'}>
+      <span>
+        <strong>{s.name}</strong> · {TIER_NAME[s.trust_tier] ?? 'unknown'} ·{' '}
+        {CADENCE[s.scan_frequency] ?? s.scan_frequency}
+        {s.adaptive_frequency === 0 && ' (fixed)'}
+        {' · '}
+        <span className="chip never">{STATE_LABEL[h.state] ?? h.state}</span>
+      </span>
+
+      <p className="sub">
+        {s.last_scanned_at ? `Last scan ${s.last_scanned_at}` : 'Never scanned'}
+        {h.last_result &&
+          ` · last result: ${h.last_result.items_seen ?? 0} entries, ${h.last_result.relevant_items_found ?? 0} relevant`}
+        {s.scans > 0 && ` · ${Math.round(h.success_rate * 100)}% of scans succeed`}
+      </p>
+      <p className="sub">{h.note}</p>
+      {s.last_error && <p className="warn-num">{s.last_error}</p>}
+
+      <div className="entry-foot rule-actions">
+        <button
+          className="secondary"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            setResult(null);
+            try {
+              setResult(await testDiscoverySource(s.id));
+            } catch (e) {
+              setResult({
+                ok: false,
+                type: s.source_type,
+                source_key: s.source_key,
+                name: s.name,
+                examples: [],
+                note: (e as Error).message,
+                as_of: '',
+              });
+            }
+            setBusy(false);
+          }}
+        >
+          {busy ? 'Testing…' : 'Test source'}
+        </button>
+        {s.feed_url && (
+          <a className="link" href={s.feed_url} target="_blank" rel="noreferrer">
+            The feed
+          </a>
+        )}
+      </div>
+
+      {result && (
+        <div className="addrule">
+          <p className={result.ok ? 'ok-text' : 'err-text'}>{result.note}</p>
+          {result.error_code && <p className="sub mono">{result.error_code}</p>}
+          {result.examples.length > 0 && (
+            <>
+              <p className="sub">How the classifier read the first few:</p>
+              <ul className="rules">
+                {result.examples.map((ex) => (
+                  <li key={ex.url} className={ex.relevant ? 'pass' : 'unknown'}>
+                    <span>{ex.title}</span>
+                    <p className="sub">
+                      {ex.classification.replace(/_/g, ' ')} — {ex.relevant ? 'worth reading' : 'skipped'}
+                      {ex.signals.length > 0 && ` · on: ${ex.signals.join(', ')}`}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
 function Sources({ status }: { status: DiscoveryStatus }) {
   return (
     <section className="card">
       <h2>Where the app reads</h2>
       <p className="sub">
-        A site that says no — a block, a bot check, a robots rule — is recorded and left alone, not worked around. Losing
-        one lowers confidence rather than stopping discovery.
+        A site that says no — a block, a bot check, a robots rule — is recorded and left alone, not worked around.
+        Losing one lowers confidence rather than stopping discovery.
       </p>
       <ul className="rules">
         {status.sources.map((h) => (
-          <li key={h.source.source_key} className={h.ailing ? 'fail' : h.source.last_success_at ? 'pass' : 'unknown'}>
-            <span>
-              <strong>{h.source.name}</strong> · {TIER_NAME[h.source.trust_tier] ?? 'unknown'} ·{' '}
-              {CADENCE[h.source.scan_frequency] ?? h.source.scan_frequency}
-            </span>
-            <p className="sub">
-              {h.source.last_scanned_at ? `last read ${h.source.last_scanned_at}` : 'never read'}
-              {h.days_since_success !== null && ` · last found something ${h.days_since_success} days ago`}
-              {h.source.scans > 0 && ` · ${Math.round(h.success_rate * 100)}% of reads succeed`}
-              {!h.source.active && ' · switched off'}
-            </p>
-            <p className="sub">{h.note}</p>
-            {h.source.last_error && <p className="warn-num">{h.source.last_error}</p>}
-          </li>
+          <Source key={h.source.source_key} h={h} />
         ))}
-        {!status.sources.length && <li className="unknown">No sources yet. Run a scan to seed them.</li>}
+        {!status.sources.length && <li className="unknown">No sources yet. Run the seed.</li>}
       </ul>
     </section>
   );
@@ -354,25 +463,61 @@ export default function Discovery() {
         </p>
 
         <ul className="rules">
+          <li className={HEALTH_CLASS[status.health.overall]}>
+            <span>
+              <strong>{HEALTH_LABEL[status.health.overall]}</strong>
+              {status.latest_run?.finished_at && ` · last run ${status.latest_run.finished_at.replace('T', ' ').slice(0, 16)}`}
+            </span>
+            <p className="sub">{status.health.note}</p>
+          </li>
           <li className={status.today.changed || status.today.new ? 'unknown' : 'pass'}>
             <span>
               Today: <strong>{status.today.new}</strong> new · {status.today.changed} changed ·{' '}
               {status.today.awaiting_review} waiting for you
             </span>
           </li>
-          <li className={n(status.candidates, 'review') ? 'unknown' : 'pass'}>
+          <li className={status.pipeline.candidates_review ? 'unknown' : 'pass'}>
             <span>
-              <strong>{n(status.candidates, 'review')}</strong> to review · {n(status.candidates, 'extracted')} extracted
-              · {n(status.candidates, 'published')} published · {n(status.candidates, 'rejected')} left out
+              <strong>{status.pipeline.candidates_review}</strong> to review ·{' '}
+              {status.pipeline.candidates_extracted} extracted · {status.pipeline.candidates_published} published ·{' '}
+              {status.pipeline.candidates_rejected} left out
             </span>
           </li>
-          <li className={n(status.items, 'failed') ? 'fail' : 'pass'}>
+          <li className={status.pipeline.items_failed ? 'fail' : 'pass'}>
+            {/* `new`, not `pending`: the backend has only ever written `new`,
+                and counting the other string here showed an empty queue while
+                articles were waiting. */}
             <span>
-              <strong>{n(status.items, 'new')}</strong> articles waiting to be read · {n(status.items, 'processed')} read
-              · {n(status.items, 'irrelevant')} unrelated · {n(status.items, 'failed')} could not be read
+              <strong>{status.pipeline.items_new}</strong> articles waiting to be read ·{' '}
+              {status.pipeline.items_processed} processed · {status.pipeline.items_irrelevant} unrelated ·{' '}
+              {status.pipeline.items_failed} could not be read
             </span>
           </li>
         </ul>
+
+        {!status.sources_configured && (
+          <p className="warn-num">
+            No discovery sources are configured. Nothing is being read at all — run the seed.
+          </p>
+        )}
+
+        {!status.search.configured && (
+          <div className="addrule">
+            <p className="warn-num">Search discovery is not configured.</p>
+            <p className="sub">
+              RSS discovery will continue working, but offers outside the tracked publications may be missed.
+              SEARCH_PROVIDER and SEARCH_API_KEY are required — the key is a secret, set with{' '}
+              <span className="mono">wrangler secret put SEARCH_API_KEY</span>.
+            </p>
+          </div>
+        )}
+
+        {status.search.configured && (
+          <p className="sub">
+            Search: {status.search.provider} · {status.search.searches_today} of {status.search.budget} searches used
+            today.
+          </p>
+        )}
 
         <div className="entry-foot rule-actions">
           <button disabled={!!busy} onClick={runAll}>

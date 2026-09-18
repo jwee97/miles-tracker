@@ -12,7 +12,8 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations, runSeed } from '../src/migrate';
-import { discover, recordDiscoveryItem, runDiscoveryPipeline, scanFeed } from '../src/promotions/discovery/run';
+import { discover, discoveryStatusV2, recordDiscoveryItem, runDiscoveryPipeline, scanFeed } from '../src/promotions/discovery/run';
+import { testSource } from '../src/promotions/discovery/diagnostics';
 import {
   FREQUENCY_ORDER,
   MIN_SCANS_FOR_ADAPTATION,
@@ -294,6 +295,56 @@ const runs = all(`SELECT * FROM discovery_runs ORDER BY id DESC`);
 check('the run is recorded in history', runs.length >= 1);
 check('with when it started and finished', !!runs[0].started_at && !!runs[0].finished_at);
 check('and whether it worked', runs[0].success === 1, JSON.stringify(runs[0].error));
+
+// ----------------------------------------------------------- the diagnostics
+// The property that makes a diagnostic usable: it must not change what it
+// measures. The moment you most want to press Test is when the source is
+// already in trouble, and a test that counts as a failed scan would push it
+// further down.
+sql(`UPDATE discovery_sources SET active = 1`);
+const before = one(`SELECT * FROM discovery_sources WHERE source_key = 't_feed'`);
+let probe = await testSource(env, before, { fetchImpl: fakeFetch });
+const unchanged = one(`SELECT * FROM discovery_sources WHERE source_key = 't_feed'`);
+
+check('testing a feed reads it', probe.ok === true, JSON.stringify(probe.note));
+check('and reports what it listed', (probe.items_seen ?? 0) === 4, String(probe.items_seen));
+check('with how many were relevant', probe.relevant_items === 2, String(probe.relevant_items));
+check('and how the classifier read a few', probe.examples.length > 0 && probe.examples.length <= 5, String(probe.examples.length));
+check('naming the words it decided on', probe.examples.some((e) => e.signals.length > 0));
+check('but never the article text', probe.examples.every((e) => e.title.length <= 160));
+
+check('the test did not move the scan date', unchanged.last_scanned_at === before.last_scanned_at);
+check('nor the cadence', unchanged.scan_frequency === before.scan_frequency);
+check('nor the scan count', unchanged.scans === before.scans);
+check('nor the failure count', unchanged.failure_count === before.failure_count);
+
+const blockedFetch = (async () => ({ ok: false, status: 403, headers: { get: () => null }, text: async () => '' })) as unknown as typeof fetch;
+probe = await testSource(env, before, { fetchImpl: blockedFetch });
+check('a blocked feed is reported as blocked', probe.ok === false && probe.http_status === 403, JSON.stringify(probe));
+check('with the code that says the site refused', probe.error_code === 'SOURCE_FETCH_BLOCKED');
+check('and no suggestion of working around it', probe.note.includes('not retried'), probe.note);
+check('and it still changed nothing', one(`SELECT failure_count FROM discovery_sources WHERE source_key='t_feed'`).failure_count === before.failure_count);
+
+const emptyFetch = (async () => ({ ok: true, status: 200, headers: { get: () => 'application/xml' }, text: async () => '<rss><channel></channel></rss>' })) as unknown as typeof fetch;
+probe = await testSource(env, before, { fetchImpl: emptyFetch });
+check('a feed that parses to nothing says so specifically', probe.error_code === 'SOURCE_INVALID_FEED', JSON.stringify(probe.note));
+
+probe = await testSource(env, one(`SELECT * FROM discovery_sources WHERE source_key = 'search'`));
+check('an unconfigured search source is not healthy', probe.ok === false);
+check('it says it is unconfigured, not failing', probe.configured === false);
+check('and names what is missing', probe.note.includes('not configured'), probe.note);
+check('while making clear feeds keep working', probe.note.includes('RSS discovery continues working'), probe.note);
+
+// ------------------------------------------------------------- status, V2
+const v2 = await discoveryStatusV2(env);
+check('the status says how discovery is overall', ['healthy', 'degraded', 'failing', 'not_configured'].includes(v2.health.overall), v2.health.overall);
+check('with feeds judged apart from search', v2.health.rss !== undefined && v2.health.search !== undefined);
+check('a missing search key is a gap, not a failure', v2.health.search === 'not_configured' && v2.health.rss !== 'failing');
+check('and it is said in a sentence', v2.health.note.includes('Search discovery is not configured'), v2.health.note);
+check('the pipeline counts are named, not keyed by string', typeof v2.pipeline.items_new === 'number' && typeof v2.pipeline.candidates_review === 'number');
+check('the last run is attached', v2.latest_run !== null);
+check('and whether the registry was ever seeded', v2.sources_configured === true);
+check('with the search budget shown', v2.search.budget === 15 && v2.search.configured === false);
 
 // ----------------------------------------------------- the shared vocabulary
 // The contract test. The backend wrote `new` while the screen counted

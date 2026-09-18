@@ -1,9 +1,4 @@
-import type {
-  DiscoveryItemStatus,
-  PromotionCandidateStatus,
-  ScanFrequency,
-  SourceState,
-} from '../../shared/discovery';
+import type { DiscoveryHealth, ScanFrequency, SourceState } from '../../shared/discovery';
 
 // The dashboard is served by the Worker that owns the API, so requests are
 // same-origin and there is nothing to configure here.
@@ -894,18 +889,62 @@ export interface DiscoverySourceHealth {
   note: string;
 }
 
+/**
+ * Where discovery stands.
+ *
+ * Typed against the same lists the Worker writes, because this pair drifted
+ * once: the backend wrote `new` and this screen counted `pending`, so a
+ * working pipeline displayed as idle and nothing objected.
+ */
 export interface DiscoveryStatus {
   as_of: string;
-  /**
-   * Keyed by the states in shared/discovery. Typed against the same list the
-   * Worker writes, because this pair drifted once: the backend wrote `new` and
-   * this screen counted `pending`, so a working pipeline displayed as idle.
-   */
-  items: Partial<Record<DiscoveryItemStatus, number>>;
-  candidates: Partial<Record<PromotionCandidateStatus, number>>;
-  today: { new: number; changed: number; auto_published: number; awaiting_review: number };
+  health: { overall: DiscoveryHealth; search: DiscoveryHealth; rss: DiscoveryHealth; note: string };
   sources: DiscoverySourceHealth[];
+  sources_configured: boolean;
+  search: { configured: boolean; provider: string | null; searches_today: number; budget: number };
+  pipeline: {
+    items_new: number;
+    items_processed: number;
+    items_irrelevant: number;
+    items_failed: number;
+    candidates_extracted: number;
+    candidates_review: number;
+    candidates_published: number;
+    candidates_rejected: number;
+  };
+  today: { new: number; changed: number; auto_published: number; awaiting_review: number };
+  latest_run: DiscoveryRun | null;
 }
+
+export interface SourceTestExample {
+  title: string;
+  url: string;
+  classification: string;
+  relevant: boolean;
+  signals: string[];
+  trust_tier: number;
+}
+
+export interface SourceTestResult {
+  ok: boolean;
+  type: string;
+  source_key: string;
+  name: string;
+  configured?: boolean;
+  provider?: string | null;
+  http_status?: number;
+  items_seen?: number;
+  relevant_items?: number;
+  queries_planned?: number;
+  examples: SourceTestExample[];
+  error?: string;
+  error_code?: string;
+  note: string;
+  as_of: string;
+}
+
+export const testDiscoverySource = (id: number) =>
+  post<SourceTestResult>(`/api/admin/discovery/sources/${id}/test`, {});
 
 export interface PromotionReviewItem {
   candidate_id: number;

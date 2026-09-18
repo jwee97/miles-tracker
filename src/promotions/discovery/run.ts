@@ -11,7 +11,10 @@ import { trustTierForUrl } from './domains';
 import { publishCandidate } from './publish';
 import { resolveBest } from './resolve';
 import { scanSearchSource } from './search-runner';
-import { dueSources, recordScan, type DiscoverySource } from './sources';
+import { dueSources, recordScan, sourceHealth, sourcesConfigured, type DiscoverySource, type SourceHealth } from './sources';
+import { searchConfigured } from './search-provider';
+import { dailyBudget } from './search-runner';
+import type { DiscoveryHealth } from '../../../shared/discovery';
 
 /**
  * The discovery pipeline, run in bounded pieces.
@@ -675,6 +678,134 @@ export async function recentRuns(env: Env, limit = 20): Promise<DiscoveryRun[]> 
     .bind(limit)
     .all<DiscoveryRun>();
   return results ?? [];
+}
+
+/**
+ * Where discovery stands, said in states rather than in counters.
+ *
+ * The counters alone cannot distinguish the situations that matter. An empty
+ * pipeline is not the same as an unseeded one; a search source with no API key
+ * is not a failing source; and a system whose last successful run was three
+ * weeks ago looks identical, today, to one that ran an hour ago and found
+ * nothing. Each of those gets its own word here.
+ */
+export interface DiscoveryStatusV2 {
+  health: {
+    overall: DiscoveryHealth;
+    search: DiscoveryHealth;
+    rss: DiscoveryHealth;
+    /** Said plainly, for the top of the screen. */
+    note: string;
+  };
+  sources: SourceHealth[];
+  sources_configured: boolean;
+  search: { configured: boolean; provider: string | null; searches_today: number; budget: number };
+  pipeline: {
+    items_new: number;
+    items_processed: number;
+    items_irrelevant: number;
+    items_failed: number;
+    candidates_extracted: number;
+    candidates_review: number;
+    candidates_published: number;
+    candidates_rejected: number;
+  };
+  today: { new: number; changed: number; auto_published: number; awaiting_review: number };
+  latest_run: DiscoveryRun | null;
+  as_of: string;
+}
+
+export async function discoveryStatusV2(env: Env): Promise<DiscoveryStatusV2> {
+  const now = today(env);
+  const configured = searchConfigured(env);
+  const sources = await sourceHealth(env, { searchConfigured: configured });
+  const seeded = await sourcesConfigured(env);
+
+  const count = async (sql: string, args: unknown[] = []) => {
+    const r = await env.DB.prepare(sql).bind(...args).first<{ n: number }>();
+    return r?.n ?? 0;
+  };
+
+  const items = async (status: string) => await count(`SELECT COUNT(*) AS n FROM discovery_items WHERE status = ?`, [status]);
+  const cands = async (status: string) =>
+    await count(`SELECT COUNT(*) AS n FROM promotion_candidates WHERE status = ?`, [status]);
+
+  const feeds = sources.filter((h) => h.source.source_type !== 'search' && h.source.active);
+  const working = feeds.filter((h) => h.state === 'healthy' || h.state === 'quiet').length;
+
+  // An unseeded registry is not a healthy system with nothing to report; it is
+  // a deployment that never ran the seed, and reporting it as healthy is how
+  // that goes unnoticed for a month.
+  const rss: DiscoveryHealth = !seeded || !feeds.length
+    ? 'not_configured'
+    : working === 0
+      ? 'failing'
+      : working < feeds.length
+        ? 'degraded'
+        : 'healthy';
+
+  const searchSource = sources.find((h) => h.source.source_type === 'search');
+  const search: DiscoveryHealth = !configured
+    ? 'not_configured'
+    : searchSource?.state === 'failing'
+      ? 'failing'
+      : searchSource?.state === 'degraded'
+        ? 'degraded'
+        : 'healthy';
+
+  // Overall takes the worse of the two, but a missing search key is a gap
+  // rather than a fault: feeds alone still discover offers.
+  const overall: DiscoveryHealth =
+    rss === 'not_configured'
+      ? 'not_configured'
+      : rss === 'failing'
+        ? 'failing'
+        : rss === 'degraded' || search !== 'healthy'
+          ? 'degraded'
+          : 'healthy';
+
+  const note =
+    overall === 'not_configured'
+      ? 'No discovery sources are configured. Run the seed — nothing is being read.'
+      : overall === 'failing'
+        ? 'Every feed is failing. Nothing is being discovered.'
+        : search === 'not_configured'
+          ? 'Feeds are working. Search discovery is not configured, so offers outside the tracked publications will be missed.'
+          : overall === 'degraded'
+            ? 'Discovery is running, but at least one source is not.'
+            : 'Discovery is running normally.';
+
+  const searchesToday = await count(
+    `SELECT COUNT(*) AS n FROM discovery_search_runs WHERE substr(searched_at, 1, 10) = ?`,
+    [now]
+  );
+
+  const latest = await env.DB.prepare(`SELECT * FROM discovery_runs ORDER BY id DESC LIMIT 1`).first<DiscoveryRun>();
+
+  return {
+    health: { overall, search, rss, note },
+    sources,
+    sources_configured: seeded,
+    search: {
+      configured,
+      provider: configured ? (env.SEARCH_PROVIDER ?? null) : null,
+      searches_today: searchesToday,
+      budget: dailyBudget(env),
+    },
+    pipeline: {
+      items_new: await items('new'),
+      items_processed: await items('processed'),
+      items_irrelevant: await items('irrelevant'),
+      items_failed: await items('failed'),
+      candidates_extracted: await cands('extracted'),
+      candidates_review: await cands('review'),
+      candidates_published: await cands('published'),
+      candidates_rejected: await cands('rejected'),
+    },
+    today: (await discoveryStatus(env)).today,
+    latest_run: latest ?? null,
+    as_of: now,
+  };
 }
 
 export interface DiscoveryStatus {

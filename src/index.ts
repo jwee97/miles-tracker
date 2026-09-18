@@ -39,7 +39,10 @@ import { findDuplicate, merge } from './promotions/dedupe';
 import { inbox, rate } from './promotions/relevance';
 import { dismissPromotion, sweepCompleted, trackedOffers, trackPromotion } from './promotions/tracking';
 import { syncTransferBonuses } from './promotions/bridge';
-import { corroboratePending, discover, discoveryStatus, extractPending, recentRuns, runDiscoveryPipeline } from './promotions/discovery/run';
+import { corroboratePending, discover, discoveryStatus, discoveryStatusV2, extractPending, recentRuns, runDiscoveryPipeline } from './promotions/discovery/run';
+import { testSource } from './promotions/discovery/diagnostics';
+import { isDeepScanWindow } from './promotions/discovery/search';
+import { recentSearches } from './promotions/discovery/search-runner';
 import { sourceHealth, sourcesConfigured } from './promotions/discovery/sources';
 import { searchConfigured } from './promotions/discovery/search-provider';
 import { expireFinished } from './promotions/discovery/diff';
@@ -1355,14 +1358,31 @@ export default {
         // --- promotion discovery -------------------------------------------
         // The software does the hunting; a person only handles what is
         // ambiguous or materially changed.
+        // The status the screen reads. The older shape is still served under
+        // ?v=1 for anything that has not moved over.
         if (url.pathname === '/api/admin/discovery/status') {
-          const configured = searchConfigured(env);
-          return json({
-            ...(await discoveryStatus(env)),
-            sources: await sourceHealth(env, { searchConfigured: configured }),
-            search: { configured, provider: configured ? env.SEARCH_PROVIDER : null },
-            sources_configured: await sourcesConfigured(env),
-          });
+          if (url.searchParams.get('v') === '1') {
+            const configured = searchConfigured(env);
+            return json({
+              ...(await discoveryStatus(env)),
+              sources: await sourceHealth(env, { searchConfigured: configured }),
+            });
+          }
+          return json(await discoveryStatusV2(env));
+        }
+
+        // Diagnostic only: it reads the source and changes nothing about it,
+        // so pressing Test while debugging cannot demote a source or mark it
+        // failing.
+        if (url.pathname.match(/^\/api\/admin\/discovery\/sources\/\d+\/test$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[5]);
+          const src = await env.DB.prepare(`SELECT * FROM discovery_sources WHERE id = ?`).bind(id).first<any>();
+          if (!src) return json({ error: 'no such source' }, 404);
+          return json(await testSource(env, src));
+        }
+
+        if (url.pathname === '/api/admin/discovery/searches') {
+          return json({ searches: await recentSearches(env, 20), as_of: today(env) });
         }
 
         if (url.pathname === '/api/admin/discovery/run' && req.method === 'POST') {
@@ -2989,10 +3009,15 @@ export default {
           // the database so the next cron picks up where this one stopped.
           // Every one of these is allowed to fail without taking the rest of
           // the scan with it — a blocked source is an expected outcome here.
+          // Wider at the month boundary, where offers actually turn over. The
+          // search budget widens there too, in search.ts — this is about how
+          // many sources and articles one invocation will handle, which is a
+          // different limit from how much the searching costs.
+          const deep = isDeepScanWindow(env);
           for (const stage of [
-            () => discover(env, { limit: 4 }),
-            () => extractPending(env, { limit: 4 }),
-            () => corroboratePending(env, { limit: 8 }),
+            () => discover(env, { limit: deep ? 10 : 6 }),
+            () => extractPending(env, { limit: deep ? 10 : 6 }),
+            () => corroboratePending(env, { limit: deep ? 20 : 12 }),
           ]) {
             try {
               await stage();

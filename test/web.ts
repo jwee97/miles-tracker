@@ -333,6 +333,7 @@ let appliedMcc: any = null;
 let optimised: any = null;
 let trackedOffer: number | null = null;
 let reviewAction: string | null = null;
+let testedSource: number | null = null;
 let simulated: any = null;
 let added: any[] = [];
 
@@ -594,25 +595,111 @@ async function stub(page: Page) {
     if (u.pathname === '/api/admin/discovery/status')
       return send({
         as_of: '2026-09-18',
-        items: { pending: 2, processed: 9, irrelevant: 4, failed: 1 },
-        candidates: { extracted: 1, review: 1, published: 6 },
+        health: {
+          overall: 'degraded',
+          rss: 'degraded',
+          search: 'not_configured',
+          note: 'Feeds are working. Search discovery is not configured, so offers outside the tracked publications will be missed.',
+        },
+        sources_configured: true,
+        search: { configured: false, provider: null, searches_today: 0, budget: 15 },
+        pipeline: {
+          items_new: 4,
+          items_processed: 32,
+          items_irrelevant: 58,
+          items_failed: 1,
+          candidates_extracted: 1,
+          candidates_review: 1,
+          candidates_published: 6,
+          candidates_rejected: 2,
+        },
         today: { new: 1, changed: 2, auto_published: 1, awaiting_review: 1 },
+        latest_run: {
+          id: 4,
+          stage: 'run-all',
+          started_at: '2026-09-18T06:20:00Z',
+          finished_at: '2026-09-18T06:21:00Z',
+          success: 1,
+          sources_scanned: 5,
+          items_seen: 63,
+          items_found: 10,
+          relevant_items_found: 5,
+          articles_fetched: 5,
+          candidates_created: 14,
+          published: 2,
+          held_for_review: 4,
+          error: null,
+        },
         sources: [
           {
-            source: { id: 1, source_key: 'milelion', name: 'The MileLion', source_type: 'rss', base_url: 'https://milelion.test', feed_url: 'https://milelion.test/feed/', trust_tier: 2, scan_frequency: 'daily', last_scanned_at: '2026-09-18', last_success_at: '2026-09-18', failure_count: 0, last_error: null, active: 1, scans: 10, successes: 10, promotions_found: 6, issuer: null },
+            source: { id: 1, source_key: 'milelion', name: 'The MileLion', source_type: 'rss', base_url: 'https://milelion.test', feed_url: 'https://milelion.test/feed/', trust_tier: 2, scan_frequency: 'daily', last_scanned_at: '2026-09-18', last_success_at: '2026-09-18', failure_count: 0, last_error: null, active: 1, scans: 10, successes: 10, promotions_found: 19, issuer: null, base_scan_frequency: 'daily', adaptive_frequency: 0, last_items_seen: 20, last_items_new: 4, last_relevant_new: 3 },
+            state: 'healthy',
             success_rate: 1,
             days_since_success: 0,
+            last_result: { items_seen: 20, items_found: 4, relevant_items_found: 3 },
             ailing: false,
-            note: '6 promotions found so far.',
+            note: '19 relevant articles discovered so far.',
           },
           {
-            source: { id: 2, source_key: 'blocked', name: 'A Blocked Site', source_type: 'rss', base_url: 'https://blocked.test', feed_url: null, trust_tier: 3, scan_frequency: 'monthly', last_scanned_at: '2026-09-17', last_success_at: null, failure_count: 4, last_error: '403 from the site. Not retried.', active: 1, scans: 4, successes: 0, promotions_found: 0, issuer: null },
+            source: { id: 2, source_key: 'singsaver', name: 'SingSaver', source_type: 'rss', base_url: 'https://singsaver.test', feed_url: null, trust_tier: 3, scan_frequency: 'weekly', last_scanned_at: '2026-09-18', last_success_at: null, failure_count: 3, last_error: 'the feed returned 403', active: 1, scans: 4, successes: 0, promotions_found: 0, issuer: null, base_scan_frequency: 'every3days', adaptive_frequency: 1, last_items_seen: null, last_items_new: null, last_relevant_new: null },
+            state: 'failing',
             success_rate: 0,
             days_since_success: null,
+            last_result: null,
             ailing: true,
-            note: '4 failures in a row; scanned less often until it recovers.',
+            note: 'Failed 3 consecutive times. Next attempt in 21 days. Last reason: the feed returned 403',
+          },
+          {
+            source: { id: 3, source_key: 'search', name: 'Search discovery', source_type: 'search', base_url: null, feed_url: null, trust_tier: 4, scan_frequency: 'every3days', last_scanned_at: null, last_success_at: null, failure_count: 0, last_error: null, active: 1, scans: 0, successes: 0, promotions_found: 0, issuer: null, base_scan_frequency: 'every3days', adaptive_frequency: 0, last_items_seen: null, last_items_new: null, last_relevant_new: null },
+            state: 'not_configured',
+            success_rate: 1,
+            days_since_success: null,
+            last_result: null,
+            ailing: false,
+            note: 'Search provider not configured. SEARCH_PROVIDER and SEARCH_API_KEY are required.',
           },
         ],
+      });
+    if (u.pathname.match(/^\/api\/admin\/discovery\/sources\/\d+\/test$/)) {
+      testedSource = Number(u.pathname.split('/')[5]);
+      return send({
+        ok: false,
+        type: 'rss',
+        source_key: 'singsaver',
+        name: 'SingSaver',
+        http_status: 403,
+        examples: [],
+        error: 'HTTP 403',
+        error_code: 'SOURCE_FETCH_BLOCKED',
+        note: 'The feed returned HTTP 403. The site has said no; it is recorded and not retried.',
+        as_of: '2026-09-18',
+      });
+    }
+    if (u.pathname === '/api/admin/discovery/run-all')
+      return send({
+        cycles: 2,
+        stopped_because: 'no_work_left',
+        discover: {}, extract: {}, corroborate: {},
+        summary: {
+          stage: 'run-all',
+          sources_scanned: 5,
+          feed_items_seen: 63,
+          search_queries_planned: 5,
+          search_queries_executed: 0,
+          search_results_seen: 0,
+          items_found: 7,
+          relevant_items_found: 5,
+          items_classified: 5,
+          articles_fetched: 5,
+          articles_failed: 1,
+          candidates_created: 12,
+          candidates_merged: 3,
+          published: 2,
+          held_for_review: 3,
+          expired: 0,
+          notes: ['The MileLion: 20 entries, 4 new, 3 about offers'],
+          as_of: '2026-09-18',
+        },
       });
     if (u.pathname === '/api/admin/discovery/run') return send({ as_of: '2026-09-18', items_found: 3, candidates_created: 1 });
     if (u.pathname === '/api/admin/promotions/review' && route.request().method() === 'GET')
@@ -1143,13 +1230,35 @@ async function main() {
     await page.locator('.card', { hasText: 'Promotion discovery' }).waitFor();
 
     const disc = await page.locator('main').innerText();
-    check('the pipeline says what it is holding', says(disc, '1 to review'), disc.slice(0, 900));
-    check('and what it could not read', says(disc, '1 could not be read'), disc.slice(0, 900));
+    check('the pipeline says what it is holding', says(disc, '1 to review'), disc.slice(0, 1200));
+    check('and what it could not read', says(disc, '1 could not be read'), disc.slice(0, 1200));
+    // The bug this screen shipped with: the backend writes `new`, the screen
+    // counted `pending`, and a queue of four articles displayed as zero.
+    check('articles waiting to be read are counted', says(disc, '4 articles waiting to be read'), disc.slice(0, 1200));
     check(
       'reading nothing but the bank is not claimed',
       says(disc, 'Nothing an article says becomes a published number on its own'),
-      disc.slice(0, 900)
+      disc.slice(0, 1200)
     );
+
+    // Search not configured must never read as healthy.
+    check('a missing search key is stated, not hidden', says(disc, 'Search discovery is not configured'), disc.slice(0, 1400));
+    check('with what it costs', says(disc, 'offers outside the tracked publications'), disc.slice(0, 1500));
+    check('and how to fix it', says(disc, 'SEARCH_API_KEY'), disc.slice(0, 1500));
+    check('while saying feeds still work', says(disc, 'RSS discovery will continue working'), disc.slice(0, 1500));
+    check('the overall state is one word', says(disc, 'Running, with a gap'), disc.slice(0, 900));
+
+    // One button, not three.
+    await page.getByRole('button', { name: 'Run discovery now' }).click();
+    await page.locator('.ok-text').first().waitFor();
+    const funnel = await page.locator('.card', { hasText: 'Promotion discovery' }).innerText();
+    check('one action runs the whole pipeline', says(funnel, 'Discovery complete'), funnel.slice(0, 600));
+    check('and says it stopped because there was nothing left', says(funnel, 'nothing left to do'), funnel.slice(0, 600));
+    check('the funnel shows where it could have stopped', says(funnel, 'sources checked') && says(funnel, 'new urls'), funnel.slice(0, 1200));
+    check('search queries run are counted apart from planned', says(funnel, 'of 5 planned'), funnel.slice(0, 1400));
+    check('and merges are not counted as new offers', says(funnel, '3 merged into offers already known'), funnel.slice(0, 1600));
+
+    check('the three stages are still there for debugging', (await page.locator('summary', { hasText: 'Advanced' }).count()) === 1);
 
     // The intro card also contains the phrase, so take the one holding the list.
     const queue = page.locator('.card', { hasText: 'Waiting for you' }).last();
@@ -1169,9 +1278,20 @@ async function main() {
     await queue.locator('.ok-text').waitFor();
     check('a corrected offer can be published from here', reviewAction === '11:publish', String(reviewAction));
 
-    const sourcesCard = await page.locator('.card', { hasText: 'Where the app reads' }).innerText();
-    check('a blocked site is reported, not worked around', says(sourcesCard, '403 from the site'), sourcesCard.slice(0, 800));
-    check('and backed off rather than hammered', says(sourcesCard, 'scanned less often'), sourcesCard.slice(0, 800));
+    const sourcesCard = page.locator('.card', { hasText: 'Where the app reads' });
+    const sourcesText = await sourcesCard.innerText();
+    check('a blocked site is reported, not worked around', says(sourcesText, 'the feed returned 403'), sourcesText.slice(0, 1200));
+    check('with how long until it is tried again', says(sourcesText, 'Next attempt in 21 days'), sourcesText.slice(0, 1200));
+    check('a working source that finds nothing is not called broken', says(sourcesText, 'working'), sourcesText.slice(0, 1200));
+    check('a pinned cadence is marked as fixed', says(sourcesText, 'daily (fixed)'), sourcesText.slice(0, 1200));
+    check('and the last scan is reported, not just the lifetime total', says(sourcesText, '20 entries, 3 relevant'), sourcesText.slice(0, 1200));
+
+    await sourcesCard.locator('li', { hasText: 'SingSaver' }).getByRole('button', { name: 'Test source' }).click();
+    await sourcesCard.locator('.err-text').first().waitFor();
+    check('a source can be tested on demand', testedSource === 2, String(testedSource));
+    const tested = await sourcesCard.innerText();
+    check('and the reason comes back in words', says(tested, 'The site has said no'), tested.slice(0, 1600));
+    check('with a code behind it', says(tested, 'SOURCE_FETCH_BLOCKED'), tested.slice(0, 1600));
 
     // --- what to do with the points --------------------------------------
     await page.getByRole('button', { name: /^More/ }).click();
