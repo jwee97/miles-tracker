@@ -40,7 +40,8 @@ import { inbox, rate } from './promotions/relevance';
 import { dismissPromotion, sweepCompleted, trackedOffers, trackPromotion } from './promotions/tracking';
 import { syncTransferBonuses } from './promotions/bridge';
 import { corroboratePending, discover, discoveryStatus, extractPending, recentRuns, runDiscoveryPipeline } from './promotions/discovery/run';
-import { sourceHealth } from './promotions/discovery/sources';
+import { sourceHealth, sourcesConfigured } from './promotions/discovery/sources';
+import { searchConfigured } from './promotions/discovery/search-provider';
 import { expireFinished } from './promotions/discovery/diff';
 import { approveCandidate, reviewQueue as promotionReviewQueue } from './promotions/discovery/review';
 import { promotionEvidence } from './promotions/evidence';
@@ -1355,7 +1356,13 @@ export default {
         // The software does the hunting; a person only handles what is
         // ambiguous or materially changed.
         if (url.pathname === '/api/admin/discovery/status') {
-          return json({ ...(await discoveryStatus(env)), sources: await sourceHealth(env) });
+          const configured = searchConfigured(env);
+          return json({
+            ...(await discoveryStatus(env)),
+            sources: await sourceHealth(env, { searchConfigured: configured }),
+            search: { configured, provider: configured ? env.SEARCH_PROVIDER : null },
+            sources_configured: await sourcesConfigured(env),
+          });
         }
 
         if (url.pathname === '/api/admin/discovery/run' && req.method === 'POST') {

@@ -7,9 +7,10 @@ import { diffAgainstPrevious, expireFinished } from './diff';
 import { extractDocument, type PromotionCandidate } from './extract';
 import { contentHash, fetchArticle, USER_AGENT } from './fetch';
 import { fingerprintOf } from './fingerprint';
+import { trustTierForUrl } from './domains';
 import { publishCandidate } from './publish';
 import { resolveBest } from './resolve';
-import { plannedQueries } from './search';
+import { scanSearchSource } from './search-runner';
 import { dueSources, recordScan, type DiscoverySource } from './sources';
 
 /**
@@ -99,13 +100,26 @@ export async function discover(env: Env, opts: { limit?: number; fetchImpl?: typ
   for (const source of await dueSources(env, opts.limit ?? 5)) {
     report.sources_scanned++;
     if (source.source_type === 'search') {
-      // Search discovery needs a search API key; without one the stage is
-      // skipped rather than failing, because feeds alone already work.
-      const plan = await plannedQueries(env, 'daily');
-      report.notes.push(
-        `Search: ${plan.queries.length} queries planned within a budget of ${plan.budget.limit} (${plan.budget.reason}).`
-      );
-      await recordScan(env, source, { ok: true, note: 'queries planned' });
+      const searched = await scanSearchSource(env, source, { fetchImpl: opts.fetchImpl });
+      report.search_queries_planned += searched.queries_planned;
+      report.search_queries_executed += searched.queries_executed;
+      report.search_results_seen += searched.results_seen;
+      report.items_found += searched.urls_new;
+      report.relevant_items_found += searched.relevant_new;
+      report.notes.push(`${source.name}: ${searched.note}`);
+
+      // Not configured is not a failed scan. Counting it as one would back the
+      // source off for missing an API key it was never given, and then report
+      // the backoff as a failing source.
+      if (searched.configured) {
+        await recordScan(env, source, {
+          ok: searched.ok,
+          items_seen: searched.results_seen,
+          items_found: searched.urls_new,
+          relevant_items_found: searched.relevant_new,
+          note: searched.note,
+        });
+      }
       continue;
     }
     if (!source.feed_url) {
@@ -321,8 +335,16 @@ export async function extractPending(
       { roundup: verdict.roundup || item.item_type === 'roundup' }
     );
 
+    // Trust belongs to the destination, never to the route. A MileLion article
+    // is a specialist source whether a feed listed it or a search engine
+    // surfaced it — scoring it as a search result would stop anything found
+    // that way from ever reaching secondary verification.
+    const articleUrl = item.canonical_url ?? item.url;
+    const byDomain = trustTierForUrl(articleUrl);
+    const tier = Math.min(byDomain, item.trust_tier ?? 5);
+
     for (const c of candidates) {
-      await saveCandidate(env, item, c, item.trust_tier ?? 5);
+      await saveCandidate(env, item, c, tier);
       report.candidates_created++;
     }
 

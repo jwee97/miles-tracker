@@ -22,6 +22,21 @@ export interface Env {
   /** Splitting a payment below this gain in cents is noise, not advice. */
   SPLIT_MIN_GAIN_CENTS: string;
 
+  // --- search discovery (both optional) -----------------------------------
+  /**
+   * Which search provider to use: 'brave' today. Absent means search discovery
+   * is off, which is reported as `not_configured` rather than as healthy.
+   */
+  SEARCH_PROVIDER: string;
+  /**
+   * A secret, like the others: `wrangler secret put SEARCH_API_KEY`.
+   * Deliberately not in settings.EDITABLE — nothing reachable from the app may
+   * read or write it.
+   */
+  SEARCH_API_KEY: string;
+  /** How many searches a day may cost. Default 15. */
+  MAX_SEARCH_QUERIES_PER_DAY: string;
+
   // --- reading Cloudflare's own meters (all optional) ---------------------
   /** A secret, like the others: `wrangler secret put CF_API_TOKEN`. */
   CF_API_TOKEN: string;
