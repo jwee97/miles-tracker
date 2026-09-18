@@ -2565,6 +2565,26 @@ in the text — and can be queued to be read again after an extractor
 improvement. Articles filed as irrelevant can be re-judged from their stored
 titles alone, with no request leaving the app.
 
+### Where seed data lives
+
+There is exactly one definition of the discovery sources, and it is
+`DEFAULT_SOURCES` in `sources.ts`. `seed.sql` deliberately does not carry a
+copy: two lists of the same thing drift, and the one that drifted is always the
+one production ran.
+
+That splits the responsibilities:
+
+| File | Holds |
+|---|---|
+| `schema.sql` | schema only |
+| `seed.sql` | static reference data only |
+| `runSeed()` | the catalogue, aliases, and the discovery sources |
+
+`npm run db:seed` therefore refuses and tells you the right path: apply the
+static file with `npm run db:seed:static`, then POST `/api/seed` to the
+deployed Worker, which is the only place with the D1 binding and the canonical
+list.
+
 ### After deployment
 
 ```

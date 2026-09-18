@@ -336,6 +336,35 @@ check('and names what is missing', probe.note.includes('not configured'), probe.
 check('while making clear feeds keep working', probe.note.includes('RSS discovery continues working'), probe.note);
 
 // ------------------------------------------------------------- status, V2
+// A freshly seeded database has scanned nothing. That is "not yet", not
+// "broken", and reporting it as failing would raise a false alarm on every new
+// deployment — the same collapse of two states this layer exists to prevent.
+{
+  const fresh = new DatabaseSync(':memory:');
+  const freshWrap = (q: string, args: unknown[] = []): any => ({
+    bind: (...a: unknown[]) => freshWrap(q, a),
+    first: async () => fresh.prepare(q).get(...(args as any)) ?? null,
+    all: async () => ({ results: fresh.prepare(q).all(...(args as any)) }),
+    run: async () => {
+      const r = fresh.prepare(q).run(...(args as any));
+      return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
+    },
+  });
+  const freshEnv = { ...env, DB: { prepare: (q: string) => freshWrap(q) } } as unknown as Env;
+  await runMigrations(freshEnv);
+  await runSeed(freshEnv);
+
+  const v = await discoveryStatusV2(freshEnv);
+  check('a seeded but unscanned system is not failing', v.health.rss !== 'failing', v.health.rss);
+  check('it says nothing has been scanned yet', v.health.note.includes('none has been scanned yet'), v.health.note);
+  check('and that sources do exist', v.sources_configured === true);
+
+  fresh.prepare(`UPDATE discovery_sources SET last_scanned_at='2026-09-18', failure_count=5, scans=5 WHERE source_type <> 'search'`).run();
+  const broken = await discoveryStatusV2(freshEnv);
+  check('once every tried feed is failing, it says so', broken.health.rss === 'failing', broken.health.rss);
+  check('and overall follows', broken.health.overall === 'failing');
+}
+
 const v2 = await discoveryStatusV2(env);
 check('the status says how discovery is overall', ['healthy', 'degraded', 'failing', 'not_configured'].includes(v2.health.overall), v2.health.overall);
 check('with feeds judged apart from search', v2.health.rss !== undefined && v2.health.search !== undefined);

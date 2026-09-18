@@ -731,18 +731,25 @@ export async function discoveryStatusV2(env: Env): Promise<DiscoveryStatusV2> {
     await count(`SELECT COUNT(*) AS n FROM promotion_candidates WHERE status = ?`, [status]);
 
   const feeds = sources.filter((h) => h.source.source_type !== 'search' && h.source.active);
-  const working = feeds.filter((h) => h.state === 'healthy' || h.state === 'quiet').length;
+  // Only sources that have actually been tried can be said to be failing. A
+  // freshly seeded database has scanned nothing, and calling that "failing"
+  // is a false alarm on every new deployment — the same collapsing of "not
+  // yet" into "broken" this whole layer exists to avoid.
+  const tried = feeds.filter((h) => h.state !== 'never_scanned');
+  const working = tried.filter((h) => h.state === 'healthy' || h.state === 'quiet').length;
 
-  // An unseeded registry is not a healthy system with nothing to report; it is
-  // a deployment that never ran the seed, and reporting it as healthy is how
-  // that goes unnoticed for a month.
+  // An unseeded registry, though, is not a healthy system with nothing to
+  // report; it is a deployment that never ran the seed, and reporting it as
+  // healthy is how that goes unnoticed for a month.
   const rss: DiscoveryHealth = !seeded || !feeds.length
     ? 'not_configured'
-    : working === 0
-      ? 'failing'
-      : working < feeds.length
-        ? 'degraded'
-        : 'healthy';
+    : !tried.length
+      ? 'healthy'
+      : working === 0
+        ? 'failing'
+        : working < tried.length
+          ? 'degraded'
+          : 'healthy';
 
   const searchSource = sources.find((h) => h.source.source_type === 'search');
   const search: DiscoveryHealth = !configured
@@ -768,8 +775,10 @@ export async function discoveryStatusV2(env: Env): Promise<DiscoveryStatusV2> {
     overall === 'not_configured'
       ? 'No discovery sources are configured. Run the seed — nothing is being read.'
       : overall === 'failing'
-        ? 'Every feed is failing. Nothing is being discovered.'
-        : search === 'not_configured'
+        ? 'Every feed that has been tried is failing. Nothing is being discovered.'
+        : !tried.length
+          ? 'Sources are configured but none has been scanned yet. Run discovery, or wait for the nightly cron.'
+          : search === 'not_configured'
           ? 'Feeds are working. Search discovery is not configured, so offers outside the tracked publications will be missed.'
           : overall === 'degraded'
             ? 'Discovery is running, but at least one source is not.'
