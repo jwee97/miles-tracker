@@ -16,7 +16,9 @@ import { extractPending } from '../src/promotions/discovery/run';
 import { discover } from '../src/promotions/discovery/run';
 import {
   bindFetch,
+  BRAVE_COUNTRIES,
   BraveSearchProvider,
+  countryParam,
   MAX_QUERY_CHARS,
   MAX_QUERY_WORDS,
   normaliseDate,
@@ -350,7 +352,20 @@ check('an unparseable date is simply unknown', normaliseDate('sometime') === nul
 // "the search provider returned 422" — is unactionable, and is the same silent
 // failure this whole layer exists to prevent.
 const sent = new URL(lastRequest!.url);
-check('the country code is uppercase, as the API requires', sent.searchParams.get('country') === 'SG', String(sent.searchParams.get('country')));
+// Asserted against the provider's accepted set rather than a literal. Pinning
+// one value made this test fail the moment the value was corrected, which is
+// backwards: the contract is "a code Brave accepts", and Singapore is not one
+// of them.
+check(
+  'the country is one the provider accepts',
+  BRAVE_COUNTRIES.has(sent.searchParams.get('country') ?? ''),
+  String(sent.searchParams.get('country'))
+);
+check('and Singapore is not among them, so it is not sent', !BRAVE_COUNTRIES.has('SG'));
+check('an unsupported code degrades rather than failing the request', countryParam('SG') === 'ALL');
+check('a lowercase one is upper-cased, since that was the first 422', countryParam('gb') === 'GB');
+check('and a supported one is passed through', countryParam('US') === 'US');
+check('as is nothing at all', countryParam(null) === 'ALL');
 check('freshness is one of the accepted values', ['pd', 'pw', 'pm', 'py'].includes(sent.searchParams.get('freshness') ?? ''), String(sent.searchParams.get('freshness')));
 check('the count is within the documented maximum', Number(sent.searchParams.get('count')) <= 20);
 check('caching is declined, which the API validates', (lastRequest!.headers as any)['Cache-Control'] === 'no-cache');

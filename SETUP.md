@@ -2472,14 +2472,19 @@ POST   /api/admin/promotions/review/:id/merge    { into }
 
 ### Configuring search
 
-Feeds work with no configuration. Search needs a provider:
+Feeds work with no configuration. Search needs a key; the provider and budget
+are already in `wrangler.toml`:
 
 ```
 wrangler secret put SEARCH_API_KEY
-# and in wrangler.toml [vars]
-SEARCH_PROVIDER = "brave"
-MAX_SEARCH_QUERIES_PER_DAY = "15"   # optional, this is the default
 ```
+
+`SEARCH_PROVIDER` and `MAX_SEARCH_QUERIES_PER_DAY` live in `[vars]` in the
+repository, not in Settings, because the key that goes with the provider is a
+secret and the two have to match. A setting that exists only on the machine
+someone typed it into does not survive a deploy — `test:config` checks that
+every non-secret variable the Worker reads is present in `wrangler.toml`, and
+that none of the secrets are.
 
 Without both, search discovery reports **not configured** — never healthy, and
 never as a failing source, because a source cannot fail at something it was
@@ -2585,8 +2590,12 @@ leaves adapting ones where they are.
 A search request has to satisfy Brave's own validation, and it is strict in
 ways a status line does not reveal:
 
-- `country` must be an **uppercase** two-character code. `sg` is rejected with
-  422; `SG` is accepted.
+- `country` must be one of a fixed list of uppercase codes, and **Singapore is
+  not on it** — the one market this app is about cannot be named. Anything else
+  is rejected with 422, so the parameter is left unrestricted (`ALL`) and the
+  geography lives in the query text, where "Singapore credit card…" works as a
+  ranking signal. An unrecognised code degrades to `ALL` rather than taking the
+  request down.
 - `Cache-Control: no-cache` must be sent, or the request is rejected.
 - `q` is capped at 600 characters and 75 words; the generated series queries
   quote a whole article title, so they are trimmed well inside that.

@@ -58,6 +58,36 @@ const DEFAULT_LIMIT = 10;
 const TIMEOUT_MS = 10_000;
 
 /**
+ * The country codes Brave accepts, verbatim from its own rejection message.
+ *
+ * Written down because the failure mode is total: an unlisted value does not
+ * degrade the results, it rejects the entire request with 422 and search stops
+ * working. `SG` is not here — Singapore, the only market this app cares about,
+ * cannot be named — so anything unrecognised falls back to `ALL` rather than
+ * taking the pipeline down with it.
+ */
+export const BRAVE_COUNTRIES = new Set([
+  'AR', 'AU', 'AT', 'BE', 'BR', 'CA', 'CL', 'DK', 'FI', 'FR', 'DE', 'GR', 'HK',
+  'IN', 'ID', 'IT', 'JP', 'KR', 'MY', 'MX', 'NL', 'NZ', 'NO', 'CN', 'PL', 'PT',
+  'PH', 'RU', 'SA', 'ZA', 'ES', 'SE', 'CH', 'TW', 'TR', 'GB', 'US', 'ALL',
+]);
+
+/** Unrestricted, because the one country this app is about is not on the list. */
+export const SEARCH_COUNTRY = 'ALL';
+
+/**
+ * A country the provider will accept.
+ *
+ * Upper-cases first, since the codes are uppercase and a lowercase one is
+ * rejected outright — that was the first 422 — and falls back rather than
+ * sending something that would fail the whole request.
+ */
+export function countryParam(raw: string | null | undefined): string {
+  const code = (raw ?? '').trim().toUpperCase();
+  return BRAVE_COUNTRIES.has(code) ? code : 'ALL';
+}
+
+/**
  * Bind a fetch implementation so it can be stored and called safely.
  *
  * Workers' `fetch` refuses to run with a `this` that is not the global scope,
@@ -100,10 +130,12 @@ export class BraveSearchProvider implements SearchProvider {
     // treats them as preferences — but both cut the noise this pipeline would
     // otherwise pay to fetch and classify.
     //
-    // The country code is UPPERCASE. Brave validates it strictly and rejects
-    // the whole request with 422 otherwise, which is not obvious from a status
-    // line alone — hence the error body being read below rather than dropped.
-    url.searchParams.set('country', 'ALL');
+    // Brave validates this against a fixed list and rejects the whole request
+    // with 422 for anything else. Singapore is not on that list, which is the
+    // awkward part — the market this app is entirely about cannot be named. So
+    // the geography lives in the query text ("Singapore credit card…"), where
+    // it works as a ranking signal, and the parameter is left unrestricted.
+    url.searchParams.set('country', countryParam(SEARCH_COUNTRY));
     url.searchParams.set('freshness', 'pm');
 
     // Through a local, not `this.fetchImpl(...)`: the property call is what
