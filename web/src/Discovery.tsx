@@ -72,6 +72,8 @@ const HEALTH_CLASS: Record<string, string> = {
   not_configured: 'fail',
 };
 
+const CHANNEL_LABEL = (c: string) => (c === 'rss' ? 'a feed' : c === 'search' ? 'search' : 'by hand');
+
 const STATE_LABEL: Record<string, string> = {
   never_scanned: 'never scanned',
   healthy: 'working',
@@ -146,6 +148,20 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
         {item.promotion_type?.replace(/_/g, ' ') ?? 'promotion'} · via {item.application_channel.replace(/_/g, ' ')}
         {item.resolved_product_id === null && ' · the card could not be matched to the catalogue'}
       </p>
+
+      {/* How this was found, which is a different question from what it says.
+          A search-originated offer is not less trustworthy — the article is
+          still the source — but a reviewer should be able to see it. */}
+      <p className="sub">
+        Discovered through {item.provenance.discovery_channels.map(CHANNEL_LABEL).join(' and ')}
+        {item.provenance.article_sources.length > 0 &&
+          ` · ${item.provenance.article_sources.map((a) => a.name).join(', ')}`}
+        {' · '}
+        {item.provenance.official_verified ? "confirmed on the bank's own page" : 'no official confirmation'}
+      </p>
+      {item.provenance.search_query && (
+        <p className="sub mono">found by searching “{item.provenance.search_query}”</p>
+      )}
 
       {item.review_reason && <p className="offer2-why"><b>Why you are being asked:</b> {item.review_reason}</p>}
       {item.conflicts.map((c, i) => (

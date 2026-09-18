@@ -974,6 +974,12 @@ export interface PromotionReviewItem {
   existing: { id: number; title: string; terms: Record<string, unknown>; end_at: string | null } | null;
   diff: { field: string; before: unknown; after: unknown }[];
   article: { url: string | null; title: string | null } | null;
+  provenance: {
+    discovery_channels: ('rss' | 'search' | 'manual')[];
+    article_sources: { name: string; url: string; trust_tier: number }[];
+    official_verified: boolean;
+    search_query: string | null;
+  };
 }
 
 export const fetchDiscoveryStatus = () => get<DiscoveryStatus>('/api/admin/discovery/status');

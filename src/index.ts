@@ -41,6 +41,7 @@ import { dismissPromotion, sweepCompleted, trackedOffers, trackPromotion } from 
 import { syncTransferBonuses } from './promotions/bridge';
 import { corroboratePending, discover, discoveryStatus, discoveryStatusV2, extractPending, recentRuns, runDiscoveryPipeline } from './promotions/discovery/run';
 import { testSource } from './promotions/discovery/diagnostics';
+import { backfillClassification, extractionMisses, reclassifyItem, requeueForExtraction } from './promotions/discovery/reclassify';
 import { isDeepScanWindow } from './promotions/discovery/search';
 import { recentSearches } from './promotions/discovery/search-runner';
 import { sourceHealth, sourcesConfigured } from './promotions/discovery/sources';
@@ -1379,6 +1380,30 @@ export default {
           const src = await env.DB.prepare(`SELECT * FROM discovery_sources WHERE id = ?`).bind(id).first<any>();
           if (!src) return json({ error: 'no such source' }, 404);
           return json(await testSource(env, src));
+        }
+
+        // After a classifier improvement. Works from the stored title, so
+        // nothing leaves the app and no URL has to be rediscovered.
+        if (url.pathname.match(/^\/api\/admin\/discovery\/items\/\d+\/reclassify$/) && req.method === 'POST') {
+          const r = await reclassifyItem(env, Number(url.pathname.split('/')[5]));
+          return r ? json(r) : json({ error: 'no such article' }, 404);
+        }
+
+        // Re-reading one article costs a fetch, so it is a deliberate act
+        // rather than part of the backfill.
+        if (url.pathname.match(/^\/api\/admin\/discovery\/items\/\d+\/requeue$/) && req.method === 'POST') {
+          const r = await requeueForExtraction(env, Number(url.pathname.split('/')[5]));
+          return json(r, r.ok ? 200 : 404);
+        }
+
+        if (url.pathname === '/api/admin/discovery/backfill' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as { limit?: number };
+          return json(await backfillClassification(env, { limit: b.limit }));
+        }
+
+        // Articles read successfully that named no offer, with the reason.
+        if (url.pathname === '/api/admin/discovery/misses') {
+          return json({ misses: await extractionMisses(env, 50), as_of: today(env) });
         }
 
         if (url.pathname === '/api/admin/discovery/searches') {

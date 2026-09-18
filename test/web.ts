@@ -736,6 +736,12 @@ async function stub(page: Page) {
             existing: { id: 7, title: 'Citi Rewards welcome offer', terms: { reward_miles: 12000 }, end_at: '2026-09-30' },
             diff: [{ field: 'reward_miles', before: 12000, after: 16000 }],
             article: { url: 'https://milelion.test/citi', title: 'Citi Rewards: 16,000 bonus miles' },
+            provenance: {
+              discovery_channels: ['search'],
+              article_sources: [{ name: 'The MileLion', url: 'https://milelion.test/citi', trust_tier: 2 }],
+              official_verified: false,
+              search_query: 'Citi credit card promotion Singapore September 2026',
+            },
           },
         ],
       });
@@ -1263,7 +1269,11 @@ async function main() {
     // The intro card also contains the phrase, so take the one holding the list.
     const queue = page.locator('.card', { hasText: 'Waiting for you' }).last();
     const q = await queue.innerText();
-    check('the queue leads with why a person is being asked', says(q, 'two sources disagree about the reward'), q.slice(0, 600));
+    check('the queue leads with why a person is being asked', says(q, 'two sources disagree about the reward'), q.slice(0, 900));
+    check('how it was found is shown', says(q, 'Discovered through search'), q.slice(0, 900));
+    check('with the publication behind it, not the search engine', says(q, 'The MileLion'), q.slice(0, 900));
+    check('and whether the bank confirmed it', says(q, 'no official confirmation'), q.slice(0, 900));
+    check('including the query that surfaced it', says(q, 'found by searching'), q.slice(0, 1000));
     check('the conflict is named', says(q, '16000 against 20000'), q.slice(0, 600));
     check('the change against what is published is already worked out', says(q, '12,000') && says(q, '16,000'), q.slice(0, 800));
     check('and the terms are editable rather than take-it-or-leave-it', (await queue.locator('input').count()) >= 4);

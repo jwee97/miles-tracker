@@ -2452,8 +2452,16 @@ GET    /api/promotions/:id/variants
 POST   /api/promotions/:id/variants            a targeted offer you were sent
 DELETE /api/promotions/:id/variants/:key
 
-GET    /api/admin/discovery/status             stages, counts, source health
+GET    /api/admin/discovery/status             health, funnel, latest run
+POST   /api/admin/discovery/run-all            the whole pipeline, one action
 POST   /api/admin/discovery/run                { stage } one bounded stage
+POST   /api/admin/discovery/sources/:id/test   diagnostic only, mutates nothing
+POST   /api/admin/discovery/items/:id/reclassify   after a classifier change
+POST   /api/admin/discovery/items/:id/requeue      re-read one article
+POST   /api/admin/discovery/backfill           re-judge 90 days of irrelevant
+GET    /api/admin/discovery/misses             read, but named no offer
+GET    /api/admin/discovery/runs               run history
+GET    /api/admin/discovery/searches           every search actually executed
 GET    /api/admin/discovery/candidates
 GET    /api/admin/discovery/sources
 GET    /api/admin/promotions/review            the queue
@@ -2462,14 +2470,113 @@ POST   /api/admin/promotions/review/:id/reject
 POST   /api/admin/promotions/review/:id/merge    { into }
 ```
 
+### Configuring search
+
+Feeds work with no configuration. Search needs a provider:
+
+```
+wrangler secret put SEARCH_API_KEY
+# and in wrangler.toml [vars]
+SEARCH_PROVIDER = "brave"
+MAX_SEARCH_QUERIES_PER_DAY = "15"   # optional, this is the default
+```
+
+Without both, search discovery reports **not configured** — never healthy, and
+never as a failing source, because a source cannot fail at something it was
+never given the means to do. Feeds keep working; the screen says plainly what
+is being missed.
+
+`SEARCH_API_KEY` is a secret like the others and is deliberately absent from
+`settings.EDITABLE`, so nothing reachable from the app can read or write it.
+Adding another provider is one class in `search-provider.ts` and no change to
+the pipeline.
+
+### The eight states discovery must never confuse
+
+This is the invariant the whole diagnostic layer exists to protect. Each of
+these is a different situation with a different fix, and a system that reports
+them all as "nothing new" cannot be debugged:
+
+| What happened | Where it shows |
+|---|---|
+| Nothing is configured | `sources_configured: false`, overall `not_configured` |
+| Search is not configured | search health `not_configured`, with the key named |
+| A source refused | source state `failing`, the HTTP reason, next attempt |
+| Nothing was searched | `search_queries_executed: 0` beside queries planned |
+| Nothing was found | `results_seen: 0` with `ok: true` — a real answer |
+| Found but classified irrelevant | `items_irrelevant`, with the classifier's signals |
+| Read but extraction found nothing | `extraction_note` on the article |
+| Extracted but already known | `candidates_merged` in the funnel |
+
+### Running it by hand
+
+**Run discovery now** loops discover → extract → corroborate until a cycle
+moves nothing, or the cycle limit is reached. It reports a funnel with a line
+for every step above, so a run that produced no offers says which step it
+stopped at.
+
+The three stages remain under **Advanced**. They are for finding out which
+stage is stuck, not for asking whether anything is new.
+
+### Testing one source
+
+Every source row has a **Test source** button. It is *diagnostic only*: it
+reads the source and writes nothing back — not `last_scanned_at`, not `scans`,
+not `scan_frequency`, not the failure count. That matters because the moment
+you most want to press it is when the source is already in trouble, and a test
+that counted as a failed scan would push it further down.
+
+It answers the real question, which is not "does this URL respond" but "why is
+nothing coming out of this": it shows what the feed listed and how the
+classifier read the first few, with the words it decided on.
+
+### Cadence, and how a good source got demoted
+
+A source's scan frequency adapts to what it carries. Three rules keep that from
+becoming vandalism, all added after the original version walked the most
+productive feed in the system down to monthly:
+
+- **A warm-up.** Nothing adapts before five scans. One quiet Tuesday is not
+  evidence about a publication.
+- **One step at a time.** `daily → every3days → weekly → monthly` and back.
+  Jumping straight to monthly is not an adjustment, it is switching a source
+  off.
+- **Pinning.** `adaptive_frequency = 0` fixes the cadence. The MileLion, Mainly
+  Miles and the search source are pinned.
+
+`base_scan_frequency` records what a source *should* run at, separately from
+where adaptation moved it. So **re-running the seed is the repair** for a source
+that was demoted — it restores pinned sources to their configured cadence and
+leaves adapting ones where they are.
+
 ### If discovery finds nothing
 
-Check the **Where the app reads** panel. A source that has never succeeded, or
-is ailing after repeated failures, says so with the reason — usually a 403 or a
-robots rule. That is the expected outcome for some sites and not something to
-route around. Add a different source instead, or leave the offer to be entered
-by hand; the rest of the app does not know or care that an article was
-involved.
+Check the **Where the app reads** panel and press **Test source** on the quiet
+ones. A source that has never succeeded, or is failing after repeated refusals,
+says so with the reason — usually a 403 or a robots rule. That is the expected
+outcome for some sites and not something to route around. Add a different
+source instead, or leave the offer to be entered by hand; the rest of the app
+does not know or care that an article was involved.
+
+If sources look healthy but nothing is published, the funnel says which step
+lost it. **Articles read but naming no offer** are listed with the reason the
+extractor found nothing — a roundup with no card headings, or no reward figure
+in the text — and can be queued to be read again after an extractor
+improvement. Articles filed as irrelevant can be re-judged from their stored
+titles alone, with no request leaving the app.
+
+### After deployment
+
+```
+POST /api/migrate                          tables, columns, the duplicate fold
+POST /api/seed                             the canonical source list
+GET  /api/admin/discovery/status           sources.total > 0, cadences correct
+POST /api/admin/discovery/run-all          don't wait for the next cron
+```
+
+With search configured, `search_queries_executed > 0` in that last response is
+the number that proves the old stub is gone — it was structurally incapable of
+producing one.
 
 ## Is a card missing from my setup?
 

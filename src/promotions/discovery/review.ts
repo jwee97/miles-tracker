@@ -3,6 +3,54 @@ import type { Env } from '../../types';
 import { claimsFor, corroborate, type Corroboration } from './corroborate';
 import { applyCandidate, matchExisting, type CandidateRow, type PublishResult } from './publish';
 import type { FingerprintInput } from './fingerprint';
+import { sourceNameForUrl, trustTierForUrl } from './domains';
+import { TIER } from './sources';
+import type { DiscoveryChannel } from '../../../shared/discovery';
+
+/**
+ * How one candidate was found, assembled from the article it came from.
+ *
+ * `manual` is the honest answer for a candidate with no discovery item behind
+ * it — somebody typed it — and saying so beats implying an article existed.
+ */
+export async function provenanceFor(
+  env: Env,
+  candidate: { discovery_id: number | null },
+  claimUrls: string[]
+): Promise<CandidateProvenance> {
+  const channels = new Set<DiscoveryChannel>();
+  let query: string | null = null;
+
+  if (candidate.discovery_id) {
+    const { results } = await env.DB.prepare(
+      `SELECT s.source_type, dis.search_query
+         FROM discovery_item_sources dis JOIN discovery_sources s ON s.id = dis.source_id
+        WHERE dis.discovery_item_id = ?`
+    )
+      .bind(candidate.discovery_id)
+      .all<{ source_type: string; search_query: string | null }>();
+
+    for (const r of results ?? []) {
+      channels.add(r.source_type === 'search' ? 'search' : 'rss');
+      if (r.search_query && !query) query = r.search_query;
+    }
+  }
+  if (!channels.size) channels.add('manual');
+
+  const seen = new Map<string, { name: string; url: string; trust_tier: number }>();
+  for (const url of claimUrls) {
+    const tier = trustTierForUrl(url);
+    const name = sourceNameForUrl(url);
+    if (!seen.has(name)) seen.set(name, { name, url, trust_tier: tier });
+  }
+
+  return {
+    discovery_channels: [...channels],
+    article_sources: [...seen.values()].sort((a, b) => a.trust_tier - b.trust_tier),
+    official_verified: [...seen.values()].some((a) => a.trust_tier === TIER.official),
+    search_query: query,
+  };
+}
 
 /**
  * The work that is left for a person.
@@ -34,6 +82,26 @@ export interface ReviewItem {
   /** The change, already worked out, so nobody rereads a whole campaign. */
   diff: { field: string; before: unknown; after: unknown }[];
   article: { url: string | null; title: string | null } | null;
+  /** How this was found, and by whom — which is not the same as what it says. */
+  provenance: CandidateProvenance;
+}
+
+/**
+ * Where a candidate came from.
+ *
+ * Separate from the evidence, and deliberately so. The evidence answers "what
+ * do the sources say"; this answers "how did we come to be looking at this at
+ * all", which is the question a search-originated offer raises and a feed one
+ * does not. A promotion that arrived through a search engine is not less
+ * trustworthy for it — the article is still the source — but a person
+ * reviewing it should be able to see the difference.
+ */
+export interface CandidateProvenance {
+  discovery_channels: DiscoveryChannel[];
+  article_sources: { name: string; url: string; trust_tier: number }[];
+  official_verified: boolean;
+  /** The query that surfaced it, when a search did. */
+  search_query: string | null;
 }
 
 const parseTerms = (json: string | null): Record<string, unknown> => {
@@ -113,6 +181,7 @@ export async function reviewQueue(env: Env, limit = 50): Promise<ReviewItem[]> {
       existing,
       diff: existing ? diffTerms(existing.terms, { ...terms, ...evidence.terms }) : [],
       article: row.article_url ? { url: row.article_url, title: row.article_title } : null,
+      provenance: await provenanceFor(env, row, claims.map((c) => c.source_url)),
     });
   }
   return out;

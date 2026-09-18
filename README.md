@@ -444,6 +444,11 @@ src/promotions/       the offer platform: terms, relevance, tracking, variants
 src/promotions/evidence.ts       why the app believes an offer is current
 src/promotions/discovery/        finding offers without being asked
   sources.ts          the source registry and how often each is worth reading
+  search-provider.ts  the search API, behind one swappable interface
+  search-runner.ts    running searches, within a budget, and ingesting results
+  domains.ts          who a domain is, and therefore what a page from it is worth
+  diagnostics.ts      testing one source without changing it
+  reclassify.ts       judging old articles again, after the classifier improves
   fetch.ts            robots, refusals, size limits — the politeness layer
   classify.ts         is this article about an offer at all
   extract.ts          article text into claims, never into facts
@@ -454,6 +459,7 @@ src/promotions/discovery/        finding offers without being asked
   publish.ts          claims into the promotion the rest of the app reads
   review.ts           the short list left for a person
 src/auth.ts           HMAC magic-link tokens
+shared/discovery.ts   the pipeline vocabulary both halves of the app import
 migrations/           ALTER statements for databases created before a change
 web/                  React + Vite PWA, served by the Worker as assets
 .github/workflows/    CI: typecheck, both test suites, dashboard build
@@ -488,9 +494,31 @@ Everything else waits in the review queue. And publication is refused outright
 while a term that decides money is unknown, because an offer with a wrong
 threshold is worse than no offer — somebody spends against it.
 
+It reads feeds, and — with a provider configured — searches the web. Search
+results become the same articles a feed produces, and trust follows the
+destination: a MileLion article surfaced by a search engine is a specialist
+source, not a search result. Without `SEARCH_PROVIDER` and `SEARCH_API_KEY`,
+search reports itself **not configured** rather than healthy, and feeds carry
+on alone.
+
 Three stages run nightly, each bounded and independently recoverable: read the
-feeds, read the articles worth reading, weigh the evidence. The same stages
-have buttons on the discovery screen.
+feeds and run the searches, read the articles worth reading, weigh the
+evidence. **Run discovery now** loops all three until nothing moves.
+
+### Knowing where it stopped
+
+The system is built so it cannot fail silently. Eight situations that a naive
+implementation reports identically as "nothing new" are kept apart: nothing
+configured, search not configured, a source refusing, nothing searched, nothing
+found, found but irrelevant, read but naming no offer, and extracted but
+already known. Each has its own state, its own sentence, and its own line in
+the funnel the run reports.
+
+Source cadence adapts to what a source carries, but only after five scans, only
+one step at a time, and never at all for the pinned publications — because an
+earlier version walked the most productive feed in the system down to monthly
+on the strength of a few quiet days. Re-running the seed restores a source that
+drifted.
 
 ### What an offer says about itself
 

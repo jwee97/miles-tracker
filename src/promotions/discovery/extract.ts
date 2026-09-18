@@ -67,6 +67,44 @@ export interface PromotionDocument {
 const NUM = String.raw`([0-9][0-9,]*(?:\.[0-9]+)?)`;
 const n = (s: string) => Number(s.replace(/,/g, ''));
 
+/**
+ * A number with an optional thousands suffix, for rewards.
+ *
+ * Articles write "16,000 miles" and "16K miles" interchangeably, and "16.8k"
+ * for the ones that are not round. Reading the second as sixteen miles is not
+ * a small error — it is an offer that looks worthless and gets skipped.
+ *
+ * Deliberately not used for money. "$16k cashback" is not a sentence anyone
+ * writes about a credit card, and treating a dollar figure this way would turn
+ * a $16 threshold into $16,000.
+ */
+const COMPACT = String.raw`([0-9][0-9,]*(?:\.[0-9]+)?)(\s*[kK])?`;
+
+export function parseCompactNumber(raw: string): number | null {
+  const m = raw.trim().match(/^([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kK])?$/);
+  if (!m) return null;
+  const base = Number(m[1].replace(/,/g, ''));
+  if (!Number.isFinite(base)) return null;
+  return m[2] ? Math.round(base * 1000) : base;
+}
+
+/** Apply a captured suffix to a captured number. */
+const amount = (value: string, suffix?: string): number => {
+  const base = Number(value.replace(/,/g, ''));
+  return suffix?.trim().toLowerCase() === 'k' ? Math.round(base * 1000) : base;
+};
+
+/**
+ * How Singapore writes money.
+ *
+ * "S$800", "SGD 800", "$800" and "S $800" all appear, often in the same
+ * article. Matching only the bare dollar sign meant every threshold written the
+ * local way was silently unread, and an offer whose threshold is unknown is
+ * refused publication — so these articles produced nothing and said nothing
+ * about why.
+ */
+const MONEY = String.raw`(?:S\s?\$|SGD\s*|\$)\s?`;
+
 const ISSUERS = [
   'DBS', 'POSB', 'UOB', 'Citi', 'Citibank', 'OCBC', 'HSBC', 'Standard Chartered', 'StanChart',
   'Maybank', 'American Express', 'Amex', 'BOC', 'Bank of China', 'CIMB', 'Trust Bank',
@@ -159,19 +197,21 @@ export function extractOne(text: string, url: string, title = ''): PromotionCand
   const claims: PromotionClaim[] = [];
   const reward: PromotionCandidate['reward'] = {};
 
-  const miles = flat.match(new RegExp(String.raw`${NUM}\s*(?:bonus\s+)?(?:air\s*)?miles`, 'i'));
+  const miles = flat.match(new RegExp(String.raw`${COMPACT}\s*(?:bonus\s+)?(?:air\s*)?miles`, 'i'));
   if (miles) {
-    reward.miles = n(miles[1]);
+    reward.miles = amount(miles[1], miles[2]);
     claims.push(claim('reward_miles', reward.miles, 'high', flat, miles[0]));
   }
 
-  const points = flat.match(new RegExp(String.raw`${NUM}\s*(?:bonus\s+)?points`, 'i'));
+  const points = flat.match(new RegExp(String.raw`${COMPACT}\s*(?:bonus\s+)?points`, 'i'));
   if (points && !miles) {
-    reward.points = n(points[1]);
+    reward.points = amount(points[1], points[2]);
     claims.push(claim('reward_points', reward.points, 'high', flat, points[0]));
   }
 
-  const cash = flat.match(new RegExp(String.raw`\$\s?${NUM}\s*(?:cash\s?back|cashback|cash)`, 'i'));
+  // No compact suffix on money: "$16k cashback" is not something anyone writes
+  // about a card, and reading it that way would turn $16 into $16,000.
+  const cash = flat.match(new RegExp(String.raw`${MONEY}${NUM}\s*(?:cash\s?back|cashback|cash)`, 'i'));
   if (cash) {
     reward.cashback_cents = Math.round(n(cash[1]) * 100);
     claims.push(claim('reward_cashback_cents', reward.cashback_cents, 'high', flat, cash[0]));
@@ -190,7 +230,7 @@ export function extractOne(text: string, url: string, title = ''): PromotionCand
   }
 
   const spend = flat.match(
-    new RegExp(String.raw`(?:min(?:imum)?\.?\s*spend(?:ing)?|spend)\s*(?:of\s*)?\$\s?${NUM}`, 'i')
+    new RegExp(String.raw`(?:min(?:imum)?\.?\s*spend(?:ing)?|spend)\s*(?:of\s*)?${MONEY}${NUM}`, 'i')
   );
   let minimum: number | undefined;
   if (spend) {
@@ -213,16 +253,27 @@ export function extractOne(text: string, url: string, title = ''): PromotionCand
     claims.push(claim('spend_window', window, 'medium', flat, 'following month'));
   }
 
-  const end = findDate(flat, /(?:ends?|until|by|valid (?:till|until)|expires?(?: on)?)\s+/i);
+  // An open-ended offer has no end date, and inventing one is worse than
+  // leaving it null: a guessed date either expires a live offer or keeps a dead
+  // one on the screen for a year. The phrase is recorded as an assumption so
+  // the absence is explained rather than merely empty.
+  const openEnded = OPEN_ENDED.exec(flat);
+  const end = openEnded ? null : findDate(flat, END_PHRASES);
   if (end) {
     claims.push(claim('application_end', end.iso, end.confidence, flat, end.raw));
+  } else if (openEnded) {
+    claims.push(claim('application_end_note', openEnded[0], 'high', flat, openEnded[0]));
   }
-  const start = findDate(flat, /(?:from|starting|between)\s+/i);
+  const start = findDate(flat, /(?:from|starting|between|opens?(?: on)?)\s+/i);
 
   const registration = /\b(register|registration required|opt[- ]?in|sign up for this promotion)\b/i.test(flat);
   if (registration) claims.push(claim('registration_required', true, 'high', flat, 'register'));
 
-  const eligibility = flat.match(/\b(new (?:to bank|cardholders?|cardmembers?)[^.]{0,120})\./i);
+  // Hyphens matter here: "new-to-bank" is how banks themselves write it, and
+  // matching only the spaced form left the most common phrasing unread.
+  const eligibility = flat.match(
+    /\b(new[- ](?:to[- ]bank|cardholders?|cardmembers?|customers?)[^.]{0,120}|existing\s+(?:customers?|cardholders?)\s+only[^.]{0,80})\./i
+  );
   if (eligibility) claims.push(claim('eligibility_text', eligibility[1], 'medium', flat, eligibility[1]));
 
   const type: PromotionType | null = reward.bonus_pct
@@ -258,6 +309,25 @@ export function extractOne(text: string, url: string, title = ''): PromotionCand
   };
 }
 
+/**
+ * The ways an article says when applications close.
+ *
+ * Written out rather than guessed at from any date in the text: an article
+ * about a September offer mentions September in six places, and only one of
+ * them is the deadline.
+ */
+export const END_PHRASES =
+  /(?:ends?(?:\s+on)?|until|till|by|valid\s+(?:till|until|through)|expires?(?:\s+on)?|last\s+day(?:\s+to\s+apply)?(?:\s+is)?|apply\s+(?:by|before)|applications?\s+(?:close|submitted\s+(?:by|before))|closes?(?:\s+on)?|on\s+or\s+before)\s+/i;
+
+/**
+ * An offer with no end date, said in words.
+ *
+ * "Until further notice" is a real answer and must not become a date. The
+ * phrase is kept so a person reading the candidate knows the field is empty
+ * deliberately.
+ */
+export const OPEN_ENDED = /\b(?:until|till)\s+further\s+notice\b|\bno\s+(?:fixed\s+)?end\s+date\b|\bwhile\s+stocks\s+last\b|\bongoing\s+offer\b/i;
+
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
@@ -274,8 +344,13 @@ export function findDate(
   text: string,
   prefix: RegExp
 ): { iso: string; raw: string; confidence: 'high' | 'medium' } | null {
+  // A date with no year is not matched at all. Guessing one either expires a
+  // live offer or keeps a dead one on the screen for twelve months, and both
+  // are worse than an empty field a person can fill.
   const re = new RegExp(
-    `${prefix.source}(\\d{4}-\\d{2}-\\d{2}|\\d{1,2}\\s+[A-Za-z]{3,9}\\s+\\d{4}|[A-Za-z]{3,9}\\s+\\d{1,2},?\\s+\\d{4})`,
+    `${prefix.source}(?:the\\s+)?(\\d{4}-\\d{2}-\\d{2}` +
+      `|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?[A-Za-z]{3,9},?\\s+\\d{4}` +
+      `|[A-Za-z]{3,9}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4})`,
     'i'
   );
   const m = text.match(re);
@@ -284,7 +359,7 @@ export function findDate(
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return { iso: raw, raw: m[0], confidence: 'high' };
 
-  const dmy = raw.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/);
+  const dmy = raw.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([A-Za-z]{3,9}),?\s+(\d{4})$/i);
   if (dmy) {
     const month = MONTHS[dmy[2].slice(0, 3).toLowerCase()];
     if (!month) return null;
@@ -295,7 +370,7 @@ export function findDate(
     };
   }
 
-  const mdy = raw.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/);
+  const mdy = raw.match(/^([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/i);
   if (mdy) {
     const month = MONTHS[mdy[1].slice(0, 3).toLowerCase()];
     if (!month) return null;
