@@ -169,15 +169,23 @@ function Confirm({ s, onDone }: { s: StaleProduct; onDone: () => void }) {
   async function confirm() {
     setBusy(true);
     setErr(null);
-    const r = await confirmProductRates(s.product.id, url.trim());
-    setBusy(false);
-    if (!r.ok) {
-      setErr(r.error ?? 'that did not work');
-      return;
+    try {
+      const r = await confirmProductRates(s.product.id, url.trim());
+      if (!r.ok) {
+        setErr(r.error ?? 'that did not work');
+        return;
+      }
+      setMsg(`Checked today — ${r.rules_confirmed ?? 0} rule${r.rules_confirmed === 1 ? '' : 's'} confirmed.`);
+      setOpen(false);
+      onDone();
+    } catch (e) {
+      // A refused request is an answer — most often "that is not a link" or
+      // "this product has no rules yet" — and it has to reach the screen
+      // rather than leaving the button stuck.
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
     }
-    setMsg(`Checked today — ${r.rules_confirmed ?? 0} rule${r.rules_confirmed === 1 ? '' : 's'} confirmed.`);
-    setOpen(false);
-    onDone();
   }
 
   return (

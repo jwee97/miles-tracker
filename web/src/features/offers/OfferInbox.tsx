@@ -204,23 +204,45 @@ function Correct({ o, onChange }: { o: RelevantPromotion; onChange: () => void }
     setBusy(true);
     setErr(null);
     setMsg(null);
-    const terms: Record<string, number> = {};
-    for (const f of fields) {
-      const raw = form[f.key]?.trim();
-      if (!raw) continue;
-      const n = Number(raw);
-      if (!Number.isFinite(n)) continue;
-      terms[f.key] = f.money ? Math.round(n * 100) : n;
+    try {
+      // Only what was actually edited. The form is filled from the offer's
+      // current values, so sending everything would resubmit figures the
+      // person never touched — and one of those is usually the wrong one they
+      // came here about, which would get the whole correction refused for a
+      // field they were not editing.
+      const terms: Record<string, number> = {};
+      for (const f of fields) {
+        const raw = form[f.key]?.trim() ?? '';
+        if (raw === shown(f)) continue;
+        if (!raw) continue;
+        const n = Number(raw);
+        if (!Number.isFinite(n)) {
+          setErr(`${f.label} is not a number.`);
+          return;
+        }
+        terms[f.key] = f.money ? Math.round(n * 100) : n;
+      }
+      if (!Object.keys(terms).length) {
+        setErr('Nothing was changed.');
+        return;
+      }
+
+      const r = await correctPromotion(o.promotion.id, terms);
+      if (!r.ok) {
+        setErr(r.error ?? 'that did not work');
+        return;
+      }
+      setMsg(`Corrected ${r.changed?.length ?? 0} value${r.changed?.length === 1 ? '' : 's'}.`);
+      setOpen(false);
+      onChange();
+    } catch (e) {
+      // A rejected request used to escape here, leaving the button stuck on
+      // "Saving…" with nothing said. A refusal is an answer and has to be
+      // shown.
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
     }
-    const r = await correctPromotion(o.promotion.id, terms);
-    setBusy(false);
-    if (!r.ok) {
-      setErr(r.error ?? 'that did not work');
-      return;
-    }
-    setMsg(r.changed?.length ? `Corrected ${r.changed.length} value${r.changed.length === 1 ? '' : 's'}.` : 'Nothing changed.');
-    setOpen(false);
-    onChange();
   }
 
   return (
@@ -271,21 +293,34 @@ function Targeted({ id, onChange }: { id: number; onChange: () => void }) {
   const [open, setOpen] = useState(false);
   const [f, setF] = useState({ miles: '', cashback: '', spend: '', note: '' });
   const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   async function save() {
-    const reward: Record<string, number> = {};
-    if (f.miles.trim()) reward.miles = Number(f.miles);
-    if (f.cashback.trim()) reward.cashback_cents = Math.round(Number(f.cashback) * 100);
-    const r = await contributeTargetedOffer(id, {
-      reward,
-      minimum_spend_cents: f.spend.trim() ? Math.round(Number(f.spend) * 100) : null,
-      note: f.note.trim() || null,
-    });
-    setMsg(r.ok ? 'Saved as yours.' : (r.error ?? 'that did not work'));
-    if (r.ok) {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      const reward: Record<string, number> = {};
+      if (f.miles.trim()) reward.miles = Number(f.miles);
+      if (f.cashback.trim()) reward.cashback_cents = Math.round(Number(f.cashback) * 100);
+      const r = await contributeTargetedOffer(id, {
+        reward,
+        minimum_spend_cents: f.spend.trim() ? Math.round(Number(f.spend) * 100) : null,
+        note: f.note.trim() || null,
+      });
+      if (!r.ok) {
+        setErr(r.error ?? 'that did not work');
+        return;
+      }
+      setMsg('Saved as yours.');
       setOpen(false);
       setF({ miles: '', cashback: '', spend: '', note: '' });
       onChange();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -319,9 +354,10 @@ function Targeted({ id, onChange }: { id: number; onChange: () => void }) {
             </label>
           </div>
           <div className="entry-foot">
-            <button className="secondary" onClick={save} disabled={!f.miles.trim() && !f.cashback.trim()}>
-              Save it as mine
+            <button className="secondary" onClick={save} disabled={busy || (!f.miles.trim() && !f.cashback.trim())}>
+              {busy ? 'Saving…' : 'Save it as mine'}
             </button>
+            {err && <span className="err-text">{err}</span>}
           </div>
         </div>
       )}
@@ -383,10 +419,15 @@ function Offer({ o, onChange }: { o: RelevantPromotion; onChange: () => void }) 
             disabled={busy}
             onClick={async () => {
               setBusy(true);
-              const r = await trackOffer(o.promotion.id);
-              setMsg(r.ok ? (r.summary ?? 'Tracking it.') : (r.error ?? 'that did not work'));
-              setBusy(false);
-              onChange();
+              try {
+                const r = await trackOffer(o.promotion.id);
+                setMsg(r.ok ? (r.summary ?? 'Tracking it.') : (r.error ?? 'that did not work'));
+                onChange();
+              } catch (e) {
+                setMsg((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
             }}
           >
             Track this offer
@@ -397,8 +438,12 @@ function Offer({ o, onChange }: { o: RelevantPromotion; onChange: () => void }) 
           className="secondary"
           disabled={busy}
           onClick={async () => {
-            await dismissOffer(o.promotion.id);
-            onChange();
+            try {
+              await dismissOffer(o.promotion.id);
+              onChange();
+            } catch (e) {
+              setMsg((e as Error).message);
+            }
           }}
         >
           Not interested
@@ -446,13 +491,17 @@ function Tracked({ rows, onChange }: { rows: TrackedOffer[]; onChange: () => voi
         <button
           className="secondary"
           onClick={async () => {
-            const r = await sweepPromotions();
-            setMsg(
-              r.completed.length
-                ? r.completed.map((c) => `${c.title}: ${c.expected}`).join(' · ')
-                : 'Nothing has been met yet.'
-            );
-            onChange();
+            try {
+              const r = await sweepPromotions();
+              setMsg(
+                r.completed.length
+                  ? r.completed.map((c) => `${c.title}: ${c.expected}`).join(' · ')
+                  : 'Nothing has been met yet.'
+              );
+              onChange();
+            } catch (e) {
+              setMsg((e as Error).message);
+            }
           }}
         >
           Check for completions

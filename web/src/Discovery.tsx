@@ -186,18 +186,29 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
   async function publish() {
     setBusy(true);
     setMsg(null);
-    // Only the fields actually touched are sent. An edit is the strongest
-    // evidence the system ever gets, and sending every field back would record
-    // a person as the source of numbers they merely looked at.
-    const r = await publishCandidateEdit(item.candidate_id, termsFromEdits(edits) ?? undefined);
-    setBusy(false);
-    setMsg(r.ok ? 'Published.' : (r.error ?? 'that did not work'));
-    if (r.ok) onDone();
+    setErr(null);
+    try {
+      // Only the fields actually touched are sent. An edit is the strongest
+      // evidence the system ever gets, and sending every field back would
+      // record a person as the source of numbers they merely looked at.
+      const r = await publishCandidateEdit(item.candidate_id, termsFromEdits(edits) ?? undefined);
+      if (!r.ok) {
+        setErr(r.error ?? 'that did not work');
+        return;
+      }
+      setMsg('Published.');
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -311,9 +322,14 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
           disabled={busy}
           onClick={async () => {
             setBusy(true);
-            await rejectCandidate(item.candidate_id, 'not a real offer');
-            setBusy(false);
-            onDone();
+            try {
+              await rejectCandidate(item.candidate_id, 'not a real offer');
+              onDone();
+            } catch (e) {
+              setErr((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
           }}
         >
           Leave it out
@@ -324,7 +340,8 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
           </a>
         )}
       </div>
-      {msg && <p className={msg === 'Published.' ? 'ok-text' : 'err-text'}>{msg}</p>}
+      {msg && <p className="ok-text">{msg}</p>}
+      {err && <p className="err-text">{err}</p>}
     </li>
   );
 }

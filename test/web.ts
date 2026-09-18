@@ -411,9 +411,13 @@ async function stub(page: Page) {
     const u = new URL(route.request().url());
     // no-store, so a reload re-asks the stub instead of the browser answering
     // from its own cache with whatever the last scenario returned.
-    const send = (body: unknown) =>
+    // The status is honoured. It used to be hard-coded to 200 with the
+    // argument ignored, which meant no stub could express a failing request —
+    // so every error path in the app was untested, and a handler missing its
+    // catch looked identical to one that had it.
+    const send = (body: unknown, status = 200) =>
       route.fulfill({
-        status: 200,
+        status,
         contentType: 'application/json',
         headers: { 'cache-control': 'no-store' },
         body: JSON.stringify(body),
@@ -1282,12 +1286,28 @@ async function main() {
     await form.locator('.err-text').waitFor();
     check('a dollars-for-cents mistake is refused', says(await first.innerText(), 'looks too small'), (await first.innerText()).slice(0, 2000));
     check('and the message names the unit', says(await first.innerText(), 'entered in dollars'), (await first.innerText()).slice(0, 2000));
+    // The precise bug: the refusal used to escape the handler, leaving the
+    // button on "Saving…" forever with nothing said.
+    check(
+      'and the form recovers rather than hanging on Saving',
+      (await first.getByRole('button', { name: 'Save the correction' }).count()) === 1,
+      await form.innerText()
+    );
+    check('with nothing still claiming to be in flight', !says(await form.innerText(), 'Saving…'), await form.innerText());
 
     await form.locator('input').nth(2).fill('400');
     await first.getByRole('button', { name: 'Save the correction' }).click();
     await page.waitForFunction(() => !document.querySelector('.correct-form'));
     check('a real figure goes through', corrected?.terms?.reward_cashback_cents === 40000, JSON.stringify(corrected?.terms));
     check('converted to cents for the rest of the app', corrected?.terms?.reward_cashback_cents !== 400);
+    // Only what was edited. The form is filled from the offer, so resending
+    // everything would resubmit the very figure the person came to fix and
+    // get the whole correction refused for a field they never touched.
+    check(
+      'and untouched fields are not resubmitted',
+      Object.keys(corrected?.terms ?? {}).length === 1,
+      JSON.stringify(corrected?.terms)
+    );
 
     await page.locator('.card', { hasText: 'Everything' }).getByRole('button', { name: 'Show' }).click();
     const everything = await page.locator('.card', { hasText: 'Everything' }).innerText();
