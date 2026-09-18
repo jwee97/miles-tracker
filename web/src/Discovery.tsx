@@ -108,13 +108,85 @@ const show = (field: string, v: unknown): string => {
   return String(v);
 };
 
+/**
+ * The terms worth correcting by hand, and what unit each is in.
+ *
+ * `money` is the important flag. The database stores cents, but nobody types
+ * cents — a person correcting a $400 cashback bonus types 400, and a field
+ * that quietly means cents turns that into $4.00. That happened, and the
+ * resulting offer read "Spend $4.00 → $4.00 cashback" with nothing on the
+ * screen to suggest a units mistake rather than a bad source.
+ *
+ * So the unit lives here beside the label, the conversion happens in one place
+ * for every form, and the field says which unit it wants.
+ */
+export const TERM_FIELDS: { key: string; label: string; money?: boolean; hint: string }[] = [
+  { key: 'reward_miles', label: 'Miles', hint: 'e.g. 16000' },
+  { key: 'reward_points', label: 'Points', hint: 'e.g. 20000' },
+  { key: 'reward_cashback_cents', label: 'Cashback', money: true, hint: 'dollars, e.g. 400' },
+  { key: 'bonus_pct', label: 'Bonus %', hint: 'e.g. 25' },
+  { key: 'minimum_spend_cents', label: 'Minimum spend', money: true, hint: 'dollars, e.g. 800' },
+  { key: 'window_days', label: 'Window (days)', hint: 'e.g. 30' },
+];
+
+/** What a stored value should read as in the box: dollars for money, as-is otherwise. */
+export function displayValue(key: string, raw: unknown): string {
+  if (raw === undefined || raw === null || raw === '') return '';
+  const field = TERM_FIELDS.find((f) => f.key === key);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return String(raw);
+  return field?.money ? (n / 100).toFixed(2).replace(/\.00$/, '') : String(n);
+}
+
+/** Typed values back into what the database stores. Null when nothing was typed. */
+export function termsFromEdits(edits: Record<string, string>): Record<string, number> | null {
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(edits)) {
+    if (value.trim() === '') continue;
+    const n = Number(value);
+    if (!Number.isFinite(n)) continue;
+    const field = TERM_FIELDS.find((f) => f.key === key);
+    out[key] = field?.money ? Math.round(n * 100) : n;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function TermFields({
+  terms,
+  edits,
+  onChange,
+}: {
+  terms: Record<string, unknown>;
+  edits: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  return (
+    <div className="entry-grid">
+      {TERM_FIELDS.map((f) => (
+        <label className="f" key={f.key}>
+          <span>
+            {f.label}
+            {f.money ? ' ($)' : ''}
+          </span>
+          <input
+            inputMode="decimal"
+            placeholder={
+              terms[f.key] === undefined || terms[f.key] === null ? f.hint : displayValue(f.key, terms[f.key])
+            }
+            value={edits[f.key] ?? ''}
+            onChange={(e) => onChange({ ...edits, [f.key]: e.target.value })}
+          />
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void }) {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-
-  const editable = ['reward_miles', 'reward_points', 'reward_cashback_cents', 'bonus_pct', 'minimum_spend_cents', 'window_days'];
 
   async function publish() {
     setBusy(true);
@@ -122,12 +194,7 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
     // Only the fields actually touched are sent. An edit is the strongest
     // evidence the system ever gets, and sending every field back would record
     // a person as the source of numbers they merely looked at.
-    const terms: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(edits)) {
-      if (v.trim() === '') continue;
-      terms[k] = Number(v);
-    }
-    const r = await publishCandidateEdit(item.candidate_id, Object.keys(terms).length ? terms : undefined);
+    const r = await publishCandidateEdit(item.candidate_id, termsFromEdits(edits) ?? undefined);
     setBusy(false);
     setMsg(r.ok ? 'Published.' : (r.error ?? 'that did not work'));
     if (r.ok) onDone();
@@ -191,19 +258,7 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
         </div>
       )}
 
-      <div className="entry-grid">
-        {editable.map((f) => (
-          <label className="f" key={f}>
-            <span>{FIELD_LABEL[f] ?? f}</span>
-            <input
-              inputMode="numeric"
-              placeholder={item.terms[f] === undefined || item.terms[f] === null ? 'not stated' : String(item.terms[f])}
-              value={edits[f] ?? ''}
-              onChange={(e) => setEdits({ ...edits, [f]: e.target.value })}
-            />
-          </label>
-        ))}
-      </div>
+      <TermFields terms={item.terms} edits={edits} onChange={setEdits} />
       <p className="sub">
         Leave a field alone to accept what was read. Anything you type is recorded as coming from you, which outranks
         every article.

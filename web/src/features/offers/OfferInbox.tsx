@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   contributeTargetedOffer,
+  correctPromotion,
   dismissOffer,
   fetchOffers2,
   fetchPromotionEvidence,
@@ -162,6 +163,104 @@ function Variants({ o }: { o: RelevantPromotion }) {
 }
 
 /**
+ * Fixing a number on an offer that is already here.
+ *
+ * The likeliest correction by far is one figure being out — a source misread
+ * it, or somebody typed dollars into a field that meant cents and a $400
+ * cashback bonus became $4. Rejecting the whole offer to get it rediscovered
+ * would take the tracking and the history with it, so this edits it in place
+ * and records who said so.
+ *
+ * Amounts are dollars. The box says so, and the server refuses a figure that
+ * could only be a units mistake rather than storing it.
+ */
+function Correct({ o, onChange }: { o: RelevantPromotion; onChange: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const t = o.terms as Record<string, number | undefined>;
+
+  const fields: { key: string; label: string; money?: boolean }[] = [
+    { key: 'reward_miles', label: 'Miles' },
+    { key: 'reward_points', label: 'Points' },
+    { key: 'reward_cashback_cents', label: 'Cashback ($)', money: true },
+    { key: 'bonus_pct', label: 'Bonus %' },
+    { key: 'minimum_spend_cents', label: 'Minimum spend ($)', money: true },
+    { key: 'window_days', label: 'Window (days)' },
+  ];
+
+  const shown = (f: { key: string; money?: boolean }) => {
+    const v = t[f.key];
+    if (v === undefined || v === null) return '';
+    return f.money ? String(v / 100) : String(v);
+  };
+
+  const [form, setForm] = useState<Record<string, string>>(() =>
+    Object.fromEntries(fields.map((f) => [f.key, shown(f)]))
+  );
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    const terms: Record<string, number> = {};
+    for (const f of fields) {
+      const raw = form[f.key]?.trim();
+      if (!raw) continue;
+      const n = Number(raw);
+      if (!Number.isFinite(n)) continue;
+      terms[f.key] = f.money ? Math.round(n * 100) : n;
+    }
+    const r = await correctPromotion(o.promotion.id, terms);
+    setBusy(false);
+    if (!r.ok) {
+      setErr(r.error ?? 'that did not work');
+      return;
+    }
+    setMsg(r.changed?.length ? `Corrected ${r.changed.length} value${r.changed.length === 1 ? '' : 's'}.` : 'Nothing changed.');
+    setOpen(false);
+    onChange();
+  }
+
+  return (
+    <>
+      <button className="secondary" onClick={() => setOpen((v) => !v)}>
+        {open ? 'Cancel' : 'These numbers are wrong'}
+      </button>
+      {open && (
+        <div className="addrule correct-form">
+          <p className="sub">
+            Amounts are in dollars. What you type is recorded as coming from you, which outranks any article — so a
+            later scan will not quietly put the old number back.
+          </p>
+          <div className="entry-grid">
+            {fields.map((f) => (
+              <label className="f" key={f.key}>
+                <span>{f.label}</span>
+                <input
+                  inputMode="decimal"
+                  value={form[f.key] ?? ''}
+                  placeholder="—"
+                  onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="entry-foot">
+            <button className="secondary" disabled={busy} onClick={save}>
+              {busy ? 'Saving…' : 'Save the correction'}
+            </button>
+            {err && <span className="err-text">{err}</span>}
+          </div>
+        </div>
+      )}
+      {msg && <p className="ok-text">{msg}</p>}
+    </>
+  );
+}
+
+/**
  * An offer the bank sent this person directly.
  *
  * This is the only place promotion terms come from the user rather than a
@@ -310,6 +409,7 @@ function Offer({ o, onChange }: { o: RelevantPromotion; onChange: () => void }) 
           </a>
         )}
         <Targeted id={o.promotion.id} onChange={onChange} />
+        <Correct o={o} onChange={onChange} />
       </div>
       {msg && <p className="ok-text">{msg}</p>}
 

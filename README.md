@@ -560,6 +560,30 @@ Any number you type there is recorded as a claim sourced to you at the highest
 trust tier — a correction made during review is the strongest evidence the
 system ever gets.
 
+### When a number is wrong
+
+Two things the app used to be able to state and not solve.
+
+**"This card's rates have never been checked."** Publishing a rule set marks a
+product verified, which is right when the rules are changing — but it left no
+way to say *the rules already here are correct, I have just re-read the bank's
+page*, so those cards stayed unchecked forever. **Catalogue → These rates are
+right** is that route. It asks for the page you read, because the claim is
+about a document, and records it as a source so the confirmation is auditable.
+It is dated, not permanent: the warning returns when the confirmation ages.
+
+**A published offer with a wrong figure.** The likeliest correction is one
+number — a source misread it, or somebody typed dollars into a field that meant
+cents. Rejecting the whole offer to get it rediscovered would take the tracking
+and the history with it, so **These numbers are wrong** edits it in place: a new
+version, a change event, and a claim attributed to you at the tier an issuer
+gets, so the next scan cannot quietly put the old number back.
+
+Amounts are entered in dollars everywhere, and a figure that could only be a
+units mistake is refused rather than stored — a $4.00 cashback bonus with a
+$4.00 threshold is not a real offer, and nothing else on the screen would have
+told you it was a typo rather than a bad source.
+
 ## Offers that have ended
 
 Every offer carries its end date. The Offers tab shows days remaining, turns

@@ -232,6 +232,25 @@ export async function publishCandidate(env: Env, candidateId: number): Promise<P
 }
 
 /**
+ * A title for an offer, without saying the bank's name twice.
+ *
+ * Card names as articles write them usually already carry the issuer — "OCBC
+ * INFINITY Cashback Credit Card" — so prefixing the issuer produced "OCBC OCBC
+ * INFINITY Cashback Credit Card". Cosmetic, but it appears on every screen the
+ * offer does, and it reads like the app does not know what the card is called.
+ */
+export function promotionTitle(issuer: string | null, product: string | null): string {
+  const name = (product ?? '').trim();
+  const bank = (issuer ?? '').trim();
+  if (!bank) return name || 'Promotion';
+  if (!name) return bank;
+  // A plain prefix match rather than a word boundary, because "Citibank Cash
+  // Back" is Citi's and "Citi Citibank Cash Back" reads as a mistake. Against
+  // this catalogue's issuers a name starting with the bank's is that bank's.
+  return name.toLowerCase().startsWith(bank.toLowerCase()) ? name : `${bank} ${name}`;
+}
+
+/**
  * Write a candidate into the promotions table, as a new offer or a new version.
  *
  * Shared by the automatic path and the review screen, so a promotion published
@@ -253,7 +272,7 @@ export async function applyCandidate(
     auto: boolean;
   }
 ): Promise<PublishResult> {
-  const title = `${c.issuer ?? ''} ${c.raw_product_name ?? ''}`.trim() || 'Promotion';
+  const title = promotionTitle(c.issuer, c.raw_product_name);
 
   if (opts.existingId) {
     const change = changeBetween(opts.existingTerms ?? {}, opts.terms, {

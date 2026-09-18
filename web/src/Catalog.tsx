@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { fetchCatalog, fetchCatalogCard, fetchStaleProducts, money, type CatalogDetail, type CatalogProduct, type StaleProduct } from './api';
+import {
+  confirmProductRates, fetchCatalog, fetchCatalogCard, fetchStaleProducts, money, type CatalogDetail, type CatalogProduct, type StaleProduct
+} from './api';
 import CatalogAdmin from './CatalogAdmin';
 
 const STATUS: Record<string, { label: string; cls: string }> = {
@@ -143,6 +145,80 @@ function Detail({ k, onClose, onChanged }: { k: string; onClose: () => void; onC
  * looks filled in is the one failure mode that would quietly misdirect every
  * recommendation made on it.
  */
+/**
+ * Saying that a card's rules match what the bank publishes.
+ *
+ * The app knows perfectly well which cards it has never checked, and told you
+ * so on every recommendation — while offering no way to answer. This is the
+ * answer. It asks for the page you read, because the claim being made is about
+ * a document and a button with nothing behind it would let anyone clear the
+ * warning without looking.
+ *
+ * If the rules are actually wrong, this is the wrong tool: Versions → edit a
+ * draft → compare → publish, which records what changed and when, so that a
+ * purchase made last month is still priced by the rules that were in force
+ * then.
+ */
+function Confirm({ s, onDone }: { s: StaleProduct; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState(s.product.official_url ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function confirm() {
+    setBusy(true);
+    setErr(null);
+    const r = await confirmProductRates(s.product.id, url.trim());
+    setBusy(false);
+    if (!r.ok) {
+      setErr(r.error ?? 'that did not work');
+      return;
+    }
+    setMsg(`Checked today — ${r.rules_confirmed ?? 0} rule${r.rules_confirmed === 1 ? '' : 's'} confirmed.`);
+    setOpen(false);
+    onDone();
+  }
+
+  return (
+    <li className="unknown">
+      <span>
+        <strong>{s.product.product_name}</strong> — {s.reason} · {s.held_by.join(', ')}
+      </span>
+      <div className="entry-foot rule-actions">
+        {s.product.official_url && (
+          <a className="link" href={s.product.official_url} target="_blank" rel="noreferrer">
+            Open the bank page
+          </a>
+        )}
+        <button className="secondary" onClick={() => setOpen((v) => !v)}>
+          {open ? 'Cancel' : 'These rates are right'}
+        </button>
+      </div>
+      {open && (
+        <div className="addrule">
+          <p className="sub">
+            Confirming says the rules already published for this card match the bank's page today. If any of them is
+            wrong, use Versions instead — that records what changed and when, so last month's purchases keep last
+            month's rates.
+          </p>
+          <label className="f f-note">
+            <span>The page you read</span>
+            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" />
+          </label>
+          <div className="entry-foot">
+            <button className="secondary" disabled={busy || !url.trim()} onClick={confirm}>
+              {busy ? 'Saving…' : 'Confirm these rates'}
+            </button>
+            {err && <span className="err-text">{err}</span>}
+          </div>
+        </div>
+      )}
+      {msg && <p className="ok-text">{msg}</p>}
+    </li>
+  );
+}
+
 export default function Catalog() {
   const [q, setQ] = useState('');
   const [rows, setRows] = useState<CatalogProduct[] | null>(null);
@@ -187,17 +263,15 @@ export default function Catalog() {
           <p className="warn-num">
             {stale.length} card{stale.length === 1 ? '' : 's'} you hold have rates nobody has checked lately.
           </p>
-          <ul className="sub">
-            {stale.map((s) => (
-              <li key={s.product.id}>
-                <b>{s.product.product_name}</b> — {s.reason} · {s.held_by.join(', ')}
-              </li>
-            ))}
-          </ul>
           <p className="sub">
             They are still used, because a stale rate beats no rate — but every recommendation made from them says it is
-            uncertain.
+            uncertain. Open the bank's rewards page, compare it with the rules below, and confirm.
           </p>
+          <ul className="rules">
+            {stale.map((s) => (
+              <Confirm key={s.product.id} s={s} onDone={load} />
+            ))}
+          </ul>
         </div>
       )}
 

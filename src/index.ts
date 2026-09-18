@@ -49,6 +49,7 @@ import { searchConfigured } from './promotions/discovery/search-provider';
 import { expireFinished } from './promotions/discovery/diff';
 import { approveCandidate, reviewQueue as promotionReviewQueue } from './promotions/discovery/review';
 import { promotionEvidence } from './promotions/evidence';
+import { correctPromotion } from './promotions/correct';
 import { contributeTargeted, removeVariant, variantsFor } from './promotions/variants';
 import { portfolioGaps, spendingProfile } from './acquisition/gaps';
 import { acquisitionReport } from './acquisition/economics';
@@ -66,7 +67,7 @@ import { optimise } from './advice';
 import { mccMatrix } from './mcc';
 import { runMigrations, runSeed } from './migrate';
 import { currentRuleSetFor } from './catalog/migrate-products';
-import { diffRuleSets, draftFromCurrent, reviewAndPublish, staleProducts } from './catalog/publish';
+import { confirmProductRates, diffRuleSets, draftFromCurrent, reviewAndPublish, staleProducts } from './catalog/publish';
 import { addSource, checkSource, contentHash } from './catalog/sources';
 import { ensureProduct, isStale, listProducts, productByKey, productById, productKeyOf } from './catalog/products';
 import { recommendV2 } from './recommendations/recommend';
@@ -1232,6 +1233,20 @@ export default {
           return e ? json(e) : json({ error: 'no such promotion' }, 404);
         }
 
+        // Fixing a number on an offer that is already published. The usual
+        // correction is one figure, and rejecting the whole promotion to get it
+        // rediscovered would throw away the tracking and the history with it.
+        if (url.pathname.match(/^\/api\/promotions\/\d+\/correct$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[3]);
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+          const r = await correctPromotion(env, id, b.terms ?? {}, {
+            note: b.note ?? null,
+            source_url: b.source_url ?? null,
+            allow_implausible: b.allow_implausible === true,
+          });
+          return json(r, r.ok ? 200 : 400);
+        }
+
         if (url.pathname.match(/^\/api\/promotions\/\d+\/variants$/) && req.method === 'GET') {
           return json({ variants: await variantsFor(env, Number(url.pathname.split('/')[3])) });
         }
@@ -1724,6 +1739,20 @@ export default {
             }
             return json({ error: err.message }, 400);
           }
+        }
+
+        // The other route to verified. Publishing a rule set marks a product
+        // checked, which is right when the rules are changing — but left no way
+        // to say "I read the bank's page and what is already here is correct",
+        // so those products stayed unchecked forever.
+        if (url.pathname.match(/^\/api\/catalog\/products\/\d+\/confirm$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[4]);
+          const b = (await req.json().catch(() => ({}))) as { source_url?: string; note?: string };
+          const r = await confirmProductRates(env, id, today(env), {
+            source_url: String(b.source_url ?? ''),
+            note: b.note ?? null,
+          });
+          return json(r, r.ok ? 200 : 400);
         }
 
         // Products whose numbers should not be trusted without another look.

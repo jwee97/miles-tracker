@@ -219,6 +219,79 @@ export async function reviewAndPublish(
   return { rule_set: set, diff, product: await productById(env, set.product_id) };
 }
 
+export interface ConfirmResult {
+  ok: boolean;
+  error?: string;
+  product?: CardProduct;
+  rules_confirmed?: number;
+}
+
+/**
+ * Confirming that a product's published rules are what the bank says.
+ *
+ * Publishing a rule set marks a product verified, and that is the right
+ * default — the claim "these rules are what the bank says" should be made at
+ * the moment somebody has read the comparison, not by a button pressed in
+ * passing. But it left no route at all for the commonest case: the rules
+ * already published are correct, somebody has just re-read the bank's page,
+ * and nothing needs to change. Those products stayed "never checked" forever,
+ * with the app telling their holder something was wrong and offering no way to
+ * put it right.
+ *
+ * So this is the other route, and it keeps the same standard rather than
+ * lowering it. A URL is required, because the claim is about a document; it is
+ * recorded as a source, so the confirmation is auditable afterwards; and it
+ * refuses a product that has no published rules, where there is nothing to
+ * confirm and the real answer is to enter them.
+ */
+export async function confirmProductRates(
+  env: Env,
+  productId: number,
+  today: string,
+  opts: { source_url: string; note?: string | null }
+): Promise<ConfirmResult> {
+  const product = await productById(env, productId);
+  if (!product) return { ok: false, error: 'no such product' };
+
+  const url = (opts.source_url ?? '').trim();
+  if (!/^https?:\/\//i.test(url)) {
+    return { ok: false, error: "a link to the page you read is required — the claim is that these rules match a bank document" };
+  }
+
+  const current = await env.DB.prepare(
+    `SELECT id FROM rule_sets WHERE product_id = ? AND status = 'published' ORDER BY version DESC LIMIT 1`
+  )
+    .bind(productId)
+    .first<{ id: number }>();
+  if (!current) {
+    return {
+      ok: false,
+      error: 'this product has no published rules yet, so there is nothing to confirm — add them first',
+    };
+  }
+
+  const rules = await env.DB.prepare(`SELECT COUNT(*) AS n FROM earn_rules WHERE rule_set_id = ?`)
+    .bind(current.id)
+    .first<{ n: number }>();
+
+  await env.DB.prepare(
+    `INSERT INTO product_sources (product_id, source_type, source_url, title, retrieved_at)
+     VALUES (?, 'manual_verified', ?, ?, ?)`
+  )
+    .bind(productId, url, (opts.note ?? 'Confirmed against the bank by hand').slice(0, 200), today)
+    .run();
+
+  await env.DB.prepare(
+    `UPDATE card_products SET verification_status = 'verified', last_verified_at = ? WHERE id = ?`
+  )
+    .bind(today, productId)
+    .run();
+
+  await env.DB.prepare(`UPDATE rule_sets SET verified_at = ? WHERE id = ?`).bind(today, current.id).run();
+
+  return { ok: true, product: (await productById(env, productId)) ?? undefined, rules_confirmed: rules?.n ?? 0 };
+}
+
 export interface StaleProduct {
   product: CardProduct;
   reason: string;

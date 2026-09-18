@@ -335,6 +335,8 @@ let optimised: any = null;
 let trackedOffer: number | null = null;
 let reviewAction: string | null = null;
 let testedSource: number | null = null;
+let corrected: any = null;
+let confirmed: any = null;
 let simulated: any = null;
 let added: any[] = [];
 
@@ -564,6 +566,19 @@ async function stub(page: Page) {
     if (u.pathname.match(/^\/api\/promotions\/\d+\/track$/)) {
       trackedOffer = Number(u.pathname.split('/')[3]);
       return send({ ok: true, summary: '$300.00 on wwmc by 2026-09-30 — 12 days left.' });
+    }
+    if (u.pathname.match(/^\/api\/promotions\/\d+\/correct$/)) {
+      corrected = (await route.request().postDataJSON()) as any;
+      // The server refuses a figure that could only be a units mistake, which
+      // is what turned a $400 bonus into $4.00 in the first place.
+      const cash = corrected?.terms?.reward_cashback_cents;
+      if (typeof cash === 'number' && cash < 500) {
+        return send(
+          { ok: false, error: `$${(cash / 100).toFixed(2)} looks too small for cashback — did you mean $${cash.toFixed(2)}? Amounts are entered in dollars.` },
+          400
+        );
+      }
+      return send({ ok: true, version: 2, changed: [{ field: 'reward_cashback_cents', before: 400, after: cash }] });
     }
     if (u.pathname.match(/^\/api\/promotions\/\d+\/evidence$/))
       return send({
@@ -955,6 +970,13 @@ async function stub(page: Page) {
           },
         ],
       });
+    if (u.pathname.match(/^\/api\/catalog\/products\/\d+\/confirm$/)) {
+      confirmed = (await route.request().postDataJSON()) as any;
+      if (!/^https?:\/\//.test(confirmed?.source_url ?? '')) {
+        return send({ ok: false, error: 'a link to the page you read is required — the claim is that these rules match a bank document' }, 400);
+      }
+      return send({ ok: true, rules_confirmed: 3 });
+    }
     if (u.pathname.endsWith('/publish')) {
       published++;
       return send({ ok: true, rule_set: { ...DRAFT, status: 'published' }, diff: DIFF, product: CATALOG.products[0] });
@@ -1240,6 +1262,33 @@ async function main() {
     check('a private offer can be contributed', says(targeted, 'Targeted offers are real but private'), targeted.slice(0, 1800));
     check('and it says it will not change the public offer', says(targeted, 'without changing what the app believes'), targeted.slice(0, 1800));
 
+    // An offer whose numbers are wrong can be fixed in place. The alternative
+    // was rejecting the whole promotion, which takes the tracking with it.
+    const first = worth.locator('.offer2').first();
+    await first.getByRole('button', { name: 'These numbers are wrong' }).click();
+    check('the correction form says which unit it wants', says(await first.innerText(), 'Amounts are in dollars'), (await first.innerText()).slice(0, 1800));
+    check(
+      'and that what you type outranks an article',
+      says(await first.innerText(), 'outranks any article'),
+      (await first.innerText()).slice(0, 1900)
+    );
+
+    // The exact mistake that produced "Spend $4.00 → $4.00 cashback".
+    // Scoped to the correction form: the targeted-offer form above is still
+    // open and also renders inputs.
+    const form = first.locator('.correct-form');
+    await form.locator('input').nth(2).fill('4');
+    await first.getByRole('button', { name: 'Save the correction' }).click();
+    await form.locator('.err-text').waitFor();
+    check('a dollars-for-cents mistake is refused', says(await first.innerText(), 'looks too small'), (await first.innerText()).slice(0, 2000));
+    check('and the message names the unit', says(await first.innerText(), 'entered in dollars'), (await first.innerText()).slice(0, 2000));
+
+    await form.locator('input').nth(2).fill('400');
+    await first.getByRole('button', { name: 'Save the correction' }).click();
+    await page.waitForFunction(() => !document.querySelector('.correct-form'));
+    check('a real figure goes through', corrected?.terms?.reward_cashback_cents === 40000, JSON.stringify(corrected?.terms));
+    check('converted to cents for the rest of the app', corrected?.terms?.reward_cashback_cents !== 400);
+
     await page.locator('.card', { hasText: 'Everything' }).getByRole('button', { name: 'Show' }).click();
     const everything = await page.locator('.card', { hasText: 'Everything' }).innerText();
     check('offers that do not apply are still listed', says(everything, 'do not hold'), everything.slice(0, 400));
@@ -1471,6 +1520,34 @@ async function main() {
     const staleNote = await page.locator('.stale-note').innerText();
     check('cards whose rates are unchecked are called out', staleNote.includes('never been checked'), staleNote);
     check('and it says they are still used', staleNote.includes('stale rate beats no rate'));
+
+    // The app knew which cards it had never checked and offered no way to
+    // answer, which left the warning permanent.
+    const staleCard = page.locator('.stale-note');
+    check('and there is a way to answer it', (await staleCard.getByRole('button', { name: 'These rates are right' }).count()) === 1);
+    await staleCard.getByRole('button', { name: 'These rates are right' }).click();
+    check(
+      'confirming says what claim is being made',
+      says(await staleCard.innerText(), "match the bank's page today"),
+      (await staleCard.innerText()).slice(0, 600)
+    );
+    check(
+      'and points at Versions when a rate is actually wrong',
+      says(await staleCard.innerText(), 'use Versions instead'),
+      (await staleCard.innerText()).slice(0, 700)
+    );
+
+    // A button with nothing behind it would let anyone clear the warning
+    // without looking, so the page read is required.
+    await staleCard.locator('input').fill('not a link');
+    await staleCard.getByRole('button', { name: 'Confirm these rates' }).click();
+    await staleCard.locator('.err-text').waitFor();
+    check('confirming without a link is refused', says(await staleCard.innerText(), 'bank document'), (await staleCard.innerText()).slice(0, 700));
+
+    await staleCard.locator('input').fill('https://example.invalid/rewards-terms');
+    await staleCard.getByRole('button', { name: 'Confirm these rates' }).click();
+    await page.waitForFunction(() => !document.querySelector('.stale-note .addrule'));
+    check('with the page read, it goes through', confirmed?.source_url === 'https://example.invalid/rewards-terms', JSON.stringify(confirmed));
     const one = await page.locator('.catalog-list > li').nth(1).innerText();
     check('a product with no rules says so', one.includes('no rules yet'));
     check('rather than looking complete', !one.includes('version'));

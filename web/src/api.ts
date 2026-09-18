@@ -844,6 +844,19 @@ export const sweepPromotions = () =>
 
 export const fetchPromotionEvidence = (id: number) => get<PromotionEvidence>(`/api/promotions/${id}/evidence`);
 
+export interface CorrectionResult {
+  ok: boolean;
+  error?: string;
+  version?: number;
+  changed?: { field: string; before: unknown; after: unknown }[];
+}
+
+export const correctPromotion = (
+  id: number,
+  terms: Record<string, number>,
+  opts: { note?: string | null; allow_implausible?: boolean } = {}
+) => post<CorrectionResult>(`/api/promotions/${id}/correct`, { terms, ...opts });
+
 export const contributeTargetedOffer = (
   id: number,
   body: { reward: Record<string, number | string>; minimum_spend_cents?: number | null; note?: string | null; application_channel?: string | null }
@@ -1287,6 +1300,16 @@ export interface StaleProduct {
 
 export const fetchStaleProducts = () =>
   get<{ products: StaleProduct[]; as_of: string }>('/api/catalog/stale');
+
+export interface ConfirmRatesResult {
+  ok: boolean;
+  error?: string;
+  rules_confirmed?: number;
+}
+
+/** Say that the rules already published match what the bank's page says. */
+export const confirmProductRates = (productId: number, source_url: string, note?: string) =>
+  post<ConfirmRatesResult>(`/api/catalog/products/${productId}/confirm`, { source_url, note });
 
 export const draftRuleSet = (productId: number, body: { effective_from?: string; notes?: string }) =>
   post<{ ok: true; draft: CatalogRuleSet; copied_rules: number; copied_exclusions: number; based_on: number | null }>(
