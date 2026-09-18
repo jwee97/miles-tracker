@@ -103,7 +103,7 @@ export class BraveSearchProvider implements SearchProvider {
     // The country code is UPPERCASE. Brave validates it strictly and rejects
     // the whole request with 422 otherwise, which is not obvious from a status
     // line alone — hence the error body being read below rather than dropped.
-    url.searchParams.set('country', 'SG');
+    url.searchParams.set('country', 'ALL');
     url.searchParams.set('freshness', 'pm');
 
     // Through a local, not `this.fetchImpl(...)`: the property call is what
