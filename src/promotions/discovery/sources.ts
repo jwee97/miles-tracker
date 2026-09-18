@@ -163,9 +163,17 @@ export function isDue(s: DiscoverySource, now: string): boolean {
   return daysBetween(now, s.last_scanned_at) >= wait;
 }
 
-export async function dueSources(env: Env, limit = 10): Promise<DiscoverySource[]> {
+export async function dueSources(env: Env, limit = 10, opts: { ignoreBackoff?: boolean } = {}): Promise<DiscoverySource[]> {
   const now = today(env);
-  return (await listSources(env)).filter((s) => isDue(s, now)).slice(0, limit);
+  const all = await listSources(env);
+  // Backoff governs the automated schedule; a person pressing the button is
+  // asking for one attempt now, and is entitled to it. It stays one attempt —
+  // there is still no retry loop anywhere — but it means a source that was
+  // backed off for a reason since fixed does not stay unreachable for weeks.
+  const due = opts.ignoreBackoff
+    ? all.filter((s) => s.active && (!s.last_scanned_at || isDue({ ...s, failure_count: 0 }, now)))
+    : all.filter((s) => isDue(s, now));
+  return due.slice(0, limit);
 }
 
 export interface ScanOutcome {
@@ -183,6 +191,16 @@ export interface ScanOutcome {
    */
   relevant_items_found?: number;
   note?: string;
+  /**
+   * Whose failure it was.
+   *
+   * Backoff exists because hammering a site that has said no is rude and
+   * useless. A client-side bug is not the site saying no — it is us — and
+   * counting it toward the backoff punishes a healthy source for our mistake,
+   * then hides the recovery behind a multi-week wait. Only `source` failures
+   * count.
+   */
+  fault?: 'source' | 'client';
 }
 
 /** Slowest to fastest, so a cadence change can be one step rather than a cliff. */
@@ -247,6 +265,11 @@ export async function recordScan(env: Env, source: DiscoverySource, outcome: Sca
     frequency = moveOneStep(source.scan_frequency, targetFrequency(score));
   }
 
+  // Our own failure is recorded and explained, but does not back the source
+  // off. The reason still lands in last_error, so it is visible either way.
+  const ourFault = outcome.ok === false && outcome.fault === 'client';
+  const failures = outcome.ok || ourFault ? (outcome.ok ? 0 : source.failure_count) : source.failure_count + 1;
+
   await env.DB.prepare(
     `UPDATE discovery_sources
         SET last_scanned_at = ?, scans = ?, successes = ?, promotions_found = ?,
@@ -263,7 +286,7 @@ export async function recordScan(env: Env, source: DiscoverySource, outcome: Sca
       found,
       Math.round(score * 1000) / 1000,
       frequency,
-      outcome.ok ? 0 : source.failure_count + 1,
+      failures,
       outcome.ok ? now : source.last_success_at,
       outcome.items_seen ?? null,
       outcome.items_found ?? null,

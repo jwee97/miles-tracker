@@ -96,11 +96,14 @@ const blank = blankReport;
  * predictable, designed for exactly this, and immune to a redesign breaking the
  * parser. Nothing is fetched beyond the feed itself.
  */
-export async function discover(env: Env, opts: { limit?: number; fetchImpl?: typeof fetch } = {}): Promise<DiscoveryReport> {
+export async function discover(
+  env: Env,
+  opts: { limit?: number; fetchImpl?: typeof fetch; ignoreBackoff?: boolean } = {}
+): Promise<DiscoveryReport> {
   const report = blank(env, 'discover');
   const f = opts.fetchImpl ?? fetch;
 
-  for (const source of await dueSources(env, opts.limit ?? 5)) {
+  for (const source of await dueSources(env, opts.limit ?? 5, { ignoreBackoff: opts.ignoreBackoff })) {
     report.sources_scanned++;
     if (source.source_type === 'search') {
       const searched = await scanSearchSource(env, source, { fetchImpl: opts.fetchImpl });
@@ -121,6 +124,7 @@ export async function discover(env: Env, opts: { limit?: number; fetchImpl?: typ
           items_found: searched.urls_new,
           relevant_items_found: searched.relevant_new,
           note: searched.note,
+          fault: searched.fault,
         });
       }
       continue;
@@ -528,6 +532,16 @@ export interface PipelineOptions {
   extract_limit?: number;
   corroborate_limit?: number;
   fetchImpl?: typeof fetch;
+  /**
+   * Try sources that the schedule is currently backing off.
+   *
+   * Default true, because this is the human-initiated path. Backoff protects
+   * a site from a schedule that would otherwise hammer it; a person asking
+   * once is a different thing, and without this a source backed off for a
+   * reason since fixed stays unreachable for weeks with no way to say
+   * "try again now".
+   */
+  ignoreBackoff?: boolean;
 }
 
 export interface DiscoveryPipelineReport {
@@ -567,7 +581,14 @@ export async function runDiscoveryPipeline(env: Env, opts: PipelineOptions = {})
     for (let i = 0; i < maxCycles; i++) {
       cycles++;
 
-      const d = await discover(env, { limit: opts.discover_limit ?? 8, fetchImpl: opts.fetchImpl });
+      const d = await discover(env, {
+        limit: opts.discover_limit ?? 8,
+        fetchImpl: opts.fetchImpl,
+        // Only on the first cycle: after that everything due has been scanned,
+        // and repeating it would turn one button press into several requests
+        // to the same site.
+        ignoreBackoff: i === 0 && opts.ignoreBackoff !== false,
+      });
       merge(discovered, d);
       merge(summary, d);
 

@@ -58,6 +58,22 @@ const DEFAULT_LIMIT = 10;
 const TIMEOUT_MS = 10_000;
 
 /**
+ * Bind a fetch implementation so it can be stored and called safely.
+ *
+ * Workers' `fetch` refuses to run with a `this` that is not the global scope,
+ * and storing it on an object is enough to break that: `this.fetchImpl(url)`
+ * calls it with the instance as `this` and throws "Illegal invocation". The
+ * symptom is miserable to read — every search failing with a TypeError that
+ * mentions nothing about search — so the binding happens once, here, at the
+ * only boundary where a fetch becomes a field.
+ *
+ * A test double is bound too. Binding a plain function changes nothing about
+ * it, and an unbound path that only shows up in production is exactly what
+ * went wrong.
+ */
+export const bindFetch = (f: typeof fetch = fetch): typeof fetch => f.bind(globalThis) as typeof fetch;
+
+/**
  * Brave's Web Search API.
  *
  * `fetchImpl` is a constructor argument rather than a bare `fetch` call so the
@@ -66,11 +82,14 @@ const TIMEOUT_MS = 10_000;
  */
 export class BraveSearchProvider implements SearchProvider {
   readonly name = 'brave';
+  private readonly fetchImpl: typeof fetch;
 
   constructor(
     private readonly key: string,
-    private readonly fetchImpl: typeof fetch = fetch
-  ) {}
+    fetchImpl: typeof fetch = fetch
+  ) {
+    this.fetchImpl = bindFetch(fetchImpl);
+  }
 
   async search(query: string, options: { limit?: number } = {}): Promise<SearchResponse> {
     const limit = Math.min(20, Math.max(1, options.limit ?? DEFAULT_LIMIT));
@@ -83,9 +102,13 @@ export class BraveSearchProvider implements SearchProvider {
     url.searchParams.set('country', 'sg');
     url.searchParams.set('freshness', 'pm');
 
+    // Through a local, not `this.fetchImpl(...)`: the property call is what
+    // sets `this` to the instance, and the bind above is the other half of the
+    // same guard.
+    const send = this.fetchImpl;
     let res: Response;
     try {
-      res = await this.fetchImpl(url.toString(), {
+      res = await send(url.toString(), {
         headers: {
           Accept: 'application/json',
           'X-Subscription-Token': this.key,

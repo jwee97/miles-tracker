@@ -36,6 +36,14 @@ export interface SearchScanResult {
   relevant_new: number;
   note: string;
   error_code?: string;
+  /**
+   * Whose failure it was, when there was one.
+   *
+   * A provider that answered with a status refused us; one that threw before
+   * any response did so on our side of the wire, and a client bug must not
+   * back a source off for weeks.
+   */
+  fault?: 'source' | 'client';
 }
 
 /** How many searches a day may cost, before anything is run. */
@@ -203,6 +211,11 @@ export async function scanSearchSource(
   const rateLimited = failure?.code === 'SEARCH_RATE_LIMITED';
   const ok = executed > 0 && !rateLimited;
 
+  // A provider that answered with a status refused us. One that threw with no
+  // status never got that far — a transport problem or, as happened here, our
+  // own client calling fetch wrongly — and that is not the source's fault.
+  const fault: 'source' | 'client' | undefined = failure ? (failure.status ? 'source' : 'client') : undefined;
+
   return {
     ok,
     configured: true,
@@ -213,6 +226,7 @@ export async function scanSearchSource(
     urls_new: urlsNew,
     relevant_new: relevantNew,
     error_code: failure?.code,
+    fault,
     note: rateLimited
       ? `The search provider asked for fewer requests after ${executed} ${executed === 1 ? 'query' : 'queries'}. Not retried.`
       : failure && executed === 0

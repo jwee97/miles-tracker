@@ -15,6 +15,7 @@ import { hostOf, isOfficialUrl, issuerForUrl, sourceNameForUrl, trustTierForUrl 
 import { extractPending } from '../src/promotions/discovery/run';
 import { discover } from '../src/promotions/discovery/run';
 import {
+  bindFetch,
   BraveSearchProvider,
   normaliseDate,
   searchConfigured,
@@ -248,6 +249,68 @@ const claim = one(`SELECT * FROM promotion_claims ORDER BY id LIMIT 1`);
 check('its evidence is attributed to the publication', claim.source_tier === TIER.specialist, String(claim.source_tier));
 check('not to the search engine that surfaced it', claim.source_tier !== TIER.search);
 check('and the URL kept is the article, not the search page', claim.source_url.includes('milelion.com'), claim.source_url);
+
+// ------------------------------------------------- calling fetch correctly
+// The failure this reproduces: Workers' fetch refuses to run with a `this`
+// that is not the global scope, and storing it on an object is enough to break
+// that — `this.fetchImpl(url)` calls it with the instance as `this` and throws
+// "Illegal invocation". Every search failed with a TypeError that mentioned
+// nothing about searching.
+//
+// This double behaves the way the real runtime does, so an unbound call fails
+// here rather than only in production.
+let sawThis: unknown = 'never called';
+const strictFetch = function (this: unknown, _url: any, _init?: any) {
+  sawThis = this;
+  if (this !== undefined && this !== globalThis) {
+    throw new TypeError('Illegal invocation: function called with incorrect `this` reference.');
+  }
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({ web: { results: [{ title: 'A', url: 'https://milelion.com/a', description: 'x' }] } }),
+  } as any);
+} as unknown as typeof fetch;
+
+const strict = new BraveSearchProvider('k', strictFetch);
+let bound: unknown = null;
+try {
+  const r = await strict.search('citi rewards');
+  check('a stored fetch is called with the right this', r.results.length === 1, JSON.stringify(r.results));
+} catch (e) {
+  bound = e;
+  check('a stored fetch is called with the right this', false, (e as Error).message);
+}
+check('and never with the provider as this', !(sawThis instanceof BraveSearchProvider), String(sawThis?.constructor?.name));
+check('so no illegal invocation escapes', bound === null, String(bound));
+
+check('binding a plain function leaves it working', (await bindFetch(strictFetch)('https://x.test')).ok === true);
+
+// The same failure, seen from the runner: a client-side throw must not be
+// mistaken for the provider refusing.
+const throwing: SearchProvider = {
+  name: 'fake',
+  search: async () => {
+    throw new TypeError('Illegal invocation: function called with incorrect `this` reference.');
+  },
+};
+sql(`DELETE FROM discovery_search_runs`);
+scan = await scanSearchSource(withSearch(), searchSource(), { provider: throwing });
+check('a client-side throw is still a failed scan', scan.ok === false, JSON.stringify(scan));
+check('but it is recorded as ours, not the source’s', scan.fault === 'client', String(scan.fault));
+check('and the reason is written down', all(`SELECT * FROM discovery_search_runs WHERE error LIKE '%Illegal invocation%'`).length >= 1);
+
+const provider429: SearchProvider = {
+  name: 'fake',
+  search: async () => {
+    throw new SearchProviderError('SEARCH_RATE_LIMITED', 'the search provider returned 429', 429);
+  },
+};
+// Cleared first: the throwing scan above recorded those queries, and the
+// cooldown would otherwise return early without attempting anything.
+sql(`DELETE FROM discovery_search_runs`);
+scan = await scanSearchSource(withSearch(), searchSource(), { provider: provider429 });
+check('a refusal with a status is the source’s', scan.fault === 'source', JSON.stringify(scan));
 
 // ------------------------------------------------------------ the Brave client
 // Driven through an injected fetch, because a provider that can only be tested

@@ -18,6 +18,7 @@ import {
   FREQUENCY_ORDER,
   MIN_SCANS_FOR_ADAPTATION,
   healthOf,
+  isDue,
   moveOneStep,
   recordScan,
   seedSources,
@@ -168,6 +169,33 @@ check('a failed scan counts as a failure', failing().failure_count === 1);
 check('and the reason is kept verbatim', failing().last_error === 'the feed returned 403', String(failing().last_error));
 await recordScan(env, failing(), { ok: false, note: 'the feed returned 403' });
 await recordScan(env, failing(), { ok: false, note: 'the feed returned 403' });
+
+// A failure that was ours must not back a healthy source off. Discovering that
+// the search client called fetch wrongly should not then hide the fix behind a
+// two-week wait for a source that never did anything wrong.
+sql(`INSERT INTO discovery_sources (source_key, name, source_type, feed_url, trust_tier, scan_frequency, base_scan_frequency)
+     VALUES ('t_ourfault','Ours','rss','https://e.test/feed',2,'daily','daily')`);
+const ours = () => one(`SELECT * FROM discovery_sources WHERE source_key = 't_ourfault'`);
+for (let i = 0; i < 4; i++) {
+  await recordScan(env, ours(), { ok: false, fault: 'client', note: 'Illegal invocation' });
+}
+check('our own bug does not back a source off', ours().failure_count === 0, String(ours().failure_count));
+check('but the reason is still recorded', ours().last_error === 'Illegal invocation', String(ours().last_error));
+check('and the scan still counts as having happened', ours().scans === 4, String(ours().scans));
+
+await recordScan(env, ours(), { ok: false, note: 'the feed returned 403' });
+check('a refusal from the source does back it off', ours().failure_count === 1, String(ours().failure_count));
+
+// And a manual run reaches a source the schedule is currently backing off,
+// which is what makes the fix take effect on the first press.
+const backedOff = {
+  ...failing(),
+  active: 1,
+  last_scanned_at: '2026-09-18',
+  failure_count: 6,
+} as DiscoverySource;
+check('a backed-off source is not due on the schedule', isDue(backedOff, '2026-09-20') === false);
+check('but is reachable when a person asks', isDue({ ...backedOff, failure_count: 0 }, '2026-09-26') === true);
 
 // ---------------------------------------------------------------- the health
 const health = await sourceHealth(env, { searchConfigured: false });

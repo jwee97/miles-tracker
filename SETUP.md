@@ -2544,10 +2544,37 @@ productive feed in the system down to monthly:
 - **Pinning.** `adaptive_frequency = 0` fixes the cadence. The MileLion, Mainly
   Miles and the search source are pinned.
 
+Backoff is separate from cadence and applies after repeated failures. Two rules
+keep it from punishing the wrong party:
+
+- **Only the source's failures count.** A response with an HTTP status is the
+  site refusing us; an exception thrown before any response is ours, and a
+  client bug must not back a healthy source off for weeks. The reason is
+  recorded either way.
+- **A manual run ignores it, once.** Backoff protects a site from a schedule
+  that would hammer it; a person pressing *Run discovery now* is asking for one
+  attempt, and gets it — on the first cycle only, so one press stays one
+  request.
+
 `base_scan_frequency` records what a source *should* run at, separately from
 where adaptation moved it. So **re-running the seed is the repair** for a source
 that was demoted — it restores pinned sources to their configured cadence and
 leaves adapting ones where they are.
+
+### Holding a fetch, in Workers
+
+Workers' `fetch` refuses to run with a `this` that is not the global scope, and
+storing it on an object is enough to break that — `this.fetchImpl(url)` calls
+it with the instance as `this` and throws *Illegal invocation*. The search
+provider takes `fetch` as a constructor argument so tests can drive it, so it
+binds once (`bindFetch`) and calls through a local rather than as a property.
+
+Everywhere else in the pipeline, fetch is a function parameter or a local
+`const`, which is safe. If you add another class that stores one, bind it.
+
+The symptom is unhelpful: every search fails with a TypeError mentioning
+nothing about searching. `discovery_search_runs` is where it shows up, with the
+message against each query.
 
 ### If discovery finds nothing
 
