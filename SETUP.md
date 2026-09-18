@@ -2511,9 +2511,28 @@ them all as "nothing new" cannot be debugged:
 ### Running it by hand
 
 **Run discovery now** loops discover → extract → corroborate until a cycle
-moves nothing, or the cycle limit is reached. It reports a funnel with a line
-for every step above, so a run that produced no offers says which step it
-stopped at.
+moves nothing, or the cycle limit is reached.
+
+It scans **every active source**, whatever the schedule says. Cadence and
+backoff pace the *nightly cron* — they stop it reading a daily feed four times
+and stop it hammering a site that has refused. Neither is a reason to refuse
+someone who explicitly asked, so the button means now. It is still one pass:
+one request per source per press, and no retry loop anywhere. The forcing
+applies to the first cycle only, so one press stays one request.
+
+Every run answers with the step it actually reached, never "nothing new":
+
+```
+No source is due yet — The MileLion is next, in 1 day.
+5 sources checked, but none of them listed anything.
+5 sources checked, 63 entries seen — all already known.
+5 sources checked, 7 new articles, none about an offer.
+5 sources checked, 5 relevant articles read, but no offer could be read out of them.
+5 sources checked · 7 new articles · 12 candidates · 2 published · 3 waiting for you
+```
+
+Each of those points at a different next step, which is why they are different
+sentences.
 
 The three stages remain under **Advanced**. They are for finding out which
 stage is stuck, not for asking whether anything is new.

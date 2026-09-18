@@ -679,6 +679,7 @@ async function stub(page: Page) {
       return send({
         cycles: 2,
         stopped_because: 'no_work_left',
+        outcome: '5 sources checked · 7 new articles · 12 candidates · 2 published · 3 waiting for you',
         discover: {}, extract: {}, corroborate: {},
         summary: {
           stage: 'run-all',
@@ -1258,8 +1259,11 @@ async function main() {
     await page.getByRole('button', { name: 'Run discovery now' }).click();
     await page.locator('.ok-text').first().waitFor();
     const funnel = await page.locator('.card', { hasText: 'Promotion discovery' }).innerText();
-    check('one action runs the whole pipeline', says(funnel, 'Discovery complete'), funnel.slice(0, 600));
-    check('and says it stopped because there was nothing left', says(funnel, 'nothing left to do'), funnel.slice(0, 600));
+    check('one action runs the whole pipeline', says(funnel, '5 sources checked'), funnel.slice(0, 600));
+    // "Nothing left to do" covered a run that read five feeds and found
+    // nothing, one that scanned nothing because no source was due, and one
+    // with no sources at all. The outcome names the step it reached.
+    check('and says what it actually did', says(funnel, '2 published') && says(funnel, '3 waiting for you'), funnel.slice(0, 600));
     check('the funnel shows where it could have stopped', says(funnel, 'sources checked') && says(funnel, 'new urls'), funnel.slice(0, 1200));
     check('search queries run are counted apart from planned', says(funnel, 'of 5 planned'), funnel.slice(0, 1400));
     check('and merges are not counted as new offers', says(funnel, '3 merged into offers already known'), funnel.slice(0, 1600));

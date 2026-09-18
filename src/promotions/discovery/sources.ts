@@ -163,17 +163,42 @@ export function isDue(s: DiscoverySource, now: string): boolean {
   return daysBetween(now, s.last_scanned_at) >= wait;
 }
 
-export async function dueSources(env: Env, limit = 10, opts: { ignoreBackoff?: boolean } = {}): Promise<DiscoverySource[]> {
+/**
+ * The sources to scan now.
+ *
+ * `force` is what a person pressing "Run discovery now" means, and it ignores
+ * both the cadence and the failure backoff. Those two exist to pace the
+ * *automatic* schedule — to keep the nightly cron from reading a daily feed
+ * four times and from hammering a site that has said no. Neither is a reason to
+ * refuse someone who has explicitly asked, and refusing them silently, with
+ * "nothing left to do", is worse than either.
+ *
+ * It stays one pass: one request per source per press, and no retry loop
+ * anywhere.
+ */
+export async function dueSources(
+  env: Env,
+  limit = 10,
+  opts: { force?: boolean } = {}
+): Promise<DiscoverySource[]> {
   const now = today(env);
   const all = await listSources(env);
-  // Backoff governs the automated schedule; a person pressing the button is
-  // asking for one attempt now, and is entitled to it. It stays one attempt —
-  // there is still no retry loop anywhere — but it means a source that was
-  // backed off for a reason since fixed does not stay unreachable for weeks.
-  const due = opts.ignoreBackoff
-    ? all.filter((s) => s.active && (!s.last_scanned_at || isDue({ ...s, failure_count: 0 }, now)))
-    : all.filter((s) => isDue(s, now));
+  const due = opts.force ? all.filter((s) => s.active) : all.filter((s) => isDue(s, now));
   return due.slice(0, limit);
+}
+
+/** When the next source comes due, for saying why a scheduled run did nothing. */
+export function nextDue(sources: DiscoverySource[], now: string): { source: DiscoverySource; days: number } | null {
+  let best: { source: DiscoverySource; days: number } | null = null;
+  for (const s of sources) {
+    if (!s.active) continue;
+    if (!s.last_scanned_at) return { source: s, days: 0 };
+    let wait = CADENCE[s.scan_frequency] ?? 7;
+    if (s.failure_count >= 3) wait = Math.min(30, wait * Math.min(8, s.failure_count));
+    const days = Math.max(0, wait - daysBetween(now, s.last_scanned_at));
+    if (!best || days < best.days) best = { source: s, days };
+  }
+  return best;
 }
 
 export interface ScanOutcome {

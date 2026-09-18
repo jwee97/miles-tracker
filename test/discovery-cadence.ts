@@ -319,6 +319,42 @@ check('stopping when there is nothing left rather than at a timer', ['no_work_le
 check('the summary carries the whole funnel', typeof pipeline.summary.articles_fetched === 'number');
 check('each stage is also reported separately', pipeline.discover.stage === 'discover' && pipeline.extract.stage === 'extract');
 
+// The button says "now". Cadence and backoff pace the automatic schedule; a
+// person asking explicitly is a different thing, and answering them with
+// "nothing left to do" while silently scanning nothing is the worst of both.
+sql(`UPDATE discovery_sources SET last_scanned_at = '2026-09-18', failure_count = 0 WHERE source_key = 't_feed'`);
+const scheduled = await discover(env, { fetchImpl: fakeFetch });
+check('a daily source scanned today is not due again', scheduled.sources_scanned === 0, String(scheduled.sources_scanned));
+check('and the run says why rather than going quiet', scheduled.notes.some((n) => n.includes('No source is due yet')), JSON.stringify(scheduled.notes));
+check('naming what to press instead', scheduled.notes.some((n) => n.includes('Run discovery now')), JSON.stringify(scheduled.notes));
+
+const forced = await discover(env, { fetchImpl: fakeFetch, force: true });
+check('but asking explicitly scans it anyway', forced.sources_scanned >= 1, String(forced.sources_scanned));
+check('and reads the feed', forced.feed_items_seen > 0, String(forced.feed_items_seen));
+
+// A backed-off source is reachable the same way.
+sql(`UPDATE discovery_sources SET failure_count = 6, last_scanned_at = '2026-09-18' WHERE source_key = 't_feed'`);
+check('a backed-off source is not due on the schedule', (await discover(env, { fetchImpl: fakeFetch })).sources_scanned === 0);
+check('but a person can still ask', (await discover(env, { fetchImpl: fakeFetch, force: true })).sources_scanned >= 1);
+sql(`UPDATE discovery_sources SET failure_count = 0 WHERE source_key = 't_feed'`);
+
+// And the run says which step it got to, rather than "nothing new".
+sql(`UPDATE discovery_sources SET last_scanned_at = '2026-09-18' WHERE source_key = 't_feed'`);
+const again = await runDiscoveryPipeline(env, { max_cycles: 1, fetchImpl: fakeFetch });
+check('a forced run scans even when nothing is due', again.summary.sources_scanned >= 1, JSON.stringify(again.summary.sources_scanned));
+check(
+  'and says everything was already known rather than "nothing left to do"',
+  again.outcome.includes('already known') || again.outcome.includes('candidates') || again.outcome.includes('none of which'),
+  again.outcome
+);
+check('never the bare phrase that explains nothing', again.outcome !== 'nothing left to do');
+
+sql(`UPDATE discovery_sources SET active = 0`);
+const idle = await runDiscoveryPipeline(env, { max_cycles: 1, fetchImpl: fakeFetch });
+check('with no source switched on, it says so', idle.stopped_because === 'nothing_to_scan', idle.stopped_because);
+check('in words', idle.outcome.includes('switched off'), idle.outcome);
+sql(`UPDATE discovery_sources SET active = 1 WHERE source_key = 't_feed'`);
+
 const runs = all(`SELECT * FROM discovery_runs ORDER BY id DESC`);
 check('the run is recorded in history', runs.length >= 1);
 check('with when it started and finished', !!runs[0].started_at && !!runs[0].finished_at);

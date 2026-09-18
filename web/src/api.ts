@@ -1014,7 +1014,8 @@ export interface DiscoveryPipelineReport {
   corroborate: DiscoveryReport;
   summary: DiscoveryReport;
   cycles: number;
-  stopped_because: 'no_work_left' | 'cycle_limit';
+  stopped_because: 'no_work_left' | 'cycle_limit' | 'nothing_to_scan';
+  outcome: string;
 }
 
 export const runDiscoveryAll = () => post<DiscoveryPipelineReport>('/api/admin/discovery/run-all', {});

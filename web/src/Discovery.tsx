@@ -543,9 +543,16 @@ export default function Discovery() {
 
         {pipeline && (
           <div className="addrule">
-            <p className="ok-text">
-              Discovery complete — {pipeline.cycles} cycle{pipeline.cycles === 1 ? '' : 's'},{' '}
-              {pipeline.stopped_because === 'no_work_left' ? 'nothing left to do' : 'stopped at the cycle limit'}.
+            {/* The outcome names the step the run actually reached. "Nothing
+                left to do" was true and useless: it covered a run that read
+                five feeds and found nothing new, one that scanned nothing
+                because no source was due, and one with no sources at all. */}
+            <p className={pipeline.stopped_because === 'nothing_to_scan' ? 'warn-num' : 'ok-text'}>
+              {pipeline.outcome}
+            </p>
+            <p className="sub">
+              {pipeline.cycles} cycle{pipeline.cycles === 1 ? '' : 's'}
+              {pipeline.stopped_because === 'cycle_limit' && ' · stopped at the cycle limit, so there may be more'}
             </p>
             <ul className="rules">
               <Funnel r={pipeline.summary} />

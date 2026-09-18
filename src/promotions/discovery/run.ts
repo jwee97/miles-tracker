@@ -11,7 +11,7 @@ import { trustTierForUrl } from './domains';
 import { publishCandidate } from './publish';
 import { resolveBest } from './resolve';
 import { scanSearchSource } from './search-runner';
-import { dueSources, recordScan, sourceHealth, sourcesConfigured, type DiscoverySource, type SourceHealth } from './sources';
+import { dueSources, listSources, nextDue, recordScan, sourceHealth, sourcesConfigured, type DiscoverySource, type SourceHealth } from './sources';
 import { searchConfigured } from './search-provider';
 import { dailyBudget } from './search-runner';
 import type { DiscoveryHealth } from '../../../shared/discovery';
@@ -98,12 +98,36 @@ const blank = blankReport;
  */
 export async function discover(
   env: Env,
-  opts: { limit?: number; fetchImpl?: typeof fetch; ignoreBackoff?: boolean } = {}
+  opts: { limit?: number; fetchImpl?: typeof fetch; force?: boolean } = {}
 ): Promise<DiscoveryReport> {
   const report = blank(env, 'discover');
   const f = opts.fetchImpl ?? fetch;
 
-  for (const source of await dueSources(env, opts.limit ?? 5, { ignoreBackoff: opts.ignoreBackoff })) {
+  const sources = await dueSources(env, opts.limit ?? 5, { force: opts.force });
+
+  // Saying nothing was scanned, and why, is the whole point. A run that
+  // scanned no sources because none was due is a different answer from one
+  // that scanned five and found nothing, and both used to print as "nothing
+  // new".
+  if (!sources.length) {
+    const all = await listSources(env, false);
+    const active = all.filter((s) => s.active);
+    if (!all.length) {
+      report.notes.push('No discovery sources are configured at all. Run the seed.');
+    } else if (!active.length) {
+      report.notes.push('Every discovery source is switched off.');
+    } else {
+      const next = nextDue(active, today(env));
+      report.notes.push(
+        next && next.days > 0
+          ? `No source is due yet — ${next.source.name} is next, in ${next.days} day${next.days === 1 ? '' : 's'}. Use "Run discovery now" to scan anyway.`
+          : 'No source is due yet.'
+      );
+    }
+    return report;
+  }
+
+  for (const source of sources) {
     report.sources_scanned++;
     if (source.source_type === 'search') {
       const searched = await scanSearchSource(env, source, { fetchImpl: opts.fetchImpl });
@@ -533,15 +557,14 @@ export interface PipelineOptions {
   corroborate_limit?: number;
   fetchImpl?: typeof fetch;
   /**
-   * Try sources that the schedule is currently backing off.
+   * Scan every active source, whatever the schedule says.
    *
-   * Default true, because this is the human-initiated path. Backoff protects
-   * a site from a schedule that would otherwise hammer it; a person asking
-   * once is a different thing, and without this a source backed off for a
-   * reason since fixed stays unreachable for weeks with no way to say
-   * "try again now".
+   * Default true, because this is the human-initiated path and the button says
+   * "now". Cadence and backoff pace the *automatic* schedule; neither is a
+   * reason to refuse someone who has explicitly asked, and refusing them
+   * silently with "nothing left to do" is the worst of both.
    */
-  ignoreBackoff?: boolean;
+  force?: boolean;
 }
 
 export interface DiscoveryPipelineReport {
@@ -550,7 +573,16 @@ export interface DiscoveryPipelineReport {
   corroborate: DiscoveryReport;
   summary: DiscoveryReport;
   cycles: number;
-  stopped_because: 'no_work_left' | 'cycle_limit';
+  stopped_because: 'no_work_left' | 'cycle_limit' | 'nothing_to_scan';
+  /**
+   * What the run amounted to, in one sentence.
+   *
+   * "Nothing left to do" is true and useless — it covers a run that read five
+   * feeds and found nothing new, one that scanned nothing because the sources
+   * were not due, and one with no sources at all. Those need different
+   * sentences because they need different actions.
+   */
+  outcome: string;
 }
 
 /** Fold one stage's numbers into a running total. Notes accumulate; the stage name does not. */
@@ -584,10 +616,10 @@ export async function runDiscoveryPipeline(env: Env, opts: PipelineOptions = {})
       const d = await discover(env, {
         limit: opts.discover_limit ?? 8,
         fetchImpl: opts.fetchImpl,
-        // Only on the first cycle: after that everything due has been scanned,
-        // and repeating it would turn one button press into several requests
-        // to the same site.
-        ignoreBackoff: i === 0 && opts.ignoreBackoff !== false,
+        // First cycle only. After that the sources have just been read, and
+        // forcing again would turn one button press into several requests to
+        // the same site.
+        force: i === 0 && opts.force !== false,
       });
       merge(discovered, d);
       merge(summary, d);
@@ -610,7 +642,7 @@ export async function runDiscoveryPipeline(env: Env, opts: PipelineOptions = {})
         c.held_for_review > 0 ||
         c.candidates_merged > 0;
       if (!moved) {
-        stopped = 'no_work_left';
+        stopped = summary.sources_scanned === 0 ? 'nothing_to_scan' : 'no_work_left';
         break;
       }
     }
@@ -620,7 +652,48 @@ export async function runDiscoveryPipeline(env: Env, opts: PipelineOptions = {})
   }
 
   await finishRun(env, run, summary, error);
-  return { discover: discovered, extract: extracted, corroborate: corroborated, summary, cycles, stopped_because: stopped };
+  return {
+    discover: discovered,
+    extract: extracted,
+    corroborate: corroborated,
+    summary,
+    cycles,
+    stopped_because: stopped,
+    outcome: describeRun(summary, stopped, error),
+  };
+}
+
+/** The run in one sentence, naming the step it actually got to. */
+export function describeRun(
+  r: DiscoveryReport,
+  stopped: DiscoveryPipelineReport['stopped_because'],
+  error: string | null
+): string {
+  if (error) return `The run stopped early: ${error}`;
+
+  if (stopped === 'nothing_to_scan' || r.sources_scanned === 0) {
+    return r.notes[0] ?? 'No source was scanned.';
+  }
+
+  const scanned = `${r.sources_scanned} source${r.sources_scanned === 1 ? '' : 's'} checked`;
+  const looked = r.feed_items_seen + r.search_results_seen;
+
+  if (looked === 0) {
+    return `${scanned}, but none of them listed anything. Test the sources to see what they returned.`;
+  }
+  if (r.items_found === 0) {
+    return `${scanned}, ${looked} entries seen — all of them already known. Nothing new has been published since the last run.`;
+  }
+  if (r.relevant_items_found === 0) {
+    return `${scanned}, ${r.items_found} new articles, none of which look like they are about an offer.`;
+  }
+  if (r.candidates_created === 0) {
+    return `${scanned}, ${r.relevant_items_found} relevant articles read, but no offer could be read out of them. See the ones that named no offer.`;
+  }
+  return (
+    `${scanned} · ${r.items_found} new articles · ${r.candidates_created} candidates · ` +
+    `${r.published} published · ${r.held_for_review} waiting for you`
+  );
 }
 
 /**
