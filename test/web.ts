@@ -11,6 +11,7 @@
  */
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
 
@@ -968,11 +969,24 @@ async function stub(page: Page) {
   });
 }
 
+/** An explicitly provided Chromium, or none — in which case Playwright picks. */
+function browserPath(): string | null {
+  const named = process.env.CHROMIUM_PATH;
+  if (named) return named;
+  const sandbox = '/opt/pw-browsers/chromium';
+  return existsSync(sandbox) ? sandbox : null;
+}
+
 async function main() {
   const server = await serve();
   let browser: Browser | null = null;
   try {
-    browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium' });
+    // Prefer a browser the environment already has — the dev sandbox ships one
+    // at a known path — and otherwise let Playwright resolve the one it
+    // installed. Hard-coding the sandbox path meant this could only ever run
+    // in the sandbox, which is how CI stayed red without anyone noticing the
+    // browser was the reason.
+    browser = await chromium.launch(browserPath() ? { executablePath: browserPath()! } : {});
     const page = await browser.newPage();
     await stub(page);
 

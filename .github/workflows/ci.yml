@@ -9,17 +9,28 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
 
       - run: npm ci
+
+      # Before the tests, not after. `npm test` ends with the browser suite,
+      # which builds the PWA and drives it — so the dashboard's dependency tree
+      # has to exist by then. Installing it afterwards meant the browser tests
+      # could never have passed here.
+      - run: npm --prefix web ci
+
+      # The browser the dashboard tests drive. The dev sandbox ships one at a
+      # known path; a runner does not, so Playwright installs its own.
+      - run: npx playwright install --with-deps chromium
+
       - run: npm run typecheck
       - run: npm test
 
-      # The dashboard has its own dependency tree; build it so a broken PWA
-      # fails here rather than in a Cloudflare build.
-      - run: npm --prefix web ci
+      # Build the dashboard last as a deployment check: a PWA that compiles
+      # under test but not for production should fail here rather than in a
+      # Cloudflare build.
       - run: npm --prefix web run build
