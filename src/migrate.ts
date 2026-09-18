@@ -6,6 +6,7 @@ import { seedCardProducts, type SeedReport } from './catalog/seed-products';
 import { seedAliases } from './onboarding/search';
 import { seedOnboardingFields } from './onboarding/questions';
 import { migrateLegacyBonuses } from './transfers/routes';
+import { seedSources } from './promotions/discovery/sources';
 import { today } from './spend';
 import type { Env } from './types';
 
@@ -92,6 +93,21 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   // The older offers table keeps its eligibility engine; this links a row to
   // the structured promotion rather than duplicating one into the other.
   { table: 'offers', column: 'promotion_id', ddl: 'ALTER TABLE offers ADD COLUMN promotion_id INTEGER' },
+  // --- promotion discovery ---
+  // How a promotion came to be believed, and how strongly. A boolean "verified"
+  // cannot distinguish "the bank says so" from "two publications agree", and
+  // those deserve different words in front of a person.
+  {
+    table: 'promotions',
+    column: 'verification_state',
+    ddl: "ALTER TABLE promotions ADD COLUMN verification_state TEXT NOT NULL DEFAULT 'single_source'",
+  },
+  { table: 'promotions', column: 'application_channel', ddl: "ALTER TABLE promotions ADD COLUMN application_channel TEXT NOT NULL DEFAULT 'unknown'" },
+  { table: 'promotions', column: 'fingerprint', ddl: 'ALTER TABLE promotions ADD COLUMN fingerprint TEXT' },
+  { table: 'promotions', column: 'audience', ddl: "ALTER TABLE promotions ADD COLUMN audience TEXT NOT NULL DEFAULT 'everyone'" },
+  { table: 'promotions', column: 'extended_from_promotion_id', ddl: 'ALTER TABLE promotions ADD COLUMN extended_from_promotion_id INTEGER' },
+  { table: 'promotions', column: 'last_verified_at', ddl: 'ALTER TABLE promotions ADD COLUMN last_verified_at TEXT' },
+  { table: 'promotions', column: 'independent_sources', ddl: 'ALTER TABLE promotions ADD COLUMN independent_sources INTEGER NOT NULL DEFAULT 0' },
   { table: 'conversions', column: 'verified_at', ddl: 'ALTER TABLE conversions ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
   { table: 'conversions', column: 'note', ddl: 'ALTER TABLE conversions ADD COLUMN note TEXT' },
@@ -299,6 +315,7 @@ export async function runSeed(env: Env): Promise<{
   aliases?: { added: number };
   onboarding?: { declared: number };
   bonuses?: { moved: number };
+  discovery?: { added: number };
 }> {
   const errors: string[] = [];
   let applied = 0;
@@ -340,5 +357,14 @@ export async function runSeed(env: Env): Promise<{
     errors.push(`moving transfer bonuses off their routes — ${(e as Error).message}`);
   }
 
-  return { applied, errors, catalog, aliases, onboarding, bonuses };
+  // The discovery sources: a handful of publications and the search layer,
+  // not a crawler over every bank.
+  let discovery: { added: number } | undefined;
+  try {
+    discovery = await seedSources(env);
+  } catch (e) {
+    errors.push(`seeding discovery sources — ${(e as Error).message}`);
+  }
+
+  return { applied, errors, catalog, aliases, onboarding, bonuses, discovery };
 }

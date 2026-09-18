@@ -759,6 +759,54 @@ export interface RelevantPromotion {
   reachable: boolean | null;
   monthly_spend_cents: number | null;
   tracked: boolean;
+  variants: VariantView[];
+  pays: string | null;
+  pays_varies: boolean;
+  currency: PromotionCurrency;
+}
+
+export interface PromotionCurrency {
+  state: string;
+  text: string;
+  independent_sources: number;
+  last_verified_at: string | null;
+  days_since_verified: number | null;
+  stale: boolean;
+}
+
+export interface PromotionVariant {
+  id: number;
+  promotion_id: number;
+  variant_key: string;
+  audience: string;
+  minimum_spend_cents: number | null;
+  reward_json: string | null;
+  annual_fee_required: number | null;
+  application_channel: string;
+  terms_json: string | null;
+}
+
+export interface VariantView {
+  variant: PromotionVariant;
+  reward: Record<string, number | string | undefined>;
+  reward_text: string | null;
+  audience_label: string;
+  channel_label: string;
+  available: boolean;
+  blocker: string | null;
+}
+
+export interface PromotionEvidence {
+  promotion: Promotion;
+  terms: Record<string, unknown>;
+  currency: PromotionCurrency;
+  headline: string;
+  sources: { url: string; host: string; tier: number; type: string; excerpt: string | null; seen_at: string | null; fields: string[] }[];
+  fields: { field: string; label: string; value: unknown; claims: { value: unknown; hosts: string[]; tier: number }[]; agreed: boolean }[];
+  timeline: { at: string; change_type: string; detail: string; source_url: string | null }[];
+  variants: { variant: PromotionVariant; reward_text: string | null }[];
+  unsourced: boolean;
+  as_of: string;
 }
 
 export interface OfferInbox {
@@ -791,6 +839,99 @@ export const dismissOffer = (id: number) => post<{ ok: boolean }>(`/api/promotio
 // two different sweeps, and one name for both would be a silent mix-up.
 export const sweepPromotions = () =>
   post<{ completed: { title: string; expected: string }[] }>('/api/promotions/sweep', {});
+
+export const fetchPromotionEvidence = (id: number) => get<PromotionEvidence>(`/api/promotions/${id}/evidence`);
+
+export const contributeTargetedOffer = (
+  id: number,
+  body: { reward: Record<string, number | string>; minimum_spend_cents?: number | null; note?: string | null; application_channel?: string | null }
+) => post<{ ok: boolean; error?: string }>(`/api/promotions/${id}/variants`, body);
+
+export const removeTargetedOffer = (id: number, key: string) =>
+  del<{ ok: boolean }>(`/api/promotions/${id}/variants/${encodeURIComponent(key)}`);
+
+/* --- discovery: what the app read, and what is left for a person ---------- */
+
+export interface DiscoverySource {
+  id: number;
+  source_key: string;
+  name: string;
+  source_type: string;
+  base_url: string | null;
+  feed_url: string | null;
+  trust_tier: number;
+  scan_frequency: string;
+  last_scanned_at: string | null;
+  last_success_at: string | null;
+  failure_count: number;
+  last_error: string | null;
+  active: number;
+  scans: number;
+  successes: number;
+  promotions_found: number;
+  issuer: string | null;
+}
+
+export interface DiscoverySourceHealth {
+  source: DiscoverySource;
+  success_rate: number;
+  days_since_success: number | null;
+  ailing: boolean;
+  note: string;
+}
+
+export interface DiscoveryStatus {
+  as_of: string;
+  /** Keyed by discovery_items.status — pending, processed, failed, irrelevant. */
+  items: Record<string, number>;
+  /** Keyed by promotion_candidates.status — extracted, review, published, rejected. */
+  candidates: Record<string, number>;
+  today: { new: number; changed: number; auto_published: number; awaiting_review: number };
+  sources: DiscoverySourceHealth[];
+}
+
+export interface PromotionReviewItem {
+  candidate_id: number;
+  status: string;
+  review_reason: string | null;
+  issuer: string | null;
+  product: string | null;
+  resolved_product_id: number | null;
+  promotion_type: string | null;
+  application_channel: string;
+  terms: Record<string, unknown>;
+  evidence: {
+    field: string;
+    value: unknown;
+    sources: number;
+    highest_trust_tier: number;
+    official_confirmation: boolean;
+    conflicting_values: unknown[];
+    confidence: string;
+    excerpt: string | null;
+    note: string;
+  }[];
+  verification_state: string;
+  confidence: string;
+  conflicts: string[];
+  sources: { url: string; tier: number; type: string }[];
+  existing: { id: number; title: string; terms: Record<string, unknown>; end_at: string | null } | null;
+  diff: { field: string; before: unknown; after: unknown }[];
+  article: { url: string | null; title: string | null } | null;
+}
+
+export const fetchDiscoveryStatus = () => get<DiscoveryStatus>('/api/admin/discovery/status');
+
+export const runDiscovery = (stage: 'discover' | 'extract' | 'corroborate') =>
+  post<Record<string, unknown>>('/api/admin/discovery/run', { stage });
+
+export const fetchPromotionReview = () => get<{ items: PromotionReviewItem[]; as_of: string }>('/api/admin/promotions/review');
+
+export const publishCandidateEdit = (id: number, terms?: Record<string, unknown>) =>
+  post<{ ok: boolean; error?: string; change?: string | null }>(`/api/admin/promotions/review/${id}/publish`, { terms });
+
+export const rejectCandidate = (id: number, reason?: string) =>
+  post<{ ok: boolean; error?: string }>(`/api/admin/promotions/review/${id}/reject`, { reason });
 
 /* --- is a card missing from my setup? ------------------------------------- */
 

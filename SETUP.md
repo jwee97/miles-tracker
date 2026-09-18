@@ -2330,6 +2330,147 @@ POST /api/admin/promotions/:id/publish
 POST /api/admin/promotions/duplicates   { keep, drop }
 ```
 
+## Finding offers without being asked
+
+**More → Offer discovery.** Everything above still works by hand; this is the
+half that runs on its own. It reads the sites that cover Singapore card
+promotions, turns what they say into claims, weighs the claims, and publishes
+only what the evidence carries.
+
+Three rules govern it, and each says what the system must *not* do.
+
+**Never read a site that has said no.** `src/promotions/discovery/fetch.ts` is
+the only place an outbound request is made, and it refuses on the app's behalf:
+
+- `robots.txt` is fetched first and cached per origin for an hour. An
+  unreadable one permits; only the `User-agent: *` group is read; an empty
+  `Disallow:` is not a ban.
+- A 401, 403 or 429 returns `fetch_blocked` with the note *Not retried*. There
+  is no backoff loop and no second attempt with different headers.
+- A 200 that is really a bot check — a "Just a moment…" or "Access Denied"
+  page — is treated as a refusal, not as content.
+- Responses are capped at 600 KB and 10 seconds, and non-HTML is dropped.
+- The user agent identifies the app honestly.
+
+There is no CAPTCHA handling, no authentication and no WAF evasion anywhere in
+the code, and none should be added. A source that keeps refusing is scanned
+less often and its absence lowers confidence; discovery carries on without it.
+
+Nothing is archived, either. A claim keeps the URL, the title, the date, an
+excerpt of at most 240 characters and a content hash. Never the article.
+
+**Never turn an article into a fact.** Every number an extractor produces goes
+into `promotion_claims` with the URL, the source's trust tier and the sentence
+it came from. Corroboration then counts **independent hosts, not articles**, so
+one blog quoted in three places is one source:
+
+```
+tier 1  the issuer's own page          weight 100
+tier 2  a specialist publication              80
+tier 3  a comparison site                     75
+tier 4  a search result                       30
+tier 5  unclassified                          20
+
+        + 15 per additional independent host
+```
+
+A rival value scoring 60% or more of the winner's weight is a material
+conflict: the promotion becomes `conflicting` and a person is asked. The app
+never picks between two numbers silently.
+
+**Never publish money terms nobody checked.** Exactly two paths publish
+unattended:
+
+1. the issuer's own page confirms it, and every material field is
+   high-confidence; or
+2. the offer is already published, the *only* change is a later end date, and
+   at least two independent sources agree.
+
+Everything else waits for review. Separately, `savePromotion` refuses outright
+while a term that decides money is unknown — an offer with a wrong threshold is
+worse than none, because somebody spends against it.
+
+### The nightly run
+
+Three bounded stages, each in its own try/catch so one failing does not stop
+the others:
+
+```
+discover      read the feeds that are due, record what is new
+extract       read the articles worth reading, produce candidates
+corroborate   weigh the claims; publish, or ask
+```
+
+Cadence adapts. A source's yield feeds a rolling score
+(`old × 0.7 + yield × 0.3`) which sets daily / every-3-days / weekly / monthly,
+and three consecutive failures back it off further. The same three stages have
+buttons on the discovery screen if you want to run one now.
+
+### Variants: one campaign, several offers
+
+The same campaign usually is not one offer — a welcome bonus pays one number
+through the bank and another through a comparison site, and pays new customers
+something it does not pay you. `promotion_variants` keeps those apart:
+
+```
+16,000 miles on $800.00 · anyone · applying through the bank
+28,000 miles on $800.00 · new customers only · applying through SingSaver
+        New customers only, and you already hold this card.
+```
+
+What an offer pays is a **range** when variants disagree, never the largest one
+on its own, and a variant you cannot take is shown with the reason rather than
+hidden. Hiding it is how an app quietly recommends something that turns out to
+be for new customers only.
+
+Targeted offers are the one thing the app cannot read anywhere. **I was sent a
+different offer** records yours; it is trusted, because you are holding the
+email, and it is stored as your own variant so it never changes what the app
+believes the public offer to be.
+
+### Why we think this is current
+
+Every offer carries a sentence about how sure the app is, and the panel behind
+it shows the provenance: which sites, when each was read, the sentence each
+said it in, every value anyone claimed per field, and the change history. An
+offer nobody has checked in 30 days says so instead of presenting a stale
+number confidently.
+
+### The review queue
+
+The aim is that this list is short and each item takes seconds. Everything is
+already on the item — the terms, the independent-source count per field, the
+excerpts, any conflicting value, and the diff against what is published. Nobody
+should have to open the articles.
+
+Anything you type there is recorded as a claim sourced to you at tier 1. A
+correction made during review is the strongest evidence the system ever gets.
+
+```
+GET    /api/promotions/:id/evidence            provenance for one offer
+GET    /api/promotions/:id/variants
+POST   /api/promotions/:id/variants            a targeted offer you were sent
+DELETE /api/promotions/:id/variants/:key
+
+GET    /api/admin/discovery/status             stages, counts, source health
+POST   /api/admin/discovery/run                { stage } one bounded stage
+GET    /api/admin/discovery/candidates
+GET    /api/admin/discovery/sources
+GET    /api/admin/promotions/review            the queue
+POST   /api/admin/promotions/review/:id/publish  { terms } your corrections
+POST   /api/admin/promotions/review/:id/reject
+POST   /api/admin/promotions/review/:id/merge    { into }
+```
+
+### If discovery finds nothing
+
+Check the **Where the app reads** panel. A source that has never succeeded, or
+is ailing after repeated failures, says so with the reason — usually a 403 or a
+robots rule. That is the expected outcome for some sites and not something to
+route around. Add a different source instead, or leave the offer to be entered
+by hand; the rest of the app does not know or care that an article was
+involved.
+
 ## Is a card missing from my setup?
 
 **More → Improve my setup.** Gaps first, cards second — and that order is the

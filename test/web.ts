@@ -332,6 +332,7 @@ let onboardingStatus = 'completed';
 let appliedMcc: any = null;
 let optimised: any = null;
 let trackedOffer: number | null = null;
+let reviewAction: string | null = null;
 let simulated: any = null;
 let added: any[] = [];
 
@@ -497,6 +498,36 @@ async function stub(page: Page) {
         reachable: true,
         monthly_spend_cents: 43000,
         tracked: false,
+        pays: '2,000 points to 5,000 points',
+        pays_varies: true,
+        variants: [
+          {
+            variant: { id: 1, promotion_id: 7, variant_key: 'everyone@issuer_direct', audience: 'everyone', minimum_spend_cents: 30000, reward_json: '{"points":2000}', annual_fee_required: null, application_channel: 'issuer_direct', terms_json: null },
+            reward: { points: 2000 },
+            reward_text: '2,000 points',
+            audience_label: 'anyone',
+            channel_label: 'applying through the bank',
+            available: true,
+            blocker: null,
+          },
+          {
+            variant: { id: 2, promotion_id: 7, variant_key: 'new_customer@singsaver', audience: 'new_customer', minimum_spend_cents: 30000, reward_json: '{"points":5000}', annual_fee_required: null, application_channel: 'singsaver', terms_json: null },
+            reward: { points: 5000 },
+            reward_text: '5,000 points',
+            audience_label: 'new customers only',
+            channel_label: 'applying through SingSaver',
+            available: false,
+            blocker: 'New customers only, and you already hold this card.',
+          },
+        ],
+        currency: {
+          state: 'secondary_verified',
+          text: '2 independent sites agree on this — checked 3 days ago. Nobody has read it off the bank’s page.',
+          independent_sources: 2,
+          last_verified_at: '2026-09-15',
+          days_since_verified: 3,
+          stale: false,
+        },
       };
       const irrelevant = {
         ...offer,
@@ -532,7 +563,99 @@ async function stub(page: Page) {
       trackedOffer = Number(u.pathname.split('/')[3]);
       return send({ ok: true, summary: '$300.00 on wwmc by 2026-09-30 — 12 days left.' });
     }
+    if (u.pathname.match(/^\/api\/promotions\/\d+\/evidence$/))
+      return send({
+        promotion: { id: 7, title: 'Spend $300 on eligible online purchases', promotion_type: 'spend_bonus', issuer: 'DBS', description: null, start_at: null, end_at: '2026-09-30', registration_required: 1, source_url: null, source_quote: null, confidence: 'high', status: 'published' },
+        terms: { minimum_spend_cents: 30000, reward_points: 2000 },
+        currency: { state: 'secondary_verified', text: 'two sites agree', independent_sources: 2, last_verified_at: '2026-09-15', days_since_verified: 3, stale: false },
+        headline: '2 independent sites say this. The bank’s own page has not been read.',
+        sources: [
+          { url: 'https://milelion.test/a', host: 'milelion.test', tier: 2, type: 'article', excerpt: 'Spend $300 to earn 2,000 bonus points', seen_at: '2026-09-15', fields: ['reward_points'] },
+          { url: 'https://mainlymiles.test/b', host: 'mainlymiles.test', tier: 2, type: 'article', excerpt: 'the same campaign, 2,500 points', seen_at: '2026-09-16', fields: ['reward_points'] },
+        ],
+        fields: [
+          {
+            field: 'reward_points',
+            label: 'Points paid',
+            value: 2000,
+            claims: [
+              { value: 2000, hosts: ['milelion.test'], tier: 2 },
+              { value: 2500, hosts: ['mainlymiles.test'], tier: 2 },
+            ],
+            agreed: false,
+          },
+        ],
+        timeline: [{ at: '2026-09-15', change_type: 'created', detail: 'First recorded.', source_url: null }],
+        variants: [],
+        unsourced: false,
+        as_of: '2026-09-18',
+      });
     if (u.pathname.startsWith('/api/promotions/')) return send({ ok: true, completed: [] });
+    if (u.pathname === '/api/admin/discovery/status')
+      return send({
+        as_of: '2026-09-18',
+        items: { pending: 2, processed: 9, irrelevant: 4, failed: 1 },
+        candidates: { extracted: 1, review: 1, published: 6 },
+        today: { new: 1, changed: 2, auto_published: 1, awaiting_review: 1 },
+        sources: [
+          {
+            source: { id: 1, source_key: 'milelion', name: 'The MileLion', source_type: 'rss', base_url: 'https://milelion.test', feed_url: 'https://milelion.test/feed/', trust_tier: 2, scan_frequency: 'daily', last_scanned_at: '2026-09-18', last_success_at: '2026-09-18', failure_count: 0, last_error: null, active: 1, scans: 10, successes: 10, promotions_found: 6, issuer: null },
+            success_rate: 1,
+            days_since_success: 0,
+            ailing: false,
+            note: '6 promotions found so far.',
+          },
+          {
+            source: { id: 2, source_key: 'blocked', name: 'A Blocked Site', source_type: 'rss', base_url: 'https://blocked.test', feed_url: null, trust_tier: 3, scan_frequency: 'monthly', last_scanned_at: '2026-09-17', last_success_at: null, failure_count: 4, last_error: '403 from the site. Not retried.', active: 1, scans: 4, successes: 0, promotions_found: 0, issuer: null },
+            success_rate: 0,
+            days_since_success: null,
+            ailing: true,
+            note: '4 failures in a row; scanned less often until it recovers.',
+          },
+        ],
+      });
+    if (u.pathname === '/api/admin/discovery/run') return send({ as_of: '2026-09-18', items_found: 3, candidates_created: 1 });
+    if (u.pathname === '/api/admin/promotions/review' && route.request().method() === 'GET')
+      return send({
+        as_of: '2026-09-18',
+        items: [
+          {
+            candidate_id: 11,
+            status: 'review',
+            review_reason: 'two sources disagree about the reward',
+            issuer: 'Citi',
+            product: 'Rewards Card',
+            resolved_product_id: 9,
+            promotion_type: 'welcome_offer',
+            application_channel: 'issuer_direct',
+            terms: { reward_miles: 16000, minimum_spend_cents: 80000 },
+            evidence: [
+              {
+                field: 'reward_miles',
+                value: 16000,
+                sources: 1,
+                highest_trust_tier: 2,
+                official_confirmation: false,
+                conflicting_values: [20000],
+                confidence: 'low',
+                excerpt: 'get 16,000 bonus miles when you spend $800',
+                note: 'One publication says 16,000; another says 20,000.',
+              },
+            ],
+            verification_state: 'conflicting',
+            confidence: 'low',
+            conflicts: ['reward_miles: 16000 against 20000'],
+            sources: [{ url: 'https://milelion.test/citi', tier: 2, type: 'article' }],
+            existing: { id: 7, title: 'Citi Rewards welcome offer', terms: { reward_miles: 12000 }, end_at: '2026-09-30' },
+            diff: [{ field: 'reward_miles', before: 12000, after: 16000 }],
+            article: { url: 'https://milelion.test/citi', title: 'Citi Rewards: 16,000 bonus miles' },
+          },
+        ],
+      });
+    if (u.pathname.match(/^\/api\/admin\/promotions\/review\/\d+\/(publish|reject|merge)$/)) {
+      reviewAction = u.pathname.split('/').slice(5).join(':');
+      return send({ ok: true, change: 'reward_changed' });
+    }
     if (u.pathname === '/api/rewards/programmes')
       return send({
         programmes: [
@@ -981,10 +1104,74 @@ async function main() {
       await worth.locator('.ok-text').first().innerText()
     );
 
+    // What an offer pays depends on how you apply, and the variant a holder
+    // cannot take must be visible with its reason rather than hidden or, worse,
+    // shown as theirs.
+    const worthText = await worth.innerText();
+    check('a reward that varies is a range, not the best number', says(worthText, '2,000 points to 5,000 points'), worthText.slice(0, 600));
+    check('the shape a holder cannot take is still shown', says(worthText, 'new customers only'), worthText.slice(0, 800));
+    check('with why it is not theirs', says(worthText, 'already hold this card'), worthText.slice(0, 800));
+    check('and the channel it belongs to', says(worthText, 'through SingSaver'), worthText.slice(0, 800));
+
+    // Why we think this is current.
+    check('every offer carries how sure the app is', says(worthText, 'independent sites agree'), worthText.slice(0, 900));
+    // A <details> summary is not a button; clicking the element itself is what
+    // a person does and what the role query cannot express.
+    await worth.locator('.offer2').first().locator('summary', { hasText: 'Why we think this is current' }).click();
+    await worth.locator('.offer2').first().getByText('milelion.test').first().waitFor();
+    const evidence = await worth.locator('.offer2').first().innerText();
+    check('the evidence names who said it', says(evidence, 'milelion.test'), evidence.slice(0, 1200));
+    check('with the sentence they said it in', says(evidence, 'Spend $300 to earn 2,000 bonus points'), evidence.slice(0, 1400));
+    check('a disagreement between sources is shown, not resolved', says(evidence, 'Sources disagree here'), evidence.slice(0, 1400));
+    check('with both readings kept', says(evidence, '2,000') && says(evidence, '2,500'), evidence.slice(0, 1400));
+    check('and what has changed since', says(evidence, 'First recorded'), evidence.slice(0, 1600));
+
+    // A targeted offer is the one thing the app cannot read anywhere.
+    await worth.locator('.offer2').first().getByRole('button', { name: 'I was sent a different offer' }).click();
+    const targeted = await worth.locator('.offer2').first().innerText();
+    check('a private offer can be contributed', says(targeted, 'Targeted offers are real but private'), targeted.slice(0, 1800));
+    check('and it says it will not change the public offer', says(targeted, 'without changing what the app believes'), targeted.slice(0, 1800));
+
     await page.locator('.card', { hasText: 'Everything' }).getByRole('button', { name: 'Show' }).click();
     const everything = await page.locator('.card', { hasText: 'Everything' }).innerText();
     check('offers that do not apply are still listed', says(everything, 'do not hold'), everything.slice(0, 400));
     check('with the reason they do not', says(everything, 'not_applicable'), everything.slice(0, 400));
+
+    // --- what the app read, and what is left for a person ----------------
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Offer discovery' }).click();
+    await page.locator('.card', { hasText: 'Promotion discovery' }).waitFor();
+
+    const disc = await page.locator('main').innerText();
+    check('the pipeline says what it is holding', says(disc, '1 to review'), disc.slice(0, 900));
+    check('and what it could not read', says(disc, '1 could not be read'), disc.slice(0, 900));
+    check(
+      'reading nothing but the bank is not claimed',
+      says(disc, 'Nothing an article says becomes a published number on its own'),
+      disc.slice(0, 900)
+    );
+
+    // The intro card also contains the phrase, so take the one holding the list.
+    const queue = page.locator('.card', { hasText: 'Waiting for you' }).last();
+    const q = await queue.innerText();
+    check('the queue leads with why a person is being asked', says(q, 'two sources disagree about the reward'), q.slice(0, 600));
+    check('the conflict is named', says(q, '16000 against 20000'), q.slice(0, 600));
+    check('the change against what is published is already worked out', says(q, '12,000') && says(q, '16,000'), q.slice(0, 800));
+    check('and the terms are editable rather than take-it-or-leave-it', (await queue.locator('input').count()) >= 4);
+
+    await queue.locator('summary').filter({ hasText: 'What the evidence says' }).click();
+    const claimed = await queue.innerText();
+    check('what each source said is one tap away', says(claimed, 'get 16,000 bonus miles'), claimed.slice(0, 1400));
+    check('with the disagreement kept', says(claimed, 'Nothing has picked between them'), claimed.slice(0, 1600));
+
+    await queue.locator('input').first().fill('20000');
+    await queue.getByRole('button', { name: 'Publish it' }).click();
+    await queue.locator('.ok-text').waitFor();
+    check('a corrected offer can be published from here', reviewAction === '11:publish', String(reviewAction));
+
+    const sourcesCard = await page.locator('.card', { hasText: 'Where the app reads' }).innerText();
+    check('a blocked site is reported, not worked around', says(sourcesCard, '403 from the site'), sourcesCard.slice(0, 800));
+    check('and backed off rather than hammered', says(sourcesCard, 'scanned less often'), sourcesCard.slice(0, 800));
 
     // --- what to do with the points --------------------------------------
     await page.getByRole('button', { name: /^More/ }).click();
@@ -1069,7 +1256,7 @@ async function main() {
     onboardingStatus = 'not_started';
     await open();
     await page.getByRole('button', { name: /^More/ }).click();
-    await page.getByRole('button', { name: 'Setup' }).click();
+    await page.getByRole('button', { name: 'Setup', exact: true }).click();
     await page.locator('.onb').first().waitFor();
     check('a new user gets a welcome', says(await page.locator('.onb').first().innerText(), 'Welcome to Miles Tracker'));
     check(

@@ -5,6 +5,7 @@ import Boundary from './Boundary';
 import Home from './Home';
 import Onboarding from './features/onboarding/Onboarding';
 import Review from './Review';
+import Discovery from './Discovery';
 import RewardCheck from './features/rewards/RewardCheck';
 import TransferPlanner from './features/rewards/TransferPlanner';
 import OfferInbox from './features/offers/OfferInbox';
@@ -1886,6 +1887,7 @@ const MORE: [string, string][] = [
   ['audit', 'Audit'],
   ['codes', 'Codes'],
   ['offers2', 'Offers for you'],
+  ['discovery', 'Offer discovery'],
   ['offers', 'Offer feed'],
   ['settings', 'Settings'],
 ];
@@ -1902,6 +1904,7 @@ export default function App() {
     | 'rewardcheck'
     | 'transfers'
     | 'offers2'
+    | 'discovery'
     | 'improve'
     | 'ledger'
     | 'other'
@@ -2089,6 +2092,8 @@ export default function App() {
       {tab === 'transfers' && <TransferPlanner />}
 
       {tab === 'offers2' && <OfferInbox />}
+
+      {tab === 'discovery' && <Discovery />}
 
       {tab === 'improve' && <PortfolioGaps />}
 

@@ -440,11 +440,97 @@ web/src/banks.ts      one profile per issuer's statement layout
 src/eligibility.ts    predicate evaluator and your review decisions
 src/offers.ts         saving an extraction without losing your answers
 src/extraction.ts     the prompt handed to you for Claude — the LLM half
+src/promotions/       the offer platform: terms, relevance, tracking, variants
+src/promotions/evidence.ts       why the app believes an offer is current
+src/promotions/discovery/        finding offers without being asked
+  sources.ts          the source registry and how often each is worth reading
+  fetch.ts            robots, refusals, size limits — the politeness layer
+  classify.ts         is this article about an offer at all
+  extract.ts          article text into claims, never into facts
+  fingerprint.ts      is this the same offer we already know about
+  corroborate.ts      weighing claims by independent host and trust tier
+  verify.ts           one careful look at the issuer's own page
+  diff.ts             what changed between two monthly roundups
+  publish.ts          claims into the promotion the rest of the app reads
+  review.ts           the short list left for a person
 src/auth.ts           HMAC magic-link tokens
 migrations/           ALTER statements for databases created before a change
 web/                  React + Vite PWA, served by the Worker as assets
 .github/workflows/    CI: typecheck, both test suites, dashboard build
 ```
+
+## Finding offers by itself
+
+**More → Offer discovery.** The app reads the sites that cover Singapore card
+promotions, turns what they say into claims, weighs the claims against each
+other, and publishes the ones the evidence carries. Three rules shape all of
+it, and each is about what the system must *not* do.
+
+**It does not read a site that has said no.** A 403, a 429, a robots rule or a
+bot-check page is a recorded outcome, not a puzzle to solve. There is no
+retrying, no header-spoofing and no CAPTCHA handling anywhere in the code. A
+source that keeps refusing is scanned less often and its absence lowers
+confidence, rather than stopping discovery. Nothing is archived either: a claim
+keeps a URL, a title, a date, a short excerpt and a content hash — never the
+article.
+
+**It does not turn an article into a fact.** Every number an extractor produces
+is a claim in `promotion_claims` with the URL and the sentence it came from.
+What a promotion says is then decided by weighing claims, counting *independent
+hosts* rather than articles, so one blog quoted three times is one source. Two
+sources disagreeing produces a `conflicting` state that a person sees — not a
+coin toss.
+
+**It does not publish money terms nobody checked.** Only two things publish
+themselves: an offer the issuer's own page confirms, and an offer already
+published whose end date moved with at least two independent sources agreeing.
+Everything else waits in the review queue. And publication is refused outright
+while a term that decides money is unknown, because an offer with a wrong
+threshold is worse than no offer — somebody spends against it.
+
+Three stages run nightly, each bounded and independently recoverable: read the
+feeds, read the articles worth reading, weigh the evidence. The same stages
+have buttons on the discovery screen.
+
+### What an offer says about itself
+
+Every offer in **Offers for you** carries how sure the app is — "the bank's own
+page said this", "two independent sites agree, nobody has read it off the
+bank's page", "one source said this three weeks ago". **Why we think this is
+current** opens the provenance: which sites, when each was read, the sentence
+each one said it in, every value anyone claimed for each field, and what has
+changed since the offer was first recorded.
+
+Offers old enough to be worth re-checking say so rather than presenting a stale
+number confidently.
+
+### One campaign, several offers
+
+The same campaign is rarely one offer: a welcome bonus often pays one number
+through the bank's page and another through a comparison site, and pays new
+customers something it does not pay you. Those are stored as **variants**, and
+what an offer pays is shown as a range when they disagree — never the largest
+one on its own. A variant you cannot take is shown *with the sentence that says
+why*, because hiding it is how an app quietly recommends something that turns
+out to be for new customers only.
+
+Targeted offers are the one thing the app cannot read anywhere — they arrive by
+email to a list nobody outside the bank can see. **I was sent a different
+offer** records yours. It is trusted, because you are holding the email, and it
+is kept as your own variant so it never changes what the app believes the
+public offer to be.
+
+### The review queue
+
+**More → Offer discovery** leads with what is left for a person, and the aim is
+that this list is short and each item takes seconds. Everything needed is
+already on the item: the terms, how many independent sources back each one, the
+sentence each said it in, any conflicting value, and the diff against what is
+already published. Nobody should have to open the articles.
+
+Any number you type there is recorded as a claim sourced to you at the highest
+trust tier — a correction made during review is the strongest evidence the
+system ever gets.
 
 ## Offers that have ended
 

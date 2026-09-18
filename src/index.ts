@@ -39,6 +39,12 @@ import { findDuplicate, merge } from './promotions/dedupe';
 import { inbox, rate } from './promotions/relevance';
 import { dismissPromotion, sweepCompleted, trackedOffers, trackPromotion } from './promotions/tracking';
 import { syncTransferBonuses } from './promotions/bridge';
+import { corroboratePending, discover, discoveryStatus, extractPending } from './promotions/discovery/run';
+import { sourceHealth } from './promotions/discovery/sources';
+import { expireFinished } from './promotions/discovery/diff';
+import { approveCandidate, reviewQueue as promotionReviewQueue } from './promotions/discovery/review';
+import { promotionEvidence } from './promotions/evidence';
+import { contributeTargeted, removeVariant, variantsFor } from './promotions/variants';
 import { portfolioGaps, spendingProfile } from './acquisition/gaps';
 import { acquisitionReport } from './acquisition/economics';
 import { extractRewards, pendingCandidates, saveCandidates } from './rewards/extract';
@@ -1212,6 +1218,43 @@ export default {
           return json({ ...done, transfer_bonuses: bridged });
         }
 
+        // Why the app believes an offer is current. The numbers came from
+        // somewhere the person did not choose, so who said it, when, and
+        // whether anyone disagreed has to be one tap away.
+        if (url.pathname.match(/^\/api\/promotions\/\d+\/evidence$/) && req.method === 'GET') {
+          const id = Number(url.pathname.split('/')[3]);
+          const e = await promotionEvidence(env, id);
+          return e ? json(e) : json({ error: 'no such promotion' }, 404);
+        }
+
+        if (url.pathname.match(/^\/api\/promotions\/\d+\/variants$/) && req.method === 'GET') {
+          return json({ variants: await variantsFor(env, Number(url.pathname.split('/')[3])) });
+        }
+
+        // A targeted offer the person was actually sent. This is the only
+        // place promotion terms come from the user rather than a source, and
+        // it is trusted — they are holding the email. It is stored as its own
+        // variant so it never changes what the app believes the public offer
+        // to be.
+        if (url.pathname.match(/^\/api\/promotions\/\d+\/variants$/) && req.method === 'POST') {
+          const id = Number(url.pathname.split('/')[3]);
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+          const r = await contributeTargeted(env, id, {
+            minimum_spend_cents: typeof b.minimum_spend_cents === 'number' ? b.minimum_spend_cents : null,
+            reward: b.reward ?? null,
+            application_channel: b.application_channel ?? null,
+            note: b.note ?? null,
+            received_at: b.received_at ?? null,
+          });
+          return json(r, r.ok ? 200 : 400);
+        }
+
+        if (url.pathname.match(/^\/api\/promotions\/\d+\/variants\/.+$/) && req.method === 'DELETE') {
+          const parts = url.pathname.split('/');
+          const removed = await removeVariant(env, Number(parts[3]), decodeURIComponent(parts[5]));
+          return json({ ok: removed });
+        }
+
         if (url.pathname.match(/^\/api\/promotions\/\d+$/) && req.method === 'GET') {
           const id = Number(url.pathname.split('/')[3]);
           const p = await env.DB.prepare(`SELECT * FROM promotions WHERE id = ?`).bind(id).first<any>();
@@ -1306,6 +1349,81 @@ export default {
               limit: typeof b.limit === 'number' ? b.limit : undefined,
             })
           );
+        }
+
+        // --- promotion discovery -------------------------------------------
+        // The software does the hunting; a person only handles what is
+        // ambiguous or materially changed.
+        if (url.pathname === '/api/admin/discovery/status') {
+          return json({ ...(await discoveryStatus(env)), sources: await sourceHealth(env) });
+        }
+
+        if (url.pathname === '/api/admin/discovery/run' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as { stage?: string; limit?: number };
+          const limit = Math.min(20, Math.max(1, Number(b.limit) || 5));
+          // Bounded stages rather than one long run: a Worker invocation is
+          // short, and a scan that must finish in one go fails as soon as
+          // there is enough to do.
+          const stage = String(b.stage ?? 'discover');
+          if (stage === 'discover') return json(await discover(env, { limit }));
+          if (stage === 'extract') return json(await extractPending(env, { limit }));
+          if (stage === 'corroborate') return json(await corroboratePending(env, { limit }));
+          if (stage === 'expire') return json(await expireFinished(env));
+          return json({ error: 'stage must be discover, extract, corroborate or expire' }, 400);
+        }
+
+        if (url.pathname === '/api/admin/discovery/candidates') {
+          const status = url.searchParams.get('status');
+          const { results } = status
+            ? await env.DB.prepare(
+                `SELECT c.*, d.url, d.title AS article_title FROM promotion_candidates c
+                   LEFT JOIN discovery_items d ON d.id = c.discovery_id
+                  WHERE c.status = ? ORDER BY c.id DESC LIMIT 100`
+              )
+                .bind(status)
+                .all<any>()
+            : await env.DB.prepare(
+                `SELECT c.*, d.url, d.title AS article_title FROM promotion_candidates c
+                   LEFT JOIN discovery_items d ON d.id = c.discovery_id
+                  ORDER BY c.id DESC LIMIT 100`
+              ).all<any>();
+          return json({ candidates: results ?? [] });
+        }
+
+        if (url.pathname === '/api/admin/discovery/sources') {
+          return json({ sources: await sourceHealth(env) });
+        }
+
+        // --- the review queue ------------------------------------------------
+        if (url.pathname === '/api/admin/promotions/review') {
+          return json({ items: await promotionReviewQueue(env), as_of: today(env) });
+        }
+
+        if (url.pathname.match(/^\/api\/admin\/promotions\/review\/\d+\/(publish|reject|merge)$/) && req.method === 'POST') {
+          const parts = url.pathname.split('/');
+          const id = Number(parts[5]);
+          const action = parts[6];
+          const b = (await req.json().catch(() => ({}))) as { into?: number; terms?: Record<string, unknown> };
+
+          if (action === 'reject') {
+            await env.DB.prepare(`UPDATE promotion_candidates SET status = 'rejected' WHERE id = ?`).bind(id).run();
+            return json({ ok: true, applied: 'left out' });
+          }
+          if (action === 'merge') {
+            if (typeof b.into !== 'number') return json({ error: 'a promotion to merge into is required' }, 400);
+            await env.DB.prepare(`UPDATE promotion_claims SET promotion_id = ? WHERE candidate_id = ?`)
+              .bind(b.into, id)
+              .run();
+            await env.DB.prepare(
+              `UPDATE promotion_candidates SET status = 'published', promotion_id = ? WHERE id = ?`
+            )
+              .bind(b.into, id)
+              .run();
+            return json({ ok: true, applied: `merged into promotion #${b.into}` });
+          }
+
+          const r = await approveCandidate(env, id, b.terms);
+          return json(r, r.ok ? 200 : 400);
         }
 
         // --- onboarding (P1 phase 1) ---------------------------------------
@@ -2840,6 +2958,39 @@ export default {
 
           // An offer that has ended is not a decision you can still make.
           await sweepExpiredOffers(env, today(env));
+
+          // Promotion discovery, in bounded stages rather than one long run:
+          // a Worker invocation is short, and each stage leaves its state in
+          // the database so the next cron picks up where this one stopped.
+          // Every one of these is allowed to fail without taking the rest of
+          // the scan with it — a blocked source is an expected outcome here.
+          for (const stage of [
+            () => discover(env, { limit: 4 }),
+            () => extractPending(env, { limit: 4 }),
+            () => corroboratePending(env, { limit: 8 }),
+          ]) {
+            try {
+              await stage();
+            } catch (e) {
+              console.error('discovery stage failed', (e as Error).message);
+            }
+          }
+
+          // What is left for a person. Silent when there is nothing, because a
+          // daily message that usually says "nothing" is one you stop reading.
+          try {
+            const status = await discoveryStatus(env);
+            if (status.today.awaiting_review > 0 || status.today.new > 0 || status.today.changed > 0) {
+              await send(
+                env,
+                env.OWNER_CHAT_ID,
+                `*Promotions* — ${status.today.new} new, ${status.today.changed} changed, ` +
+                  `${status.today.awaiting_review} waiting for you.`
+              );
+            }
+          } catch (e) {
+            console.error('discovery status failed', (e as Error).message);
+          }
         } else {
           await send(env, env.OWNER_CHAT_ID, await buildDigest(env));
           for (const alert of await checkAlerts(env)) await send(env, env.OWNER_CHAT_ID, alert);

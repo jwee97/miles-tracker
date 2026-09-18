@@ -1,6 +1,7 @@
 import { money, today } from '../spend';
 import type { Env } from '../types';
 import { termsOf, type Promotion, type PromotionTerms } from './model';
+import { invitedKeys, spread, variantsFor, viewVariants, type VariantView } from './variants';
 
 /**
  * Which promotions are worth showing this person.
@@ -28,6 +29,60 @@ export interface RelevantPromotion {
   reachable: boolean | null;
   monthly_spend_cents: number | null;
   tracked: boolean;
+  /** The shapes this offer comes in, when it comes in more than one. */
+  variants: VariantView[];
+  /** What it pays across those shapes — a range when they disagree. */
+  pays: string | null;
+  /** True when the variants do not agree, so the headline is a range. */
+  pays_varies: boolean;
+  /** How sure the app is that this is still true, and why. */
+  currency: PromotionCurrency;
+}
+
+/**
+ * How current the app believes this offer to be.
+ *
+ * Shown rather than hidden: discovery reads publications, publications are
+ * sometimes wrong or late, and an offer nobody has checked in two months is
+ * worth a different sentence from one the bank's own page confirmed today.
+ */
+export interface PromotionCurrency {
+  state: string;
+  /** A sentence a person can act on. */
+  text: string;
+  /** How many independent sites said this. */
+  independent_sources: number;
+  last_verified_at: string | null;
+  days_since_verified: number | null;
+  /** True when it is old enough to be worth re-reading the bank's page. */
+  stale: boolean;
+}
+
+/** Past this many days without a check, an offer is called stale. */
+export const RECHECK_DAYS = 30;
+
+export function currencyOf(p: Promotion, now: string): PromotionCurrency {
+  const verified = (p as unknown as { last_verified_at?: string | null }).last_verified_at ?? p.verified_at ?? null;
+  const state = (p as unknown as { verification_state?: string }).verification_state ?? 'single_source';
+  const sources = (p as unknown as { independent_sources?: number }).independent_sources ?? 0;
+  const days = verified ? Math.round((Date.parse(now) - Date.parse(verified)) / 86_400_000) : null;
+  const stale = days === null || days > RECHECK_DAYS;
+
+  const when = days === null ? 'never checked' : days <= 0 ? 'checked today' : `checked ${days} day${days === 1 ? '' : 's'} ago`;
+  const text =
+    state === 'official_verified'
+      ? `The bank's own page said this — ${when}.`
+      : state === 'secondary_verified'
+        ? `${sources} independent sites agree on this — ${when}. Nobody has read it off the bank's page.`
+        : state === 'conflicting'
+          ? 'Sources disagree about the terms. Check the bank before relying on it.'
+          : state === 'expired'
+            ? 'This has ended.'
+            : state === 'needs_review'
+              ? 'Waiting to be checked by a person.'
+              : `One source said this — ${when}. Treat the numbers as a lead, not a promise.`;
+
+  return { state, text, independent_sources: sources, last_verified_at: verified, days_since_verified: days, stale };
 }
 
 /** Below this many days an offer is usually not worth starting. */
@@ -154,6 +209,29 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
   else if (spend && spend > 0) relevance = 'medium';
   else relevance = 'low';
 
+  // The shapes this offer comes in. A new-customer bonus shown to someone who
+  // already holds the card is the most common way an app like this misleads;
+  // the fix is the sentence that says why it is not theirs, not hiding it.
+  const vs = await variantsFor(env, p.id);
+  const invited = await invitedKeys(env, p.id);
+  const views = viewVariants(vs, {
+    holds_card: !!cards?.length,
+    existing_customer: await banksWith(env, p.issuer),
+    invited_keys: invited,
+  });
+  const range = spread(vs, Number(env.MILE_VALUE_CENTS ?? 1.5));
+
+  if (views.length > 1 && views.some((v) => v.available)) {
+    const best = views.filter((v) => v.available).map((v) => v.reward_text).filter(Boolean);
+    if (best.length && range.varies) why.push(`What it pays depends on how you apply.`);
+  }
+  if (views.length && !views.some((v) => v.available)) {
+    blockers.push(views[0].blocker ?? 'No version of this offer is open to you.');
+  }
+  if (views.some((v) => v.available && v.variant.audience === 'targeted')) {
+    why.push('You told us you were sent this one.');
+  }
+
   if (relevance !== 'not_applicable' && !why.length) {
     why.push('It applies to any cardholder.');
   }
@@ -169,7 +247,29 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
     reachable,
     monthly_spend_cents: spend,
     tracked,
+    variants: views,
+    pays: range.text,
+    pays_varies: range.varies,
+    currency: currencyOf(p, now),
   };
+}
+
+/**
+ * Whether this person already banks with an issuer.
+ *
+ * Read from the cards they hold rather than asked, because the only thing an
+ * "existing customer" rule reliably turns on here is holding one of that
+ * bank's cards, and a question whose answer is already in the database is a
+ * question not worth asking.
+ */
+async function banksWith(env: Env, issuer: string | null): Promise<boolean> {
+  if (!issuer) return false;
+  const row = await env.DB.prepare(
+    `SELECT c.id FROM cards c WHERE c.closed_at IS NULL AND LOWER(c.issuer) = LOWER(?) LIMIT 1`
+  )
+    .bind(issuer)
+    .first();
+  return !!row;
 }
 
 export interface Inbox {

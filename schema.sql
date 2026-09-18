@@ -741,6 +741,18 @@ CREATE TABLE IF NOT EXISTS promotions (
   -- The sentence the terms were read out of, kept as provenance.
   source_quote          TEXT,
   confidence            TEXT    NOT NULL DEFAULT 'medium',
+  -- official_verified | secondary_verified | single_source | conflicting
+  --   | needs_review | expired. More useful than a boolean: "the bank says so"
+  -- and "two publications agree" deserve different words in front of a person.
+  verification_state    TEXT    NOT NULL DEFAULT 'single_source',
+  -- issuer_direct | moneysmart | singsaver | third_party | unknown. A
+  -- comparison site's exclusive is not the issuer's own offer.
+  application_channel   TEXT    NOT NULL DEFAULT 'unknown',
+  fingerprint           TEXT,
+  audience              TEXT    NOT NULL DEFAULT 'everyone',
+  extended_from_promotion_id INTEGER REFERENCES promotions(id) ON DELETE SET NULL,
+  last_verified_at      TEXT,
+  independent_sources   INTEGER NOT NULL DEFAULT 0,
   -- Set when this was merged into another as a duplicate.
   duplicate_of          INTEGER REFERENCES promotions(id) ON DELETE SET NULL,
   dismissed_at          TEXT,
@@ -789,3 +801,155 @@ CREATE TABLE IF NOT EXISTS promotion_tracking (
   UNIQUE(promotion_id, card_id)
 );
 CREATE INDEX IF NOT EXISTS ptrack_status ON promotion_tracking(status);
+
+-- ===========================================================================
+-- Promotion discovery
+--
+-- The design rule: the internet is a network of sensors, and no single site is
+-- a dependency. A specialist article, a comparison site and an indexed bank PDF
+-- are three signals about one offer; the system combines them and records what
+-- each one said.
+--
+-- Nothing here scrapes its way past a site that does not want to be read. A
+-- blocked issuer is an expected outcome, not a failure — it costs a promotion
+-- its "official" status and nothing else.
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS discovery_sources (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_key      TEXT    NOT NULL UNIQUE,
+  name            TEXT    NOT NULL,
+  -- rss | search | website | official_page | official_pdf | manual
+  source_type     TEXT    NOT NULL,
+  base_url        TEXT,
+  feed_url        TEXT,
+  -- 1 official issuer · 2 specialist miles publication · 3 comparison site
+  -- 4 search · 5 anything else. Lower is stronger.
+  trust_tier      INTEGER NOT NULL,
+  scan_frequency  TEXT    NOT NULL DEFAULT 'weekly', -- daily | every3days | weekly | monthly
+  issuer          TEXT,
+  content_scope   TEXT,                    -- welcome_offers | credit_card_promotions | …
+  last_scanned_at TEXT,
+  last_success_at TEXT,
+  failure_count   INTEGER NOT NULL DEFAULT 0,
+  -- How often this source actually yields something, which is what earns it a
+  -- higher scan frequency. A quiet source checked daily is wasted requests.
+  change_frequency_score REAL NOT NULL DEFAULT 0,
+  promotions_found INTEGER NOT NULL DEFAULT 0,
+  scans            INTEGER NOT NULL DEFAULT 0,
+  successes        INTEGER NOT NULL DEFAULT 0,
+  active          INTEGER NOT NULL DEFAULT 1,
+  created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS dsource_active ON discovery_sources(active, scan_frequency);
+
+-- An article the discovery engine has seen. Deliberately not an archive of
+-- other people's writing: the URL, the title, a hash and a short excerpt, and
+-- nothing more.
+CREATE TABLE IF NOT EXISTS discovery_items (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id     INTEGER REFERENCES discovery_sources(id) ON DELETE CASCADE,
+  url           TEXT    NOT NULL,
+  canonical_url TEXT,
+  title         TEXT,
+  published_at  TEXT,
+  discovered_at TEXT    NOT NULL DEFAULT (datetime('now')),
+  content_hash  TEXT,
+  -- promotion_related | card_rules_change | transfer_related | general_news
+  --   | irrelevant | roundup
+  item_type     TEXT,
+  -- new | processed | irrelevant | failed | duplicate
+  status        TEXT    NOT NULL DEFAULT 'new',
+  fetch_note    TEXT,
+  UNIQUE(source_id, canonical_url)
+);
+CREATE INDEX IF NOT EXISTS ditem_status ON discovery_items(status, discovered_at);
+
+-- What an article claims a promotion is, before anything is believed. One
+-- roundup article routinely yields fifteen of these.
+CREATE TABLE IF NOT EXISTS promotion_candidates (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  discovery_id    INTEGER REFERENCES discovery_items(id) ON DELETE CASCADE,
+  promotion_type  TEXT,
+  issuer          TEXT,
+  raw_product_name TEXT,
+  resolved_product_id INTEGER REFERENCES card_products(id) ON DELETE SET NULL,
+  -- The canonical shape of this campaign, for matching across sources.
+  fingerprint     TEXT,
+  terms_json      TEXT,
+  application_channel TEXT NOT NULL DEFAULT 'unknown',
+  extraction_confidence TEXT NOT NULL DEFAULT 'low',
+  -- discovered | extracted | corroborating | verified | review | published | rejected
+  status          TEXT    NOT NULL DEFAULT 'discovered',
+  -- The promotion it became, or the one it turned out to already be.
+  promotion_id    INTEGER REFERENCES promotions(id) ON DELETE SET NULL,
+  review_reason   TEXT,
+  created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS pcand_status ON promotion_candidates(status, created_at);
+CREATE INDEX IF NOT EXISTS pcand_fingerprint ON promotion_candidates(fingerprint);
+
+-- One source's assertion about one field. The promotion record is DERIVED from
+-- these; nothing writes a reward straight from an article, so two sources
+-- disagreeing is a state the system can see rather than a coin it tosses.
+CREATE TABLE IF NOT EXISTS promotion_claims (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  candidate_id       INTEGER REFERENCES promotion_candidates(id) ON DELETE CASCADE,
+  promotion_id       INTEGER REFERENCES promotions(id) ON DELETE CASCADE,
+  field_name         TEXT    NOT NULL,
+  value_json         TEXT    NOT NULL,
+  source_url         TEXT    NOT NULL,
+  source_type        TEXT    NOT NULL,
+  source_tier        INTEGER NOT NULL,
+  extracted_at       TEXT    NOT NULL,
+  confidence         TEXT    NOT NULL,
+  -- The sentence it came from. Short on purpose: enough to check the reading,
+  -- not a copy of somebody else's article.
+  supporting_excerpt TEXT
+);
+CREATE INDEX IF NOT EXISTS pclaim_candidate ON promotion_claims(candidate_id, field_name);
+CREATE INDEX IF NOT EXISTS pclaim_promotion ON promotion_claims(promotion_id, field_name);
+
+-- What a promotion said, and when. A campaign that goes from 16k to 20k and
+-- then gets extended is one campaign with three versions, not three campaigns.
+CREATE TABLE IF NOT EXISTS promotion_versions (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  promotion_id        INTEGER NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+  version             INTEGER NOT NULL,
+  valid_from          TEXT,
+  valid_until         TEXT,
+  terms_json          TEXT    NOT NULL,
+  verification_status TEXT    NOT NULL,
+  published_at        TEXT,
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(promotion_id, version)
+);
+
+-- Offers that are one campaign with different terms by audience or channel: a
+-- comparison site's exclusive is not the issuer's own offer, and merging them
+-- would advertise terms nobody can actually get.
+CREATE TABLE IF NOT EXISTS promotion_variants (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  promotion_id        INTEGER NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+  variant_key         TEXT,
+  audience            TEXT,                -- everyone | new_customer | existing | targeted
+  minimum_spend_cents INTEGER,
+  reward_json         TEXT,
+  annual_fee_required INTEGER,
+  application_channel TEXT NOT NULL DEFAULT 'issuer_direct',
+  terms_json          TEXT,
+  UNIQUE(promotion_id, variant_key)
+);
+
+CREATE TABLE IF NOT EXISTS promotion_change_events (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  promotion_id   INTEGER REFERENCES promotions(id) ON DELETE CASCADE,
+  -- created | extended | reward_changed | spend_changed | eligibility_changed
+  --   | expired | withdrawn | terms_changed
+  change_type    TEXT    NOT NULL,
+  old_value_json TEXT,
+  new_value_json TEXT,
+  detected_at    TEXT    NOT NULL,
+  source_url     TEXT
+);
+CREATE INDEX IF NOT EXISTS pchange_promo ON promotion_change_events(promotion_id, detected_at);
