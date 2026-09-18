@@ -108,6 +108,31 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: 'promotions', column: 'extended_from_promotion_id', ddl: 'ALTER TABLE promotions ADD COLUMN extended_from_promotion_id INTEGER' },
   { table: 'promotions', column: 'last_verified_at', ddl: 'ALTER TABLE promotions ADD COLUMN last_verified_at TEXT' },
   { table: 'promotions', column: 'independent_sources', ddl: 'ALTER TABLE promotions ADD COLUMN independent_sources INTEGER NOT NULL DEFAULT 0' },
+  // --- promotion discovery v2 ---
+  { table: 'discovery_sources', column: 'base_scan_frequency', ddl: 'ALTER TABLE discovery_sources ADD COLUMN base_scan_frequency TEXT' },
+  {
+    table: 'discovery_sources',
+    column: 'adaptive_frequency',
+    ddl: 'ALTER TABLE discovery_sources ADD COLUMN adaptive_frequency INTEGER NOT NULL DEFAULT 1',
+  },
+  { table: 'discovery_sources', column: 'last_items_seen', ddl: 'ALTER TABLE discovery_sources ADD COLUMN last_items_seen INTEGER' },
+  { table: 'discovery_sources', column: 'last_items_new', ddl: 'ALTER TABLE discovery_sources ADD COLUMN last_items_new INTEGER' },
+  { table: 'discovery_sources', column: 'last_relevant_new', ddl: 'ALTER TABLE discovery_sources ADD COLUMN last_relevant_new INTEGER' },
+  { table: 'discovery_sources', column: 'last_error', ddl: 'ALTER TABLE discovery_sources ADD COLUMN last_error TEXT' },
+  { table: 'discovery_items', column: 'classification_score', ddl: 'ALTER TABLE discovery_items ADD COLUMN classification_score REAL' },
+  {
+    table: 'discovery_items',
+    column: 'classification_signals_json',
+    ddl: 'ALTER TABLE discovery_items ADD COLUMN classification_signals_json TEXT',
+  },
+  { table: 'discovery_items', column: 'extraction_note', ddl: 'ALTER TABLE discovery_items ADD COLUMN extraction_note TEXT' },
+  {
+    table: 'promotion_candidates',
+    column: 'auto_published',
+    ddl: 'ALTER TABLE promotion_candidates ADD COLUMN auto_published INTEGER NOT NULL DEFAULT 0',
+  },
+  { table: 'promotion_candidates', column: 'published_at', ddl: 'ALTER TABLE promotion_candidates ADD COLUMN published_at TEXT' },
+  { table: 'promotion_candidates', column: 'verified_at', ddl: 'ALTER TABLE promotion_candidates ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'verified_at', ddl: 'ALTER TABLE conversions ADD COLUMN verified_at TEXT' },
   { table: 'conversions', column: 'source_url', ddl: 'ALTER TABLE conversions ADD COLUMN source_url TEXT' },
   { table: 'conversions', column: 'note', ddl: 'ALTER TABLE conversions ADD COLUMN note TEXT' },
@@ -181,6 +206,66 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
  * across without this list needing to know about it, and it runs only while the
  * old constraint is still there.
  */
+/**
+ * One article, however many ways it was found.
+ *
+ * Before the canonical-URL index existed, uniqueness was per source, so an
+ * article carried by both a feed and a search became two rows — two fetches,
+ * two sets of candidates, and a corroboration step that counted one
+ * publication as two. This folds them onto the earliest row, moves everything
+ * that pointed at the losers, and records how each one was found.
+ *
+ * Idempotent: with nothing duplicated it does nothing and reports nothing.
+ */
+async function foldDuplicateDiscoveryItems(env: Env, errors: string[]): Promise<void> {
+  if (!(await tableExists(env, 'discovery_items'))) return;
+  if (!(await hasColumn(env, 'discovery_items', 'canonical_url'))) return;
+
+  try {
+    const { results: dupes } = await env.DB.prepare(
+      `SELECT canonical_url, COUNT(*) AS n FROM discovery_items
+        WHERE canonical_url IS NOT NULL
+        GROUP BY canonical_url HAVING n > 1`
+    ).all<{ canonical_url: string; n: number }>();
+    if (!dupes?.length) return;
+
+    const pairs = await tableExists(env, 'discovery_item_sources');
+
+    for (const d of dupes) {
+      // Earliest wins: it carries the discovery date that says when this was
+      // first seen, which is the only fact the later rows cannot reconstruct.
+      const { results: rows } = await env.DB.prepare(
+        `SELECT id, source_id FROM discovery_items WHERE canonical_url = ? ORDER BY discovered_at, id`
+      )
+        .bind(d.canonical_url)
+        .all<{ id: number; source_id: number | null }>();
+      if (!rows || rows.length < 2) continue;
+
+      const keep = rows[0];
+      for (const row of rows.slice(1)) {
+        await env.DB.prepare(`UPDATE promotion_candidates SET discovery_id = ? WHERE discovery_id = ?`)
+          .bind(keep.id, row.id)
+          .run();
+        if (pairs && row.source_id !== null) {
+          await env.DB.prepare(
+            `INSERT OR IGNORE INTO discovery_item_sources (discovery_item_id, source_id) VALUES (?, ?)`
+          )
+            .bind(keep.id, row.source_id)
+            .run();
+        }
+        await env.DB.prepare(`DELETE FROM discovery_items WHERE id = ?`).bind(row.id).run();
+      }
+      if (pairs && keep.source_id !== null) {
+        await env.DB.prepare(`INSERT OR IGNORE INTO discovery_item_sources (discovery_item_id, source_id) VALUES (?, ?)`)
+          .bind(keep.id, keep.source_id)
+          .run();
+      }
+    }
+  } catch (e) {
+    errors.push(`folding duplicate discovery items — ${(e as Error).message}`);
+  }
+}
+
 async function relaxEarnRuleCardId(env: Env, created: string[], errors: string[]): Promise<void> {
   const { results } = await env.DB.prepare(`PRAGMA table_info(earn_rules)`).all<{ name: string; notnull: number }>();
   const cols = results ?? [];
@@ -279,6 +364,12 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
   // After the columns, before the indexes: the rebuild recreates the table, so
   // its indexes have to be laid down again afterwards.
   await relaxEarnRuleCardId(env, created, errors);
+
+  // The canonical-URL index is unique across every source, and a database that
+  // predates it may already hold the same article found twice. Fold those
+  // together first, or the index simply fails and the duplicate keeps costing
+  // a fetch every run.
+  await foldDuplicateDiscoveryItems(env, errors);
 
   for (const stmt of all.filter(isIndex)) {
     try {

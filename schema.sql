@@ -838,6 +838,21 @@ CREATE TABLE IF NOT EXISTS discovery_sources (
   promotions_found INTEGER NOT NULL DEFAULT 0,
   scans            INTEGER NOT NULL DEFAULT 0,
   successes        INTEGER NOT NULL DEFAULT 0,
+  -- What this source should normally run at, kept apart from the frequency
+  -- adaptation has moved it to. Without this the configured schedule is lost
+  -- the first time a quiet week demotes a good source.
+  base_scan_frequency TEXT,
+  -- 0 pins the cadence. The publications that carry most of the value are
+  -- pinned: a daily source that goes quiet for a week is still a daily source.
+  adaptive_frequency  INTEGER NOT NULL DEFAULT 1,
+  -- What the most recent scan actually saw, so "scanned fine, found nothing"
+  -- and "never scanned" are different sentences on the screen.
+  last_items_seen      INTEGER,
+  last_items_new       INTEGER,
+  last_relevant_new    INTEGER,
+  -- Why the last scan failed, in the source's own terms, so a screen can say
+  -- "403, not retried" rather than "ailing".
+  last_error           TEXT,
   active          INTEGER NOT NULL DEFAULT 1,
   created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -861,9 +876,69 @@ CREATE TABLE IF NOT EXISTS discovery_items (
   -- new | processed | irrelevant | failed | duplicate
   status        TEXT    NOT NULL DEFAULT 'new',
   fetch_note    TEXT,
+  -- Why the classifier decided what it did, kept so "why was this ignored?"
+  -- has an answer that is not a re-run.
+  classification_score REAL,
+  classification_signals_json TEXT,
+  -- Why extraction produced nothing, for the articles that were read fine and
+  -- still yielded no offer. Silence here used to be indistinguishable from
+  -- the article never being read.
+  extraction_note TEXT,
   UNIQUE(source_id, canonical_url)
 );
 CREATE INDEX IF NOT EXISTS ditem_status ON discovery_items(status, discovered_at);
+-- One article, however many ways it was found. A URL that arrives by both feed
+-- and search is one article, not two.
+CREATE UNIQUE INDEX IF NOT EXISTS ditem_canonical ON discovery_items(canonical_url)
+  WHERE canonical_url IS NOT NULL;
+
+-- How an article was found, which is not the same question as what it is.
+CREATE TABLE IF NOT EXISTS discovery_item_sources (
+  discovery_item_id INTEGER NOT NULL REFERENCES discovery_items(id) ON DELETE CASCADE,
+  source_id         INTEGER NOT NULL REFERENCES discovery_sources(id) ON DELETE CASCADE,
+  discovered_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  -- Set when search found it, so a query that keeps paying for itself is visible.
+  search_query      TEXT,
+  PRIMARY KEY (discovery_item_id, source_id)
+);
+
+-- What each run of the pipeline did. Today's counters answer "is it working
+-- now"; this answers "when did it stop", which is the question that actually
+-- gets asked.
+CREATE TABLE IF NOT EXISTS discovery_runs (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  stage                TEXT    NOT NULL,
+  started_at           TEXT    NOT NULL,
+  finished_at          TEXT,
+  success              INTEGER NOT NULL DEFAULT 0,
+  sources_scanned      INTEGER NOT NULL DEFAULT 0,
+  items_seen           INTEGER NOT NULL DEFAULT 0,
+  items_found          INTEGER NOT NULL DEFAULT 0,
+  relevant_items_found INTEGER NOT NULL DEFAULT 0,
+  articles_fetched     INTEGER NOT NULL DEFAULT 0,
+  candidates_created   INTEGER NOT NULL DEFAULT 0,
+  published            INTEGER NOT NULL DEFAULT 0,
+  held_for_review      INTEGER NOT NULL DEFAULT 0,
+  error                TEXT
+);
+CREATE INDEX IF NOT EXISTS drun_started ON discovery_runs(started_at DESC);
+
+-- Every search actually executed, so "did search run?" is answerable without
+-- guessing. A stub that plans queries and calls itself healthy is exactly what
+-- this table exists to make impossible.
+CREATE TABLE IF NOT EXISTS discovery_search_runs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id     INTEGER REFERENCES discovery_sources(id) ON DELETE SET NULL,
+  provider      TEXT    NOT NULL,
+  query         TEXT    NOT NULL,
+  query_kind    TEXT    NOT NULL,
+  searched_at   TEXT    NOT NULL,
+  result_count  INTEGER NOT NULL DEFAULT 0,
+  new_url_count INTEGER NOT NULL DEFAULT 0,
+  error         TEXT
+);
+CREATE INDEX IF NOT EXISTS dsearch_when ON discovery_search_runs(searched_at DESC);
+CREATE INDEX IF NOT EXISTS dsearch_query ON discovery_search_runs(query, searched_at DESC);
 
 -- What an article claims a promotion is, before anything is believed. One
 -- roundup article routinely yields fifteen of these.
@@ -884,6 +959,12 @@ CREATE TABLE IF NOT EXISTS promotion_candidates (
   -- The promotion it became, or the one it turned out to already be.
   promotion_id    INTEGER REFERENCES promotions(id) ON DELETE SET NULL,
   review_reason   TEXT,
+  -- Whether nobody looked at this before it went live. Derived from change
+  -- events before, which counted every creation including the ones a person
+  -- approved — so "published by itself" read higher than it was.
+  auto_published  INTEGER NOT NULL DEFAULT 0,
+  published_at    TEXT,
+  verified_at     TEXT,
   created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS pcand_status ON promotion_candidates(status, created_at);

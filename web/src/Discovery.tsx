@@ -6,6 +6,9 @@ import {
   publishCandidateEdit,
   rejectCandidate,
   runDiscovery,
+  runDiscoveryAll,
+  type DiscoveryPipelineReport,
+  type DiscoveryReport,
   type DiscoveryStatus,
   type PromotionReviewItem,
 } from './api';
@@ -223,6 +226,41 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
   );
 }
 
+/**
+ * The funnel, one line per step it could have stopped at.
+ *
+ * Every row is a place the pipeline can fail quietly. Sources checked but no
+ * results, results but no new URLs, new URLs but none relevant, articles read
+ * but no candidates — each is a different problem, and a single "nothing new"
+ * covers all of them.
+ */
+function Funnel({ r }: { r: DiscoveryReport }) {
+  const rows: [string, number, string][] = [
+    ['Sources checked', r.sources_scanned, 'feeds and searches that were due'],
+    ['Feed entries seen', r.feed_items_seen, 'what the feeds listed, new or not'],
+    ['Search queries run', r.search_queries_executed, `of ${r.search_queries_planned} planned`],
+    ['Search results seen', r.search_results_seen, 'what the provider returned'],
+    ['New URLs', r.items_found, 'articles nobody had seen before'],
+    ['Relevant articles', r.relevant_items_found, 'of those, about an offer'],
+    ['Articles read', r.articles_fetched, `${r.articles_failed} could not be read`],
+    ['Candidates', r.candidates_created, `${r.candidates_merged} merged into offers already known`],
+    ['Published', r.published, 'the evidence carried them'],
+    ['Waiting for you', r.held_for_review, 'the evidence did not'],
+  ];
+  return (
+    <>
+      {rows.map(([label, value, detail]) => (
+        <li key={label} className={value > 0 ? 'pass' : 'unknown'}>
+          <span>
+            <strong>{value.toLocaleString()}</strong> {label.toLowerCase()}
+          </span>
+          <p className="sub">{detail}</p>
+        </li>
+      ))}
+    </>
+  );
+}
+
 function Sources({ status }: { status: DiscoveryStatus }) {
   return (
     <section className="card">
@@ -260,6 +298,7 @@ export default function Discovery() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [ran, setRan] = useState<string | null>(null);
+  const [pipeline, setPipeline] = useState<DiscoveryPipelineReport | null>(null);
 
   function load() {
     fetchDiscoveryStatus().then(setStatus).catch((e) => setErr((e as Error).message));
@@ -269,7 +308,20 @@ export default function Discovery() {
   }
   useEffect(load, []);
 
-  async function run(stage: 'discover' | 'extract' | 'corroborate') {
+  async function runAll() {
+    setBusy('all');
+    setErr(null);
+    setRan(null);
+    try {
+      setPipeline(await runDiscoveryAll());
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+    setBusy(null);
+    load();
+  }
+
+  async function run(stage: 'discover' | 'extract' | 'corroborate' | 'expire') {
     setBusy(stage);
     setRan(null);
     try {
@@ -316,24 +368,56 @@ export default function Discovery() {
           </li>
           <li className={n(status.items, 'failed') ? 'fail' : 'pass'}>
             <span>
-              <strong>{n(status.items, 'pending')}</strong> articles to read · {n(status.items, 'processed')} read ·{' '}
-              {n(status.items, 'irrelevant')} not about offers · {n(status.items, 'failed')} could not be read
+              <strong>{n(status.items, 'new')}</strong> articles waiting to be read · {n(status.items, 'processed')} read
+              · {n(status.items, 'irrelevant')} unrelated · {n(status.items, 'failed')} could not be read
             </span>
           </li>
         </ul>
 
         <div className="entry-foot rule-actions">
-          <button className="secondary" disabled={!!busy} onClick={() => run('discover')}>
-            {busy === 'discover' ? 'Reading…' : 'Check the sources'}
-          </button>
-          <button className="secondary" disabled={!!busy} onClick={() => run('extract')}>
-            {busy === 'extract' ? 'Reading…' : 'Read the articles'}
-          </button>
-          <button className="secondary" disabled={!!busy} onClick={() => run('corroborate')}>
-            {busy === 'corroborate' ? 'Weighing…' : 'Weigh the evidence'}
+          <button disabled={!!busy} onClick={runAll}>
+            {busy === 'all' ? 'Running…' : 'Run discovery now'}
           </button>
         </div>
-        {ran && <p className="ok-text">{ran}</p>}
+
+        {pipeline && (
+          <div className="addrule">
+            <p className="ok-text">
+              Discovery complete — {pipeline.cycles} cycle{pipeline.cycles === 1 ? '' : 's'},{' '}
+              {pipeline.stopped_because === 'no_work_left' ? 'nothing left to do' : 'stopped at the cycle limit'}.
+            </p>
+            <ul className="rules">
+              <Funnel r={pipeline.summary} />
+            </ul>
+            {pipeline.summary.notes.slice(0, 8).map((note, i) => (
+              <p key={i} className="sub">
+                {note}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {/* The three stages remain, because they are how you find out which one
+            is stuck — but as a debugging tool rather than the way to ask
+            whether anything is new. */}
+        <details className="batches">
+          <summary>Advanced</summary>
+          <div className="entry-foot rule-actions">
+            <button className="secondary" disabled={!!busy} onClick={() => run('discover')}>
+              {busy === 'discover' ? 'Reading…' : 'Discover only'}
+            </button>
+            <button className="secondary" disabled={!!busy} onClick={() => run('extract')}>
+              {busy === 'extract' ? 'Reading…' : 'Extract only'}
+            </button>
+            <button className="secondary" disabled={!!busy} onClick={() => run('corroborate')}>
+              {busy === 'corroborate' ? 'Weighing…' : 'Corroborate only'}
+            </button>
+            <button className="secondary" disabled={!!busy} onClick={() => run('expire')}>
+              {busy === 'expire' ? 'Sweeping…' : 'Expire finished offers'}
+            </button>
+          </div>
+          {ran && <p className="ok-text">{ran}</p>}
+        </details>
         {err && <p className="err-text">{err}</p>}
       </section>
 

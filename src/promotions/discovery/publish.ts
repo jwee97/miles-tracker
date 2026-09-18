@@ -283,8 +283,12 @@ export async function applyCandidate(
 
     await recordVariant(env, opts.existingId, c, opts.terms);
     await moveClaims(env, c.id, opts.existingId);
-    await env.DB.prepare(`UPDATE promotion_candidates SET status = 'published', promotion_id = ? WHERE id = ?`)
-      .bind(opts.existingId, c.id)
+    await env.DB.prepare(
+      `UPDATE promotion_candidates
+          SET status = 'published', promotion_id = ?, published_at = ?, auto_published = ?
+        WHERE id = ?`
+    )
+      .bind(opts.existingId, today(env), opts.auto ? 1 : 0, c.id)
       .run();
     if (c.promotion_type === 'transfer_bonus') await syncTransferBonuses(env);
 
@@ -357,8 +361,15 @@ export async function applyCandidate(
   await recordChange(env, saved.id, 'created', null, opts.terms, opts.sourceUrl);
   await recordVariant(env, saved.id, c, opts.terms);
   await moveClaims(env, c.id, saved.id);
-  await env.DB.prepare(`UPDATE promotion_candidates SET status = 'published', promotion_id = ? WHERE id = ?`)
-    .bind(saved.id, c.id)
+  // Whether nobody looked at this before it went live is an audit fact, kept
+  // on the candidate. Deriving it from change events counted every creation,
+  // including the ones a person approved.
+  await env.DB.prepare(
+    `UPDATE promotion_candidates
+        SET status = 'published', promotion_id = ?, published_at = ?, auto_published = ?
+      WHERE id = ?`
+  )
+    .bind(saved.id, today(env), opts.auto ? 1 : 0, c.id)
     .run();
   if (c.promotion_type === 'transfer_bonus') await syncTransferBonuses(env);
 

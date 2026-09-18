@@ -39,7 +39,7 @@ import { findDuplicate, merge } from './promotions/dedupe';
 import { inbox, rate } from './promotions/relevance';
 import { dismissPromotion, sweepCompleted, trackedOffers, trackPromotion } from './promotions/tracking';
 import { syncTransferBonuses } from './promotions/bridge';
-import { corroboratePending, discover, discoveryStatus, extractPending } from './promotions/discovery/run';
+import { corroboratePending, discover, discoveryStatus, extractPending, recentRuns, runDiscoveryPipeline } from './promotions/discovery/run';
 import { sourceHealth } from './promotions/discovery/sources';
 import { expireFinished } from './promotions/discovery/diff';
 import { approveCandidate, reviewQueue as promotionReviewQueue } from './promotions/discovery/review';
@@ -1370,6 +1370,24 @@ export default {
           if (stage === 'corroborate') return json(await corroboratePending(env, { limit }));
           if (stage === 'expire') return json(await expireFinished(env));
           return json({ error: 'stage must be discover, extract, corroborate or expire' }, 400);
+        }
+
+        // One action that answers "is there anything new?". The three stages
+        // below remain, because they are how you find out which one is stuck.
+        if (url.pathname === '/api/admin/discovery/run-all' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, number>;
+          return json(
+            await runDiscoveryPipeline(env, {
+              max_cycles: b.max_cycles,
+              discover_limit: b.discover_limit,
+              extract_limit: b.extract_limit,
+              corroborate_limit: b.corroborate_limit,
+            })
+          );
+        }
+
+        if (url.pathname === '/api/admin/discovery/runs') {
+          return json({ runs: await recentRuns(env, 20), as_of: today(env) });
         }
 
         if (url.pathname === '/api/admin/discovery/candidates') {

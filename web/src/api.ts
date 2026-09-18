@@ -1,3 +1,10 @@
+import type {
+  DiscoveryItemStatus,
+  PromotionCandidateStatus,
+  ScanFrequency,
+  SourceState,
+} from '../../shared/discovery';
+
 // The dashboard is served by the Worker that owns the API, so requests are
 // same-origin and there is nothing to configure here.
 export const API_BASE = '';
@@ -860,7 +867,7 @@ export interface DiscoverySource {
   base_url: string | null;
   feed_url: string | null;
   trust_tier: number;
-  scan_frequency: string;
+  scan_frequency: ScanFrequency;
   last_scanned_at: string | null;
   last_success_at: string | null;
   failure_count: number;
@@ -870,22 +877,32 @@ export interface DiscoverySource {
   successes: number;
   promotions_found: number;
   issuer: string | null;
+  base_scan_frequency: ScanFrequency | null;
+  adaptive_frequency: number;
+  last_items_seen: number | null;
+  last_items_new: number | null;
+  last_relevant_new: number | null;
 }
 
 export interface DiscoverySourceHealth {
   source: DiscoverySource;
+  state: SourceState;
   success_rate: number;
   days_since_success: number | null;
+  last_result: { items_seen: number | null; items_found: number | null; relevant_items_found: number | null } | null;
   ailing: boolean;
   note: string;
 }
 
 export interface DiscoveryStatus {
   as_of: string;
-  /** Keyed by discovery_items.status — pending, processed, failed, irrelevant. */
-  items: Record<string, number>;
-  /** Keyed by promotion_candidates.status — extracted, review, published, rejected. */
-  candidates: Record<string, number>;
+  /**
+   * Keyed by the states in shared/discovery. Typed against the same list the
+   * Worker writes, because this pair drifted once: the backend wrote `new` and
+   * this screen counted `pending`, so a working pipeline displayed as idle.
+   */
+  items: Partial<Record<DiscoveryItemStatus, number>>;
+  candidates: Partial<Record<PromotionCandidateStatus, number>>;
   today: { new: number; changed: number; auto_published: number; awaiting_review: number };
   sources: DiscoverySourceHealth[];
 }
@@ -922,8 +939,59 @@ export interface PromotionReviewItem {
 
 export const fetchDiscoveryStatus = () => get<DiscoveryStatus>('/api/admin/discovery/status');
 
-export const runDiscovery = (stage: 'discover' | 'extract' | 'corroborate') =>
+export const runDiscovery = (stage: 'discover' | 'extract' | 'corroborate' | 'expire') =>
   post<Record<string, unknown>>('/api/admin/discovery/run', { stage });
+
+export interface DiscoveryReport {
+  stage: string;
+  sources_scanned: number;
+  feed_items_seen: number;
+  search_queries_planned: number;
+  search_queries_executed: number;
+  search_results_seen: number;
+  items_found: number;
+  relevant_items_found: number;
+  items_classified: number;
+  articles_fetched: number;
+  articles_failed: number;
+  candidates_created: number;
+  candidates_merged: number;
+  published: number;
+  held_for_review: number;
+  expired: number;
+  notes: string[];
+  as_of: string;
+}
+
+export interface DiscoveryPipelineReport {
+  discover: DiscoveryReport;
+  extract: DiscoveryReport;
+  corroborate: DiscoveryReport;
+  summary: DiscoveryReport;
+  cycles: number;
+  stopped_because: 'no_work_left' | 'cycle_limit';
+}
+
+export const runDiscoveryAll = () => post<DiscoveryPipelineReport>('/api/admin/discovery/run-all', {});
+
+export interface DiscoveryRun {
+  id: number;
+  stage: string;
+  started_at: string;
+  finished_at: string | null;
+  success: number;
+  sources_scanned: number;
+  items_seen: number;
+  items_found: number;
+  relevant_items_found: number;
+  articles_fetched: number;
+  candidates_created: number;
+  published: number;
+  held_for_review: number;
+  error: string | null;
+}
+
+export const fetchDiscoveryRuns = () => get<{ runs: DiscoveryRun[]; as_of: string }>('/api/admin/discovery/runs');
 
 export const fetchPromotionReview = () => get<{ items: PromotionReviewItem[]; as_of: string }>('/api/admin/promotions/review');
 
