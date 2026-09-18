@@ -94,12 +94,16 @@ export class BraveSearchProvider implements SearchProvider {
   async search(query: string, options: { limit?: number } = {}): Promise<SearchResponse> {
     const limit = Math.min(20, Math.max(1, options.limit ?? DEFAULT_LIMIT));
     const url = new URL('https://api.search.brave.com/res/v1/web/search');
-    url.searchParams.set('q', query);
+    url.searchParams.set('q', trimQuery(query));
     url.searchParams.set('count', String(limit));
     // Singapore promotions, recent. Neither is a hard filter — the provider
     // treats them as preferences — but both cut the noise this pipeline would
     // otherwise pay to fetch and classify.
-    url.searchParams.set('country', 'sg');
+    //
+    // The country code is UPPERCASE. Brave validates it strictly and rejects
+    // the whole request with 422 otherwise, which is not obvious from a status
+    // line alone — hence the error body being read below rather than dropped.
+    url.searchParams.set('country', 'SG');
     url.searchParams.set('freshness', 'pm');
 
     // Through a local, not `this.fetchImpl(...)`: the property call is what
@@ -111,6 +115,9 @@ export class BraveSearchProvider implements SearchProvider {
       res = await send(url.toString(), {
         headers: {
           Accept: 'application/json',
+          'Accept-Encoding': 'gzip',
+          // Brave validates this one too, and rejects the request without it.
+          'Cache-Control': 'no-cache',
           'X-Subscription-Token': this.key,
           'User-Agent': USER_AGENT,
         },
@@ -126,7 +133,16 @@ export class BraveSearchProvider implements SearchProvider {
       throw new SearchProviderError('SEARCH_RATE_LIMITED', 'the search provider asked for fewer requests', 429);
     }
     if (!res.ok) {
-      throw new SearchProviderError('SEARCH_PROVIDER_ERROR', `the search provider returned ${res.status}`, res.status);
+      // The provider says why. Dropping it and reporting the bare status is
+      // the same silent failure this whole layer exists to prevent: "the
+      // search provider returned 422" is unactionable, while the body names
+      // the parameter it rejected.
+      const said = await explainFailure(res);
+      throw new SearchProviderError(
+        'SEARCH_PROVIDER_ERROR',
+        `the search provider returned ${res.status}${said ? `: ${said}` : ''}`,
+        res.status
+      );
     }
 
     let body: any;
@@ -151,6 +167,65 @@ export class BraveSearchProvider implements SearchProvider {
       })).filter((r) => r.url.startsWith('http')),
     };
   }
+}
+
+/**
+ * What the provider said about the failure, in as few words as carry meaning.
+ *
+ * A 422 from Brave names the parameter it rejected, and that one sentence is
+ * the difference between "search is broken" and "the country code has to be
+ * uppercase". Reading the body is best-effort: it must never turn one failure
+ * into two.
+ */
+export async function explainFailure(res: Response): Promise<string | null> {
+  let raw: string;
+  try {
+    raw = (await res.text()).slice(0, 2000);
+  } catch {
+    return null;
+  }
+  if (!raw.trim()) return null;
+
+  try {
+    const body = JSON.parse(raw);
+    const err = body?.error ?? body;
+    const detail: string | null = typeof err?.detail === 'string' ? err.detail : null;
+    const code: string | null = typeof err?.code === 'string' ? err.code : null;
+
+    // Brave puts the specific parameter complaints in meta.errors.
+    const metaErrors = Array.isArray(err?.meta?.errors) ? err.meta.errors : [];
+    const fields = metaErrors
+      .map((e: any) => {
+        const where = Array.isArray(e?.loc) ? e.loc.filter((x: unknown) => typeof x === 'string').join('.') : null;
+        const msg = typeof e?.msg === 'string' ? e.msg : typeof e?.message === 'string' ? e.message : null;
+        return where && msg ? `${where} — ${msg}` : (msg ?? where);
+      })
+      .filter(Boolean)
+      .slice(0, 4);
+
+    const parts = [code, detail, ...fields].filter(Boolean) as string[];
+    if (parts.length) return parts.join('; ').slice(0, 400);
+  } catch {
+    /* not JSON; the raw text is still better than nothing */
+  }
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+
+/**
+ * Keep a query inside what the provider will accept.
+ *
+ * Brave caps `q` at 600 characters and 75 words and rejects the request
+ * outright past either. The generated series queries quote a whole article
+ * title, so this is a real ceiling rather than a theoretical one — and a
+ * rejected request costs the same as a successful one.
+ */
+export const MAX_QUERY_CHARS = 400;
+export const MAX_QUERY_WORDS = 50;
+
+export function trimQuery(q: string): string {
+  const words = q.trim().split(/\s+/);
+  const clipped = words.length > MAX_QUERY_WORDS ? words.slice(0, MAX_QUERY_WORDS).join(' ') : q.trim();
+  return clipped.length > MAX_QUERY_CHARS ? clipped.slice(0, MAX_QUERY_CHARS).trim() : clipped;
 }
 
 const hostOrNull = (url: string): string | null => {

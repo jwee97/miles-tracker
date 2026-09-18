@@ -2580,6 +2580,24 @@ where adaptation moved it. So **re-running the seed is the repair** for a source
 that was demoted — it restores pinned sources to their configured cadence and
 leaves adapting ones where they are.
 
+### What the provider's refusal says
+
+A search request has to satisfy Brave's own validation, and it is strict in
+ways a status line does not reveal:
+
+- `country` must be an **uppercase** two-character code. `sg` is rejected with
+  422; `SG` is accepted.
+- `Cache-Control: no-cache` must be sent, or the request is rejected.
+- `q` is capped at 600 characters and 75 words; the generated series queries
+  quote a whole article title, so they are trimmed well inside that.
+- `freshness` must be one of `pd`, `pw`, `pm`, `py`, or a date range.
+
+When a request is rejected the body names the parameter, so the app reads it
+and repeats it back: *"the search provider returned 422: VALIDATION; Unable to
+validate request parameter(s); query.country — string does not match regex"*.
+Reporting the bare status would be the same silent failure this layer exists to
+prevent — 422 alone is unactionable.
+
 ### Holding a fetch, in Workers
 
 Workers' `fetch` refuses to run with a `this` that is not the global scope, and

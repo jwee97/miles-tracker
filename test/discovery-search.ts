@@ -17,7 +17,10 @@ import { discover } from '../src/promotions/discovery/run';
 import {
   bindFetch,
   BraveSearchProvider,
+  MAX_QUERY_CHARS,
+  MAX_QUERY_WORDS,
   normaliseDate,
+  trimQuery,
   searchConfigured,
   searchProvider,
   SearchProviderError,
@@ -341,6 +344,67 @@ check('results come back mapped', response.results.length === 1, String(response
 check('with a result that is not a URL dropped', response.results.every((r) => r.url.startsWith('http')));
 check('and the date normalised', response.results[0].published_at === '2026-09-10', String(response.results[0].published_at));
 check('an unparseable date is simply unknown', normaliseDate('sometime') === null);
+
+// The request has to satisfy the provider's own validation, and a 422 is the
+// provider telling us which part it rejected. Reporting the bare status —
+// "the search provider returned 422" — is unactionable, and is the same silent
+// failure this whole layer exists to prevent.
+const sent = new URL(lastRequest!.url);
+check('the country code is uppercase, as the API requires', sent.searchParams.get('country') === 'SG', String(sent.searchParams.get('country')));
+check('freshness is one of the accepted values', ['pd', 'pw', 'pm', 'py'].includes(sent.searchParams.get('freshness') ?? ''), String(sent.searchParams.get('freshness')));
+check('the count is within the documented maximum', Number(sent.searchParams.get('count')) <= 20);
+check('caching is declined, which the API validates', (lastRequest!.headers as any)['Cache-Control'] === 'no-cache');
+
+check('a long query is trimmed to what the API accepts', trimQuery('word '.repeat(200)).split(/\s+/).length <= MAX_QUERY_WORDS);
+check('and to the character ceiling', trimQuery('x'.repeat(2000)).length <= MAX_QUERY_CHARS);
+check('while a short one is left exactly as written', trimQuery('citi rewards promotion') === 'citi rewards promotion');
+
+const rejecting = new BraveSearchProvider('k', (async () => ({
+  ok: false,
+  status: 422,
+  text: async () =>
+    JSON.stringify({
+      type: 'ErrorResponse',
+      error: {
+        id: 'abc',
+        status: 422,
+        code: 'VALIDATION',
+        detail: 'Unable to validate request parameter(s)',
+        meta: { errors: [{ loc: ['query', 'country'], msg: 'string does not match regex' }] },
+      },
+    }),
+}) as any) as unknown as typeof fetch);
+
+let rejected: SearchProviderError | null = null;
+try {
+  await rejecting.search('x');
+} catch (e) {
+  rejected = e as SearchProviderError;
+}
+check('a 422 still throws', rejected instanceof SearchProviderError);
+check('and carries the status', rejected!.status === 422);
+check('but the message says what the provider objected to', rejected!.message.includes('country'), rejected!.message);
+check('naming the reason, not just the number', rejected!.message.includes('Unable to validate'), rejected!.message);
+check('with its own error code', rejected!.message.includes('VALIDATION'), rejected!.message);
+
+const opaque = new BraveSearchProvider('k', (async () => ({ ok: false, status: 500, text: async () => 'upstream exploded' }) as any) as unknown as typeof fetch);
+rejected = null;
+try {
+  await opaque.search('x');
+} catch (e) {
+  rejected = e as SearchProviderError;
+}
+check('a non-JSON body is still repeated back', rejected!.message.includes('upstream exploded'), rejected!.message);
+
+const silent = new BraveSearchProvider('k', (async () => ({ ok: false, status: 503, text: async () => '' }) as any) as unknown as typeof fetch);
+rejected = null;
+try {
+  await silent.search('x');
+} catch (e) {
+  rejected = e as SearchProviderError;
+}
+check('and a provider that says nothing still gives the status', rejected!.message.includes('503'), rejected!.message);
+check('without inventing an explanation', !rejected!.message.includes('undefined'), rejected!.message);
 
 const rateLimited = new BraveSearchProvider('k', (async () => ({ ok: false, status: 429, json: async () => ({}) }) as any) as unknown as typeof fetch);
 let thrown: unknown = null;
