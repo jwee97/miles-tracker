@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
+  AUDIENCE_KINDS,
+  AUDIENCE_LABEL,
   fetchDiscoveryStatus,
   fetchPromotionReview,
   money,
@@ -188,6 +190,7 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const [audience, setAudience] = useState(item.audience.type);
 
   async function publish() {
     setBusy(true);
@@ -197,7 +200,11 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
       // Only the fields actually touched are sent. An edit is the strongest
       // evidence the system ever gets, and sending every field back would
       // record a person as the source of numbers they merely looked at.
-      const r = await publishCandidateEdit(item.candidate_id, termsFromEdits(edits) ?? undefined);
+      const r = await publishCandidateEdit(
+        item.candidate_id,
+        termsFromEdits(edits) ?? undefined,
+        audience !== item.audience.type ? audience : undefined
+      );
       if (!r.ok) {
         setErr(r.error ?? 'that did not work');
         return;
@@ -240,6 +247,32 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
       {item.provenance.search_query && (
         <p className="sub mono">found by searching “{item.provenance.search_query}”</p>
       )}
+
+      {/* Who the offer is for, with the wording it was read from. An audience
+          read wrongly sends a person to apply for a card that cannot benefit
+          them, or hides one they could take — and it is invisible unless it is
+          on the screen beside its evidence. */}
+      <div className="addrule">
+        <p className="sub">
+          <b>Audience</b> · {AUDIENCE_LABEL[item.audience.type] ?? item.audience.type} ({item.audience.confidence}{' '}
+          confidence)
+        </p>
+        {item.audience.raw_text ? (
+          <p className="sub mono">“{item.audience.raw_text}”</p>
+        ) : (
+          <p className="sub">No wording about eligibility was found. It is recorded as not established.</p>
+        )}
+        <label className="f">
+          <span>Correct it</span>
+          <select value={audience} onChange={(e) => setAudience(e.target.value)}>
+            {AUDIENCE_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {AUDIENCE_LABEL[k]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
 
       {item.review_reason && <p className="offer2-why"><b>Why you are being asked:</b> {item.review_reason}</p>}
       {item.conflicts.map((c, i) => (

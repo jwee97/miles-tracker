@@ -750,10 +750,45 @@ export interface Promotion {
   status: string;
 }
 
+export type PromotionRelationship =
+  | 'held_card'
+  | 'acquisition_opportunity'
+  | 'programme_offer'
+  | 'issuer_offer'
+  | 'general_offer'
+  | 'targeted_offer'
+  | 'unknown'
+  | 'not_relevant';
+
+export type PromotionEligibility = 'eligible' | 'potentially_eligible' | 'ineligible' | 'unknown' | 'needs_review';
+
+export type PromotionRelevance = 'high' | 'medium' | 'low' | 'not_relevant';
+
+export interface PromotionAudience {
+  type: string;
+  issuer?: string | null;
+  product_ids?: number[];
+  raw_text?: string | null;
+  exclusion_months?: number | null;
+  confidence?: 'high' | 'medium' | 'low';
+}
+
 export interface RelevantPromotion {
   promotion: Promotion;
   terms: Record<string, unknown>;
-  relevance: 'high' | 'medium' | 'low' | 'not_applicable';
+  audience: PromotionAudience;
+  relationship: PromotionRelationship;
+  eligibility: {
+    status: PromotionEligibility;
+    confirmed: string[];
+    unresolved: string[];
+    failed: string[];
+  };
+  relevance: PromotionRelevance;
+  legacy_relevance: string;
+  linked_products: { product_id: number; product_name: string; issuer: string }[];
+  acquisition_product: { product_id: number; product_name: string } | null;
+  confidence: 'high' | 'medium' | 'low';
   why: string[];
   blockers: string[];
   days_left: number | null;
@@ -815,10 +850,62 @@ export interface OfferInbox {
   worth_checking: RelevantPromotion[];
   ending_soon: RelevantPromotion[];
   your_cards: RelevantPromotion[];
+  /** Cards you could apply for — the section the old model could not express. */
+  acquisition: RelevantPromotion[];
   transfers: RelevantPromotion[];
   everything: RelevantPromotion[];
   as_of: string;
 }
+
+/**
+ * Backend enums, mapped to something a person would say.
+ *
+ * The screen never prints the enum. "not_applicable" reached a user once and
+ * read as a system noise rather than an answer.
+ */
+export const RELATIONSHIP_LABEL: Record<PromotionRelationship, string> = {
+  held_card: 'For a card you hold',
+  acquisition_opportunity: 'New-card offer',
+  programme_offer: 'For your points',
+  issuer_offer: 'For this bank’s cardholders',
+  general_offer: 'Open offer',
+  targeted_offer: 'Invitation required',
+  unknown: 'Eligibility unclear',
+  not_relevant: 'Not applicable',
+};
+
+export const ELIGIBILITY_LABEL: Record<PromotionEligibility, string> = {
+  eligible: 'Eligible',
+  potentially_eligible: 'Potentially eligible',
+  ineligible: 'Not eligible',
+  unknown: 'Eligibility unclear',
+  needs_review: 'Needs review',
+};
+
+export interface AcquisitionOpportunity {
+  product: { product_id: number; product_name: string; issuer: string | null };
+  promotion: {
+    id: number;
+    title: string;
+    end_at: string | null;
+    days_left: number | null;
+    audience: string;
+    reward: string | null;
+    minimum_spend_cents: number | null;
+  } | null;
+  eligibility: { status: PromotionEligibility; confirmed: string[]; unresolved: string[]; failed: string[] } | null;
+  value: {
+    ongoing_annual_cents: number;
+    welcome_once_cents: number;
+    first_year_cents: number;
+    after_offer_annual_cents: number;
+  };
+  notes: string[];
+  as_of: string;
+}
+
+export const analyseAcquisition = (product_id: number, promotion_id?: number | null) =>
+  post<AcquisitionOpportunity>('/api/cards/acquisition/analyse', { product_id, promotion_id });
 
 export interface TrackedOffer {
   tracking_id: number;
@@ -851,6 +938,30 @@ export interface CorrectionResult {
   changed?: { field: string; before: unknown; after: unknown }[];
 }
 
+export const AUDIENCE_KINDS = [
+  'public',
+  'new_to_bank',
+  'new_to_card',
+  'new_applicant',
+  'existing_cardholder',
+  'specific_product_holder',
+  'issuer_cardholder',
+  'targeted',
+  'unknown',
+] as const;
+
+export const AUDIENCE_LABEL: Record<string, string> = {
+  public: 'Open to anyone',
+  new_to_bank: 'New customers of this bank',
+  new_to_card: 'People who have not held this card',
+  new_applicant: 'New applicants',
+  existing_cardholder: 'Existing cardholders',
+  specific_product_holder: 'Holders of a particular card',
+  issuer_cardholder: "Any of this bank's cardholders",
+  targeted: 'By invitation only',
+  unknown: 'Not established',
+};
+
 export const PROMOTION_KINDS = [
   'welcome_offer',
   'spend_bonus',
@@ -869,7 +980,7 @@ export const correctPromotion = (
   opts: {
     note?: string | null;
     allow_implausible?: boolean;
-    identity?: { title?: string | null; promotion_type?: string | null };
+    identity?: { title?: string | null; promotion_type?: string | null; audience_type?: string | null };
   } = {}
 ) => post<CorrectionResult>(`/api/promotions/${id}/correct`, { terms, ...opts });
 
@@ -1002,6 +1113,7 @@ export interface PromotionReviewItem {
   sources: { url: string; tier: number; type: string }[];
   existing: { id: number; title: string; terms: Record<string, unknown>; end_at: string | null } | null;
   diff: { field: string; before: unknown; after: unknown }[];
+  audience: { type: string; raw_text: string | null; confidence: string };
   article: { url: string | null; title: string | null } | null;
   provenance: {
     discovery_channels: ('rss' | 'search' | 'manual')[];
@@ -1070,8 +1182,11 @@ export const fetchDiscoveryRuns = () => get<{ runs: DiscoveryRun[]; as_of: strin
 
 export const fetchPromotionReview = () => get<{ items: PromotionReviewItem[]; as_of: string }>('/api/admin/promotions/review');
 
-export const publishCandidateEdit = (id: number, terms?: Record<string, unknown>) =>
-  post<{ ok: boolean; error?: string; change?: string | null }>(`/api/admin/promotions/review/${id}/publish`, { terms });
+export const publishCandidateEdit = (id: number, terms?: Record<string, unknown>, audience_type?: string) =>
+  post<{ ok: boolean; error?: string; change?: string | null }>(`/api/admin/promotions/review/${id}/publish`, {
+    terms,
+    audience_type,
+  });
 
 export const rejectCandidate = (id: number, reason?: string) =>
   post<{ ok: boolean; error?: string }>(`/api/admin/promotions/review/${id}/reject`, { reason });

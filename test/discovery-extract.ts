@@ -19,7 +19,7 @@ import {
   reclassifyItem,
   requeueForExtraction,
 } from '../src/promotions/discovery/reclassify';
-import { audienceOf } from '../src/promotions/variants';
+import { variantAudienceOf } from '../src/promotions/variants';
 import type { Env } from '../src/types';
 
 const db = new DatabaseSync(':memory:');
@@ -144,7 +144,7 @@ check('the deadline is read', c.application_end === '2026-09-30', String(c.appli
 // Kept in the article's own words — hyphens and all — because the sentence is
 // the evidence. What it means is decided separately, by audienceOf.
 check('who it is for is read', /new-to-bank/i.test(c.eligibility_text ?? ''), String(c.eligibility_text));
-check('and it resolves to an audience', audienceOf(c.eligibility_text ?? '') === 'new_customer', String(c.eligibility_text));
+check('and it resolves to an audience', variantAudienceOf(c.eligibility_text ?? '') === 'new_customer', String(c.eligibility_text));
 check('registration is not assumed away', c.registration_required === true);
 check('and knowing all of it earns high confidence', c.extraction_confidence === 'high', c.extraction_confidence);
 check('every reading carries the sentence it came from', c.source_claims.every((x) => x.supporting_excerpt.length > 0));

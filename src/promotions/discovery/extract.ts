@@ -1,3 +1,4 @@
+import { classifyAudience, type PromotionAudience } from '../audience';
 import type { PromotionType } from '../model';
 import { excerptAround } from './fetch';
 
@@ -47,6 +48,14 @@ export interface PromotionCandidate {
   application_start?: string;
   application_end?: string;
   eligibility_text?: string;
+  /**
+   * Who the offer is for, as structured data.
+   *
+   * Extraction proposes; nothing here decides eligibility. The raw wording
+   * travels with it so a reviewer can disagree with the classification
+   * without re-reading the article.
+   */
+  audience?: PromotionAudience;
   registration_required?: boolean;
   application_channel: ApplicationChannel;
   expected_crediting_date?: string;
@@ -276,6 +285,16 @@ export function extractOne(text: string, url: string, title = ''): PromotionCand
   );
   if (eligibility) claims.push(claim('eligibility_text', eligibility[1], 'medium', flat, eligibility[1]));
 
+  // The audience is read from the eligibility sentence when there is one, and
+  // from the whole text only for the phrasings that are unambiguous. What is
+  // not established stays unknown — "no restriction found" is not evidence
+  // that an offer is open to everyone.
+  const audience = classifyAudience(eligibility?.[1] ?? null);
+  const fallbackAudience = audience.type === 'unknown' ? classifyAudience(flat.slice(0, 1200)) : audience;
+  if (fallbackAudience.type !== 'unknown') {
+    claims.push(claim('audience_type', fallbackAudience.type, fallbackAudience.confidence ?? 'low', flat, fallbackAudience.raw_text ?? ''));
+  }
+
   const type: PromotionType | null = reward.bonus_pct
     ? 'transfer_bonus'
     : /welcome|sign[- ]?up|new cardholder|new cardmember/i.test(flat)
@@ -301,6 +320,7 @@ export function extractOne(text: string, url: string, title = ''): PromotionCand
     application_start: start?.iso,
     application_end: end?.iso,
     eligibility_text: eligibility?.[1],
+    audience: fallbackAudience,
     registration_required: registration || undefined,
     application_channel: findChannel(flat, url),
     source_claims: claims,

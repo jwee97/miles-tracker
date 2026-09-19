@@ -336,6 +336,7 @@ let trackedOffer: number | null = null;
 let reviewAction: string | null = null;
 let testedSource: number | null = null;
 let corrected: any = null;
+let analysed: any = null;
 let confirmed: any = null;
 let simulated: any = null;
 let added: any[] = [];
@@ -506,6 +507,18 @@ async function stub(page: Page) {
         reachable: true,
         monthly_spend_cents: 43000,
         tracked: false,
+        audience: { type: 'issuer_cardholder', raw_text: 'All DBS cardholders.', confidence: 'medium' },
+        relationship: 'held_card',
+        eligibility: {
+          status: 'potentially_eligible',
+          confirmed: ['You hold a card this promotion applies to.'],
+          unresolved: [],
+          failed: [],
+        },
+        legacy_relevance: 'high',
+        linked_products: [{ product_id: 7, product_name: "Woman's World Card", issuer: 'DBS' }],
+        acquisition_product: null,
+        confidence: 'high',
         pays: '2,000 points to 5,000 points',
         pays_varies: true,
         variants: [
@@ -537,21 +550,60 @@ async function stub(page: Page) {
           stale: false,
         },
       };
+      // An existing-cardholder offer for a card nobody holds: the one case
+      // where not owning the card really is the disqualification.
       const irrelevant = {
         ...offer,
         promotion: { ...offer.promotion, id: 8, title: 'Offer for a card you do not hold' },
-        relevance: 'not_applicable',
+        relevance: 'not_relevant',
+        legacy_relevance: 'not_applicable',
+        relationship: 'not_relevant',
+        audience: { type: 'specific_product_holder', raw_text: 'Existing Altitude cardmembers.', confidence: 'high' },
+        eligibility: {
+          status: 'ineligible',
+          confirmed: [],
+          unresolved: [],
+          failed: ['This promotion is only for existing Altitude Card holders, and you do not currently hold the card.'],
+        },
         why: [],
-        blockers: ['You do not hold the card this applies to.'],
+        blockers: ['This promotion is only for existing Altitude Card holders, and you do not currently hold the card.'],
         card: null,
       };
+
+      // The case the whole redesign exists for: a welcome offer for a card the
+      // person does not hold is an opportunity, not a rejection.
+      const acquisition = {
+        ...offer,
+        promotion: { ...offer.promotion, id: 9, title: 'OCBC Rewards welcome offer', promotion_type: 'welcome_offer' },
+        relevance: 'medium',
+        legacy_relevance: 'medium',
+        relationship: 'acquisition_opportunity',
+        audience: { type: 'new_applicant', raw_text: 'New cardmembers who apply by 30 September.', confidence: 'high' },
+        eligibility: {
+          status: 'needs_review',
+          confirmed: ['You do not currently hold this card.'],
+          unresolved: ['Income and any other bank conditions are not recorded here.'],
+          failed: [],
+        },
+        why: ['This offer is for new applicants.'],
+        blockers: [],
+        linked_products: [{ product_id: 11, product_name: 'Rewards Card', issuer: 'OCBC' }],
+        acquisition_product: { product_id: 11, product_name: 'Rewards Card' },
+        card: null,
+        tracked: false,
+        variants: [],
+        pays: null,
+        pays_varies: false,
+      };
+
       return send({
         as_of: '2026-09-18',
         worth_checking: [offer],
         ending_soon: [offer],
         your_cards: [offer],
+        acquisition: [acquisition],
         transfers: [],
-        everything: [offer, irrelevant],
+        everything: [offer, irrelevant, acquisition],
       });
     }
     if (u.pathname === '/api/promotions/tracked')
@@ -570,6 +622,31 @@ async function stub(page: Page) {
     if (u.pathname.match(/^\/api\/promotions\/\d+\/track$/)) {
       trackedOffer = Number(u.pathname.split('/')[3]);
       return send({ ok: true, summary: '$300.00 on wwmc by 2026-09-30 — 12 days left.' });
+    }
+    if (u.pathname === '/api/cards/acquisition/analyse') {
+      analysed = (await route.request().postDataJSON()) as any;
+      return send({
+        product: { product_id: 11, product_name: 'Rewards Card', issuer: 'OCBC' },
+        evaluation: null,
+        promotion: {
+          id: 9,
+          title: 'OCBC Rewards welcome offer',
+          end_at: '2026-09-30',
+          days_left: 12,
+          audience: 'New applicants',
+          reward: '20,000 miles',
+          minimum_spend_cents: 80000,
+        },
+        eligibility: { status: 'needs_review', confirmed: ['You do not currently hold this card.'], unresolved: ['Income requirement'], failed: [] },
+        value: {
+          ongoing_annual_cents: 1400000,
+          welcome_once_cents: 3000000,
+          first_year_cents: 4400000,
+          after_offer_annual_cents: 1400000,
+        },
+        notes: ['The welcome offer is counted once and kept out of the annual figure — it does not repeat.'],
+        as_of: '2026-09-18',
+      });
     }
     if (u.pathname.match(/^\/api\/promotions\/\d+\/correct$/)) {
       corrected = (await route.request().postDataJSON()) as any;
@@ -763,6 +840,7 @@ async function stub(page: Page) {
             sources: [{ url: 'https://milelion.test/citi', tier: 2, type: 'article' }],
             existing: { id: 7, title: 'Citi Rewards welcome offer', terms: { reward_miles: 12000 }, end_at: '2026-09-30' },
             diff: [{ field: 'reward_miles', before: 12000, after: 16000 }],
+            audience: { type: 'new_applicant', raw_text: 'New cardmembers who apply by 30 September.', confidence: 'high' },
             article: { url: 'https://milelion.test/citi', title: 'Citi Rewards: 16,000 bonus miles' },
             provenance: {
               discovery_channels: ['search'],
@@ -1221,7 +1299,7 @@ async function main() {
 
     const offersText = await page.locator('main').innerText();
     check('relevant offers lead', says(offersText, 'Worth checking'), offersText.slice(0, 300));
-    check('and every one says why it is shown', says(offersText, "Why you're seeing this"), offersText.slice(0, 500));
+    check('and every one says why it is shown', says(offersText, 'Why it may be relevant'), offersText.slice(0, 500));
     check('in terms of this wallet', says(offersText, 'You normally spend about $430.00'), offersText.slice(0, 600));
     check('registration is not assumed away', says(offersText, 'Registration required'), offersText.slice(0, 600));
 
@@ -1335,8 +1413,44 @@ async function main() {
 
     await page.locator('.card', { hasText: 'Everything' }).getByRole('button', { name: 'Show' }).click();
     const everything = await page.locator('.card', { hasText: 'Everything' }).innerText();
-    check('offers that do not apply are still listed', says(everything, 'do not hold'), everything.slice(0, 400));
-    check('with the reason they do not', says(everything, 'not_applicable'), everything.slice(0, 400));
+    check('offers that do not apply are still listed', says(everything, 'do not hold'), everything.slice(0, 600));
+    // The enum never reaches the screen. A person saw "not_applicable" once,
+    // which reads as system noise rather than as an answer.
+    check('with the reason said in words', says(everything, 'Not applicable'), everything.slice(0, 600));
+    check('and never as a raw enum', !everything.includes('not_applicable') && !everything.includes('not_relevant'), everything.slice(0, 600));
+    check('an acquisition offer reads as a new-card offer', says(everything, 'New-card offer'), everything.slice(0, 800));
+
+    // --- the case this redesign exists for --------------------------------
+    // A welcome offer for a card you do not hold is an opportunity, not a
+    // rejection, and it gets a section of its own rather than being buried
+    // under Everything.
+    const newCard = page.locator('.card', { hasText: 'New-card offers' });
+    const newCardText = await newCard.innerText();
+    check('new-card offers get their own section', says(newCardText, 'OCBC Rewards welcome offer'), newCardText.slice(0, 400));
+    check('labelled as what it is', says(newCardText, 'New-card offer'), newCardText.slice(0, 500));
+    check('saying you do not hold the card yet', says(newCardText, 'don’t currently hold this card') || says(newCardText, "don't currently hold this card"), newCardText.slice(0, 700));
+    check('and that applying is the point', says(newCardText, 'may apply if you apply for it'), newCardText.slice(0, 700));
+    check('with eligibility kept separate from relevance', says(newCardText, 'Needs review'), newCardText.slice(0, 700));
+    check('and never the sentence the bug produced', !says(newCardText, 'which you do not hold'), newCardText.slice(0, 800));
+
+    // Track is withheld: there is no card for the spend to land on.
+    check('tracking is not offered before the card exists', (await newCard.getByRole('button', { name: 'Track this offer' }).count()) === 0);
+    check('saving it is offered instead', (await newCard.getByRole('button', { name: 'Save this offer' }).count()) === 1);
+
+    await newCard.locator('summary', { hasText: 'Eligibility' }).click();
+    const elig = await newCard.innerText();
+    check('what was confirmed is shown', says(elig, 'You do not currently hold this card'), elig.slice(0, 1200));
+    check('and what could not be checked', says(elig, 'not recorded here'), elig.slice(0, 1400));
+
+    await newCard.getByRole('button', { name: 'Analyse card' }).click();
+    await newCard.locator('.acq-analysis .rules').waitFor();
+    check('the analysis carries the card and the offer', analysed?.product_id === 11 && analysed?.promotion_id === 9, JSON.stringify(analysed));
+    const newCardAnalysis = await newCard.locator('.acq-analysis').innerText();
+    check('ongoing value is shown on its own', says(newCardAnalysis, 'Ongoing value'), newCardAnalysis.slice(0, 600));
+    check('the welcome offer separately', says(newCardAnalysis, 'Current welcome offer'), newCardAnalysis.slice(0, 600));
+    check('with a first year and a steady state', says(newCardAnalysis, 'First year') && says(newCardAnalysis, 'After the offer ends'), newCardAnalysis.slice(0, 800));
+    check('and it says the bonus does not repeat', says(newCardAnalysis, 'does not repeat'), newCardAnalysis.slice(0, 900));
+    check('the offer expiry is visible', says(newCardAnalysis, '2026-09-30'), newCardAnalysis.slice(0, 900));
 
     // --- what the app read, and what is left for a person ----------------
     await page.getByRole('button', { name: /^More/ }).click();

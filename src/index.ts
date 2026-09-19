@@ -36,8 +36,9 @@ import { goalProgress, listGoals, reservedFor, saveGoal, setGoalStatus } from '.
 import { expirePromotions, linkApplicability, publishPromotion, savePromotion } from './promotions/model';
 import { extractPromotion, saveDraft } from './promotions/extract';
 import { findDuplicate, merge } from './promotions/dedupe';
-import { inbox, rate } from './promotions/relevance';
-import { dismissPromotion, sweepCompleted, trackedOffers, trackPromotion } from './promotions/tracking';
+import {  rate } from './promotions/relevance';
+import { inbox } from './promotions/inbox';
+import { activateWatchedPromotions, dismissPromotion, sweepCompleted, trackedOffers, trackPromotion } from './promotions/tracking';
 import { syncTransferBonuses } from './promotions/bridge';
 import { corroboratePending, discover, discoveryStatus, discoveryStatusV2, extractPending, recentRuns, runDiscoveryPipeline } from './promotions/discovery/run';
 import { testSource } from './promotions/discovery/diagnostics';
@@ -53,6 +54,7 @@ import { correctPromotion } from './promotions/correct';
 import { contributeTargeted, removeVariant, variantsFor } from './promotions/variants';
 import { portfolioGaps, spendingProfile } from './acquisition/gaps';
 import { acquisitionReport } from './acquisition/economics';
+import { analyseAcquisition } from './promotions/acquire';
 import { extractRewards, pendingCandidates, saveCandidates } from './rewards/extract';
 import { onboardingView, writeState } from './onboarding/state';
 import { searchProducts } from './onboarding/search';
@@ -1355,6 +1357,23 @@ export default {
           });
         }
 
+        // One card, analysed in the context of the offer that prompted it.
+        // Separate from the portfolio report above, which starts from gaps.
+        if (url.pathname === '/api/cards/acquisition/analyse' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as {
+            product_id?: number;
+            promotion_id?: number;
+            history_months?: number;
+          };
+          if (typeof b.product_id !== 'number') return json({ error: 'a card is required' }, 400);
+          const r = await analyseAcquisition(env, {
+            product_id: b.product_id,
+            promotion_id: typeof b.promotion_id === 'number' ? b.promotion_id : null,
+            history_months: b.history_months,
+          });
+          return json(r, 'error' in r ? 404 : 200);
+        }
+
         if (url.pathname === '/api/cards/acquisition/simulate' && req.method === 'POST') {
           const b = (await req.json().catch(() => ({}))) as {
             history_months?: number;
@@ -1489,7 +1508,11 @@ export default {
           const parts = url.pathname.split('/');
           const id = Number(parts[5]);
           const action = parts[6];
-          const b = (await req.json().catch(() => ({}))) as { into?: number; terms?: Record<string, unknown> };
+          const b = (await req.json().catch(() => ({}))) as {
+            into?: number;
+            terms?: Record<string, unknown>;
+            audience_type?: string;
+          };
 
           if (action === 'reject') {
             await env.DB.prepare(`UPDATE promotion_candidates SET status = 'rejected' WHERE id = ?`).bind(id).run();
@@ -1508,7 +1531,7 @@ export default {
             return json({ ok: true, applied: `merged into promotion #${b.into}` });
           }
 
-          const r = await approveCandidate(env, id, b.terms);
+          const r = await approveCandidate(env, id, b.terms, b.audience_type);
           return json(r, r.ok ? 200 : 400);
         }
 
@@ -1929,6 +1952,11 @@ export default {
           const liveSet = productId ? await ruleSetOn(env, productId, today(env)) : null;
           const liveRules = liveSet ? (await rulesIn(env, liveSet.id)).length : 0;
 
+          // An offer saved before this card existed could not have its spend
+          // measured. Now it can, so it starts counting without anyone having
+          // to remember it.
+          const activated = await activateWatchedPromotions(env, ins.meta.last_row_id);
+
           return json({
             ok: true,
             id: ins.meta.last_row_id,
@@ -1939,6 +1967,8 @@ export default {
             product,
             from_catalog: !!chosen,
             rules: liveRules,
+            activated_offers: activated.activated,
+            activated_notes: activated.notes,
           });
         }
 

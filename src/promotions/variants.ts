@@ -325,7 +325,7 @@ export function variantsFromCandidate(c: {
   minimum_spend_cents?: number | null;
   reward?: VariantReward;
 }): VariantInput[] {
-  const audience = audienceOf(c.eligibility_text ?? '');
+  const audience = variantAudienceOf(c.eligibility_text ?? '');
   const channel = c.application_channel || 'unknown';
   if (audience === 'everyone' && channel === 'unknown') return [];
   return [
@@ -345,7 +345,16 @@ export function variantsFromCandidate(c: {
  * reading; anything vaguer stays 'everyone', because guessing that an offer
  * excludes someone is as harmful as guessing that it includes them.
  */
-export function audienceOf(text: string): Audience {
+/**
+ * Which variant audience a sentence describes.
+ *
+ * Named apart from the promotion-level `audienceOf` in audience.ts, which
+ * answers a different question: that one says who the *offer* is for, this one
+ * says which *shape* of a multi-shape offer a sentence belongs to. Sharing a
+ * name made them look interchangeable, and conflating two audience concepts is
+ * the mistake this whole area is being cleaned up for.
+ */
+export function variantAudienceOf(text: string): Audience {
   const t = text.toLowerCase();
   if (/\b(targeted|by invitation|invitation only|if you (were|are) invited|emailed to selected)\b/.test(t)) {
     return 'targeted';

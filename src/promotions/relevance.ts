@@ -1,7 +1,12 @@
 import { money, today } from '../spend';
-import type { Env } from '../types';
+import type { Card, Env } from '../types';
+import { audienceOf, type PromotionAudience } from './audience';
+import { evaluatePromotionEligibility, type PromotionEligibility } from './eligibility';
 import { termsOf, type Promotion, type PromotionTerms } from './model';
+import { resolvePromotionRelationship, type PromotionRelationship } from './relationship';
 import { invitedKeys, spread, variantsFor, viewVariants, type VariantView } from './variants';
+
+export type { PromotionAudience, PromotionEligibility, PromotionRelationship };
 
 /**
  * Which promotions are worth showing this person.
@@ -12,18 +17,60 @@ import { invitedKeys, spread, variantsFor, viewVariants, type VariantView } from
  * always comes with the reason, because "why am I seeing this" must have one.
  */
 
-export type Relevance = 'high' | 'medium' | 'low' | 'not_applicable';
+/**
+ * How useful it is to surface this offer — a ranking, and only that.
+ *
+ * `not_applicable` is gone. It was doing two jobs: "this cannot be used" and
+ * "this is not worth showing", and conflating them is what made a welcome
+ * offer on a card you do not hold look like a rejection. Whether an offer can
+ * be used is now eligibility's answer.
+ */
+export type PromotionRelevance = 'high' | 'medium' | 'low' | 'not_relevant';
+
+/** The old name, still exported so nothing importing it breaks. */
+export type Relevance = PromotionRelevance | 'not_applicable';
 
 export interface RelevantPromotion {
   promotion: Promotion;
   terms: PromotionTerms;
-  relevance: Relevance;
+
+  /** Who the offer is for, as far as anyone has established. */
+  audience: PromotionAudience;
+
+  /** How it relates to this person. Not whether they qualify. */
+  relationship: PromotionRelationship;
+
+  /** Whether they can qualify. Computed from their own card history. */
+  eligibility: {
+    status: PromotionEligibility;
+    confirmed: string[];
+    unresolved: string[];
+    failed: string[];
+  };
+
+  /** Whether it is worth showing. Ranking only — it encodes no ownership. */
+  relevance: PromotionRelevance;
+
+  /**
+   * The pre-redesign value, derived rather than decided.
+   *
+   * Kept so a client deployed against the old contract keeps working across a
+   * deploy. It is not the source of truth and nothing in this app reads it.
+   */
+  legacy_relevance: Relevance;
+
   /** In the person's own terms: what makes it apply to them. */
   why: string[];
   /** What stops it applying, when it does not. */
   blockers: string[];
+
+  /** Every product the offer concerns — which is not "products you must own". */
+  linked_products: { product_id: number; product_name: string; issuer: string }[];
+  /** The card being offered, when this is an acquisition opportunity. */
+  acquisition_product: { product_id: number; product_name: string } | null;
+
   days_left: number | null;
-  /** The card it would apply to, when exactly one does. */
+  /** The card it would apply to, when exactly one is held. */
   card: { id: number; nickname: string; product: string } | null;
   /** True when the threshold looks reachable from how they normally spend. */
   reachable: boolean | null;
@@ -35,6 +82,8 @@ export interface RelevantPromotion {
   pays: string | null;
   /** True when the variants do not agree, so the headline is a range. */
   pays_varies: boolean;
+  /** How sure the relationship is, given what the audience established. */
+  confidence: 'high' | 'medium' | 'low';
   /** How sure the app is that this is still true, and why. */
   currency: PromotionCurrency;
 }
@@ -119,15 +168,39 @@ async function monthlySpend(env: Env, opts: { mccs?: string[]; merchants?: strin
  * Owning the card is the strongest signal there is; without it most offers are
  * simply not applicable, and saying so is more useful than ranking them low.
  */
+/**
+ * Rate one promotion against this wallet.
+ *
+ * Four questions, answered in order and kept apart, because the model this
+ * replaces answered them as one and got the first one wrong:
+ *
+ *   audience      who is the offer for?
+ *   relationship  how does it relate to this person?
+ *   eligibility   can they qualify?
+ *   relevance     is it worth showing?
+ *
+ * Owning the card is no longer an input to relevance at all. It feeds the
+ * relationship, and the relationship plus the audience decide whether not
+ * owning it is a disqualification (an existing-cardholder offer), the point
+ * (a welcome offer), or beside the point (a transfer bonus).
+ */
 export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
   const t = termsOf(p);
   const now = today(env);
-  const why: string[] = [];
-  const blockers: string[] = [];
+  const audience = audienceOf(t as Record<string, unknown>);
 
   const days = p.end_at ? Math.round((Date.parse(p.end_at) - Date.parse(now)) / 86_400_000) : null;
 
-  const { results: cards } = await env.DB.prepare(
+  const { results: linked } = await env.DB.prepare(
+    `SELECT pc.product_id, cp.product_name, cp.issuer, cp.product_key
+       FROM promotion_card_products pc JOIN card_products cp ON cp.id = pc.product_id
+      WHERE pc.promotion_id = ?`
+  )
+    .bind(p.id)
+    .all<{ product_id: number; product_name: string; issuer: string | null; product_key: string }>();
+  const linkedProducts = linked ?? [];
+
+  const { results: heldCards } = await env.DB.prepare(
     `SELECT c.id, c.nickname, c.product FROM cards c
        JOIN promotion_card_products pc ON pc.product_id = c.product_id
       WHERE pc.promotion_id = ? AND c.closed_at IS NULL`
@@ -135,19 +208,18 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
     .bind(p.id)
     .all<{ id: number; nickname: string; product: string }>();
 
-  const { results: linkedCards } = await env.DB.prepare(
-    `SELECT product_id FROM promotion_card_products WHERE promotion_id = ?`
-  )
-    .bind(p.id)
-    .all<{ product_id: number }>();
+  // The whole wallet, open and closed. Closed cards matter: a new-to-bank rule
+  // is about what you have held, not only what you hold.
+  const { results: allCards } = await env.DB.prepare(`SELECT * FROM cards`).all<Card>();
 
-  const { results: progs } = await env.DB.prepare(
-    `SELECT pp.program_key FROM promotion_programmes pp
-      WHERE pp.promotion_id = ?
-        AND EXISTS (SELECT 1 FROM balance_tranches b WHERE b.program_key = pp.program_key AND b.points > 0)`
+  const { results: linkedProgs } = await env.DB.prepare(
+    `SELECT program_key FROM promotion_programmes WHERE promotion_id = ?`
   )
     .bind(p.id)
     .all<{ program_key: string }>();
+  const { results: heldProgs } = await env.DB.prepare(
+    `SELECT DISTINCT program_key FROM balance_tranches WHERE points > 0`
+  ).all<{ program_key: string }>();
 
   const { results: mccs } = await env.DB.prepare(`SELECT mcc FROM promotion_mccs WHERE promotion_id = ?`)
     .bind(p.id)
@@ -164,9 +236,37 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
     .bind(p.id)
     .first());
 
-  if (cards?.length) why.push(`You hold ${cards.map((c) => c.product).join(' and ')}.`);
-  if (progs?.length) why.push(`You have points in ${progs.map((x) => x.program_key).join(', ')}.`);
+  const invited = await invitedKeys(env, p.id);
 
+  // --- 1. how it relates ---------------------------------------------------
+  const rel = resolvePromotionRelationship({
+    promotion: p,
+    terms: t,
+    audience,
+    linkedProducts: linkedProducts.map((l) => ({ product_id: l.product_id, product_name: l.product_name, issuer: l.issuer })),
+    linkedProgrammes: (linkedProgs ?? []).map((r) => r.program_key),
+    userCards: allCards ?? [],
+    userProgrammes: (heldProgs ?? []).map((r) => r.program_key),
+    invitedKeys: invited,
+  });
+
+  const why = [...rel.reasons];
+  const blockers = [...rel.blockers];
+
+  // --- 2. whether they can qualify ----------------------------------------
+  const eligibility = evaluatePromotionEligibility({
+    env,
+    audience,
+    relationship: rel.relationship,
+    linkedProducts: linkedProducts.map((l) => ({ product_id: l.product_id, product_name: l.product_name, issuer: l.issuer })),
+    productKeys: linkedProducts.map((l) => l.product_key).filter(Boolean),
+    issuer: p.issuer ?? linkedProducts.find((l) => l.issuer)?.issuer ?? null,
+    cards: allCards ?? [],
+    invited: invited.length > 0,
+    relationshipBlockers: rel.blockers,
+  });
+
+  // --- 3. spending, for thresholds ----------------------------------------
   const spend = await monthlySpend(env, {
     mccs: (mccs ?? []).map((m) => m.mcc),
     merchants: (merchants ?? []).map((m) => m.merchant_key),
@@ -174,12 +274,10 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
 
   let reachable: boolean | null = null;
   if (t.minimum_spend_cents && spend !== null) {
-    const window = t.window_days ?? (days ?? 30);
+    const window = t.window_days ?? days ?? 30;
     const likely = Math.round((spend / 30) * Math.max(1, window));
     reachable = likely >= t.minimum_spend_cents;
-    if (spend > 0) {
-      why.push(`You normally spend about $${money(spend)} a month where this applies.`);
-    }
+    if (spend > 0) why.push(`You normally spend about $${money(spend)} a month where this applies.`);
     if (!reachable) {
       blockers.push(
         `It needs $${money(t.minimum_spend_cents)}; at your usual rate that window would reach about $${money(likely)}.`
@@ -195,39 +293,16 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
   else if (days !== null && days <= TOO_LATE_DAYS) blockers.push(`Only ${days} day${days === 1 ? '' : 's'} left.`);
   if (p.registration_required) why.push('Registration required.');
 
-  // A card-specific offer for a card nobody holds is not a low-relevance offer;
-  // it is not an offer for this person at all, and saying so is more useful
-  // than ranking it. Saying so is the whole point — this branch used to set the
-  // verdict and write no sentence, so the offer arrived in the list marked
-  // not_applicable with "No reason recorded" underneath it.
-  const needsCard = (linkedCards ?? []).length > 0;
-  let relevance: Relevance;
-  if (p.dismissed_at || p.status !== 'published' || (days !== null && days < 0)) relevance = 'not_applicable';
-  else if (needsCard && !cards?.length) {
-    relevance = 'not_applicable';
-    blockers.push(await cardNotHeld(env, linkedCards ?? []));
-  } else if (tracked) relevance = 'high';
-  else if ((cards?.length && reachable !== false) || (progs?.length && p.promotion_type === 'transfer_bonus')) {
-    relevance = reachable === true || spend === null ? 'high' : 'medium';
-  } else if (cards?.length || progs?.length) relevance = 'medium';
-  else if (spend && spend > 0) relevance = 'medium';
-  else relevance = 'low';
-
-  // The shapes this offer comes in. A new-customer bonus shown to someone who
-  // already holds the card is the most common way an app like this misleads;
-  // the fix is the sentence that says why it is not theirs, not hiding it.
+  // The shapes this offer comes in.
   const vs = await variantsFor(env, p.id);
-  const invited = await invitedKeys(env, p.id);
   const views = viewVariants(vs, {
-    holds_card: !!cards?.length,
+    holds_card: !!heldCards?.length,
     existing_customer: await banksWith(env, p.issuer),
     invited_keys: invited,
   });
   const range = spread(vs, Number(env.MILE_VALUE_CENTS ?? 1.5));
-
-  if (views.length > 1 && views.some((v) => v.available)) {
-    const best = views.filter((v) => v.available).map((v) => v.reward_text).filter(Boolean);
-    if (best.length && range.varies) why.push(`What it pays depends on how you apply.`);
+  if (views.length > 1 && range.varies && views.some((v) => v.available)) {
+    why.push('What it pays depends on how you apply.');
   }
   if (views.length && !views.some((v) => v.available)) {
     blockers.push(views[0].blocker ?? 'No version of this offer is open to you.');
@@ -236,67 +311,142 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
     why.push('You told us you were sent this one.');
   }
 
-  if (relevance !== 'not_applicable' && !why.length) {
-    why.push('It applies to any cardholder.');
+  // --- 4. whether it is worth showing -------------------------------------
+  const relevance = scoreRelevance({
+    promotion: p,
+    relationship: rel.relationship,
+    eligibility: eligibility.status,
+    tracked,
+    reachable,
+    spend,
+    days,
+    dismissed: !!p.dismissed_at,
+    published: p.status === 'published',
+    hasProgrammeBalance: rel.has_programme_balance ?? false,
+  });
+
+  if (!why.length && !blockers.length) {
+    // Said in terms of what was checked. "It applies to any cardholder" was a
+    // claim about the bank's rules made from the app's own silence.
+    why.push('No card-specific ownership requirement was identified.');
   }
 
-  // A verdict with no reason is the one thing this list must never print. For
-  // every other relevance the offer itself is the content and the reason is a
-  // bonus; for not_applicable the reason IS the content, and without it the
-  // row says only that the app has decided something and will not say what.
-  if (relevance === 'not_applicable' && !blockers.length) {
-    blockers.push('It does not apply to your cards or your spending.');
-  }
+  const acquisitionProduct =
+    rel.relationship === 'acquisition_opportunity' && rel.acquisition_product_ids.length
+      ? linkedProducts.find((l) => l.product_id === rel.acquisition_product_ids[0]) ?? null
+      : null;
 
   return {
     promotion: p,
     terms: t,
+    audience,
+    relationship: rel.relationship,
+    eligibility: {
+      status: eligibility.status,
+      confirmed: eligibility.confirmed,
+      unresolved: eligibility.unresolved,
+      failed: eligibility.failed,
+    },
     relevance,
+    // The old field name, kept so nothing consuming it breaks mid-deploy. It
+    // is derived from the new model rather than being its own opinion.
+    legacy_relevance: relevance === 'not_relevant' ? 'not_applicable' : relevance,
     why,
     blockers,
+    linked_products: linkedProducts.map((l) => ({
+      product_id: l.product_id,
+      product_name: l.product_name,
+      issuer: l.issuer ?? '',
+    })),
+    acquisition_product: acquisitionProduct
+      ? { product_id: acquisitionProduct.product_id, product_name: acquisitionProduct.product_name }
+      : null,
     days_left: days,
-    card: cards?.length === 1 ? cards[0] : null,
+    card: heldCards?.length === 1 ? heldCards[0] : null,
     reachable,
     monthly_spend_cents: spend,
     tracked,
     variants: views,
     pays: range.text,
     pays_varies: range.varies,
+    confidence: rel.confidence,
     currency: currencyOf(p, now),
   };
 }
 
 /**
- * Which card an offer needs, said by name.
+ * How useful it is to surface this, given everything already decided.
  *
- * "You do not hold the card this applies to" is true but unhelpful when the
- * whole question is which card that is — and the answer is one lookup away,
- * because the offer is already linked to its products.
+ * Ranking only. It reads the relationship and the eligibility rather than
+ * re-deriving them, so there is one place that knows what "not for you" means
+ * and this is not it.
  */
-async function cardNotHeld(env: Env, linked: { product_id: number }[]): Promise<string> {
-  const ids = linked.map((l) => l.product_id).filter((id) => typeof id === 'number');
-  if (!ids.length) return 'It applies to a card you do not hold.';
+export function scoreRelevance(x: {
+  promotion: Pick<Promotion, 'promotion_type'>;
+  relationship: PromotionRelationship;
+  eligibility: PromotionEligibility;
+  tracked: boolean;
+  reachable: boolean | null;
+  spend: number | null;
+  days: number | null;
+  dismissed: boolean;
+  published: boolean;
+  /** For a programme offer: whether there are points it could actually move. */
+  hasProgrammeBalance?: boolean;
+}): PromotionRelevance {
+  if (!x.published || x.dismissed || (x.days !== null && x.days < 0)) return 'not_relevant';
 
-  const { results } = await env.DB.prepare(
-    `SELECT issuer, product_name FROM card_products WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY product_name`
-  )
-    .bind(...ids)
-    .all<{ issuer: string | null; product_name: string }>();
+  // Ineligible is the one verdict that removes an offer outright, and it is
+  // computed rather than inferred from what the person owns.
+  if (x.eligibility === 'ineligible') return 'not_relevant';
+  if (x.relationship === 'not_relevant') return 'not_relevant';
 
-  const names = (results ?? []).map((r) => r.product_name).filter(Boolean);
-  if (!names.length) return 'It applies to a card you do not hold.';
-  if (names.length === 1) return `It is for the ${names[0]}, which you do not hold.`;
-  if (names.length <= 3) return `It is for ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}, none of which you hold.`;
-  return `It is for ${names.length} cards you do not hold, including the ${names[0]}.`;
+  if (x.tracked) return 'high';
+
+  switch (x.relationship) {
+    case 'acquisition_opportunity':
+      // Worth a look, but never automatically the top of the list: taking one
+      // costs a hard pull, and the app has not checked the bank's conditions.
+      return x.eligibility === 'eligible' || (x.eligibility === 'potentially_eligible' && x.reachable === true)
+        ? 'high'
+        : 'medium';
+
+    case 'held_card':
+      if (x.reachable === true) return 'high';
+      if (x.reachable === false) return 'medium';
+      return 'high';
+
+    case 'issuer_offer':
+      return x.reachable === false ? 'medium' : 'high';
+
+    case 'programme_offer':
+      // Ranked on the balance the offer could actually move, not on card
+      // spending — a transfer bonus is about points that already exist. No
+      // balance ranks it low and never calls it ineligible: a balance is a
+      // number that changes, and the offer is still the offer.
+      return x.hasProgrammeBalance ? 'high' : 'low';
+
+    case 'targeted_offer':
+      return 'medium';
+
+    case 'general_offer':
+      return x.spend !== null && x.spend > 0 ? 'medium' : 'low';
+
+    case 'unknown':
+      // Never high. The app does not know who it is for.
+      return 'low';
+
+    default:
+      return 'low';
+  }
 }
+
 
 /**
  * Whether this person already banks with an issuer.
  *
- * Read from the cards they hold rather than asked, because the only thing an
- * "existing customer" rule reliably turns on here is holding one of that
- * bank's cards, and a question whose answer is already in the database is a
- * question not worth asking.
+ * Read from the cards they hold rather than asked: a question whose answer is
+ * already in the database is a question not worth asking.
  */
 async function banksWith(env: Env, issuer: string | null): Promise<boolean> {
   if (!issuer) return false;
@@ -306,45 +456,6 @@ async function banksWith(env: Env, issuer: string | null): Promise<boolean> {
     .bind(issuer)
     .first();
   return !!row;
-}
-
-export interface Inbox {
-  worth_checking: RelevantPromotion[];
-  ending_soon: RelevantPromotion[];
-  your_cards: RelevantPromotion[];
-  transfers: RelevantPromotion[];
-  everything: RelevantPromotion[];
-  as_of: string;
-}
-
-/** Inside this many days an offer counts as ending soon. */
-export const ENDING_SOON_DAYS = 14;
-
-/**
- * The inbox, in sections.
- *
- * Sectioned rather than sorted into one list, because "ending soon" and "worth
- * checking" are different reasons to look and mixing them means neither reads
- * as urgent.
- */
-export async function inbox(env: Env): Promise<Inbox> {
-  const { results } = await env.DB.prepare(
-    `SELECT * FROM promotions WHERE duplicate_of IS NULL AND status IN ('published', 'expired')
-      ORDER BY end_at IS NULL, end_at`
-  ).all<Promotion>();
-
-  const rated: RelevantPromotion[] = [];
-  for (const p of results ?? []) rated.push(await rate(env, p));
-
-  const live = rated.filter((r) => r.relevance !== 'not_applicable');
-  return {
-    worth_checking: live.filter((r) => r.relevance === 'high'),
-    ending_soon: live.filter((r) => r.days_left !== null && r.days_left >= 0 && r.days_left <= ENDING_SOON_DAYS),
-    your_cards: live.filter((r) => r.card !== null),
-    transfers: live.filter((r) => r.promotion.promotion_type === 'transfer_bonus'),
-    everything: rated,
-    as_of: today(env),
-  };
 }
 
 /**
@@ -386,7 +497,7 @@ export async function forPurchase(
   const out: RelevantPromotion[] = [];
   for (const p of results ?? []) {
     const r = await rate(env, p);
-    if (r.relevance !== 'not_applicable') out.push(r);
+    if (r.relevance !== 'not_relevant') out.push(r);
   }
   return out;
 }

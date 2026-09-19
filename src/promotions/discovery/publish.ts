@@ -5,7 +5,7 @@ import type { Env } from '../../types';
 import { corroborate, claimsFor, type Corroboration, type VerificationState } from './corroborate';
 import { canAutoPublish } from './corroborate';
 import { looksExtended, type FingerprintInput } from './fingerprint';
-import { audienceOf, saveVariant, type VariantReward } from '../variants';
+import { saveVariant, variantAudienceOf, type VariantReward } from '../variants';
 
 /**
  * Turning corroborated claims into the promotion the rest of the app consumes.
@@ -22,6 +22,7 @@ export type ChangeType =
   | 'reward_changed'
   | 'spend_changed'
   | 'eligibility_changed'
+  | 'audience_changed'
   | 'expired'
   | 'withdrawn'
   | 'terms_changed';
@@ -129,6 +130,15 @@ export function changeBetween(
   ) {
     return { type: 'spend_changed', field: 'minimum_spend_cents' };
   }
+  // Who an offer is for is material. "Public" becoming "selected cardmembers"
+  // changes whether it is available at all, and burying that under a generic
+  // terms change would lose the one fact a person needed to be told.
+  const beforeAudience = (before.audience as { type?: string } | undefined)?.type ?? null;
+  const afterAudience = (after.audience as { type?: string } | undefined)?.type ?? null;
+  if (beforeAudience && afterAudience && beforeAudience !== afterAudience) {
+    return { type: 'audience_changed', field: 'audience' };
+  }
+
   if (dates.after_end && dates.before_end && dates.after_end > dates.before_end) {
     return { type: 'extended', field: 'end_at' };
   }
@@ -440,7 +450,7 @@ async function recordVariant(
   // that a channel exists, which is not worth a row.
   if (!reward.miles && !reward.points && !reward.cashback_cents && !reward.bonus_pct && !reward.gift) return;
 
-  const audience = audienceOf(String(terms.eligibility_text ?? ''));
+  const audience = variantAudienceOf(String(terms.eligibility_text ?? ''));
   await saveVariant(env, promotionId, {
     audience,
     application_channel: c.application_channel || 'unknown',

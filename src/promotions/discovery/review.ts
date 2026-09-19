@@ -4,6 +4,7 @@ import { claimsFor, corroborate, type Corroboration } from './corroborate';
 import { applyCandidate, matchExisting, type CandidateRow, type PublishResult } from './publish';
 import type { FingerprintInput } from './fingerprint';
 import { sourceNameForUrl, trustTierForUrl } from './domains';
+import { AUDIENCE_TYPES, audienceOf as promotionAudienceOf, type PromotionAudienceType } from '../audience';
 import { TIER } from './sources';
 import type { DiscoveryChannel } from '../../../shared/discovery';
 
@@ -77,6 +78,8 @@ export interface ReviewItem {
   confidence: string;
   conflicts: string[];
   sources: { url: string; tier: number; type: string }[];
+  /** Who the offer is for, and the wording that said so. */
+  audience: { type: string; raw_text: string | null; confidence: string };
   /** Set when this changes a promotion that already exists. */
   existing: { id: number; title: string; terms: Record<string, unknown>; end_at: string | null } | null;
   /** The change, already worked out, so nobody rereads a whole campaign. */
@@ -181,6 +184,13 @@ export async function reviewQueue(env: Env, limit = 50): Promise<ReviewItem[]> {
       existing,
       diff: existing ? diffTerms(existing.terms, { ...terms, ...evidence.terms }) : [],
       article: row.article_url ? { url: row.article_url, title: row.article_title } : null,
+      audience: (() => {
+        // Shown to the reviewer explicitly, with the sentence it came from:
+        // an audience read wrongly is the most consequential extraction error
+        // there is, and it is invisible unless it is on the screen.
+        const a = promotionAudienceOf({ ...terms, ...evidence.terms } as Record<string, unknown>);
+        return { type: a.type, raw_text: a.raw_text ?? null, confidence: a.confidence ?? 'low' };
+      })(),
       provenance: await provenanceFor(env, row, claims.map((c) => c.source_url)),
     });
   }
@@ -201,7 +211,8 @@ export async function reviewQueue(env: Env, limit = 50): Promise<ReviewItem[]> {
 export async function approveCandidate(
   env: Env,
   candidateId: number,
-  edited?: Record<string, unknown>
+  edited?: Record<string, unknown>,
+  audienceType?: string
 ): Promise<PublishResult> {
   const c = await env.DB.prepare(`SELECT * FROM promotion_candidates WHERE id = ?`)
     .bind(candidateId)
@@ -223,9 +234,30 @@ export async function approveCandidate(
     }
   }
 
+  // A reviewer re-classifying the audience is the strongest evidence the
+  // system can hold about who an offer is for: they have read the wording and
+  // disagreed with the reading. Recorded at the tier an issuer would get, so a
+  // later article cannot quietly overturn it.
+  if (audienceType && AUDIENCE_TYPES.includes(audienceType as PromotionAudienceType)) {
+    await env.DB.prepare(
+      `INSERT INTO promotion_claims
+         (candidate_id, field_name, value_json, source_url, source_type, source_tier, extracted_at, confidence, supporting_excerpt)
+       VALUES (?, 'audience_type', ?, 'app://review', 'manual_verified', 1, ?, 'high', 'classified during review')`
+    )
+      .bind(candidateId, JSON.stringify(audienceType), today(env))
+      .run();
+  }
+
   const claims = await claimsFor(env, candidateId);
   const evidence = corroborate(claims);
   const terms: Record<string, unknown> = { ...parseTerms(c.terms_json), ...evidence.terms, ...(edited ?? {}) };
+
+  // The reviewer's classification becomes the stored audience, keeping the
+  // wording it was read from so the next person can see what they judged.
+  if (audienceType) {
+    const current = promotionAudienceOf(terms);
+    terms.audience = { ...current, type: audienceType, confidence: 'high' };
+  }
 
   const endAt = (terms.application_end as string) ?? null;
   const startAt = (terms.application_start as string) ?? null;

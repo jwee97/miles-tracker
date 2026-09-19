@@ -7,6 +7,7 @@ import { seedAliases } from './onboarding/search';
 import { seedOnboardingFields } from './onboarding/questions';
 import { migrateLegacyBonuses } from './transfers/routes';
 import { seedSources } from './promotions/discovery/sources';
+import { backfillAudience } from './promotions/audience';
 import { today } from './spend';
 import type { Env } from './types';
 
@@ -105,6 +106,11 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: 'promotions', column: 'application_channel', ddl: "ALTER TABLE promotions ADD COLUMN application_channel TEXT NOT NULL DEFAULT 'unknown'" },
   { table: 'promotions', column: 'fingerprint', ddl: 'ALTER TABLE promotions ADD COLUMN fingerprint TEXT' },
   { table: 'promotions', column: 'audience', ddl: "ALTER TABLE promotions ADD COLUMN audience TEXT NOT NULL DEFAULT 'everyone'" },
+  {
+    table: 'promotions',
+    column: 'audience_type',
+    ddl: "ALTER TABLE promotions ADD COLUMN audience_type TEXT NOT NULL DEFAULT 'unknown'",
+  },
   { table: 'promotions', column: 'extended_from_promotion_id', ddl: 'ALTER TABLE promotions ADD COLUMN extended_from_promotion_id INTEGER' },
   { table: 'promotions', column: 'last_verified_at', ddl: 'ALTER TABLE promotions ADD COLUMN last_verified_at TEXT' },
   { table: 'promotions', column: 'independent_sources', ddl: 'ALTER TABLE promotions ADD COLUMN independent_sources INTEGER NOT NULL DEFAULT 0' },
@@ -379,6 +385,14 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
     }
   }
 
+  // Existing promotions predate the audience model, so they have no structured
+  // audience at all. Backfilled conservatively — see backfillPromotionAudience.
+  try {
+    await backfillPromotionAudience(env);
+  } catch (e) {
+    errors.push(`backfilling promotion audiences — ${(e as Error).message}`);
+  }
+
   // Now the data half: existing cards onto the product model. It is idempotent,
   // so it runs every time and reports nothing when there is nothing to do.
   let products: ProductMigrationReport | undefined;
@@ -396,6 +410,56 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
     errors,
     products,
   };
+}
+
+/**
+ * Give existing promotions an audience without inventing one.
+ *
+ * Every promotion in a database that predates this model has no structured
+ * audience, and the tempting shortcut — treat them all as public — is the
+ * exact error the model exists to prevent: it would silently assert that every
+ * existing-cardholder offer is open to everyone.
+ *
+ * So only two inferences are made, both of which follow from data the old
+ * model did record. A welcome offer is an acquisition offer by definition of
+ * what a welcome offer is. A transfer or conversion promotion concerns a
+ * points programme rather than card ownership. Everything else becomes
+ * `unknown`, which is a true statement about what is known.
+ *
+ * Idempotent: it only touches rows whose audience has never been set.
+ */
+async function backfillPromotionAudience(env: Env): Promise<void> {
+  if (!(await tableExists(env, 'promotions'))) return;
+  if (!(await hasColumn(env, 'promotions', 'audience_type'))) return;
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, promotion_type, terms_json FROM promotions WHERE audience_type = 'unknown'`
+  ).all<{ id: number; promotion_type: string; terms_json: string | null }>();
+
+  for (const row of results ?? []) {
+    let terms: Record<string, unknown> = {};
+    try {
+      terms = row.terms_json ? JSON.parse(row.terms_json) : {};
+    } catch {
+      terms = {};
+    }
+
+    // A row that already carries a structured audience is only missing the
+    // denormalised copy, so the column is brought in line and nothing is
+    // inferred.
+    const existing = terms.audience as { type?: string } | undefined;
+    if (existing?.type) {
+      await env.DB.prepare(`UPDATE promotions SET audience_type = ? WHERE id = ?`).bind(existing.type, row.id).run();
+      continue;
+    }
+
+    const audience = backfillAudience(row.promotion_type);
+    if (audience.type === 'unknown') continue;
+
+    await env.DB.prepare(`UPDATE promotions SET terms_json = ?, audience_type = ? WHERE id = ?`)
+      .bind(JSON.stringify({ ...terms, audience }), audience.type, row.id)
+      .run();
+  }
 }
 
 /** Loads the default feeds, programmes and transfer routes. INSERT OR IGNORE, so safe to repeat. */

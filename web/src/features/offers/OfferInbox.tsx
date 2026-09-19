@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
+  analyseAcquisition,
   contributeTargetedOffer,
   correctPromotion,
+  ELIGIBILITY_LABEL,
+  RELATIONSHIP_LABEL,
   PROMOTION_KINDS,
   dismissOffer,
   fetchOffers2,
@@ -11,6 +14,7 @@ import {
   sweepPromotions,
   trackOffer,
   type OfferInbox as Inbox,
+  type AcquisitionOpportunity,
   type PromotionEvidence,
   type RelevantPromotion,
   type TrackedOffer,
@@ -26,6 +30,107 @@ import {
  */
 
 const money0 = (c: unknown) => (typeof c === 'number' ? `$${money(c)}` : null);
+
+const RELATIONSHIP_CLASS: Record<string, string> = {
+  held_card: 'ok',
+  acquisition_opportunity: 'ok',
+  programme_offer: 'ok',
+  issuer_offer: 'ok',
+  general_offer: 'never',
+  targeted_offer: 'soon',
+  unknown: 'soon',
+  not_relevant: 'critical',
+};
+
+const ELIGIBILITY_CLASS: Record<string, string> = {
+  eligible: 'ok',
+  potentially_eligible: 'ok',
+  ineligible: 'critical',
+  unknown: 'soon',
+  needs_review: 'soon',
+};
+
+/**
+ * What a card would be worth, opened from the offer that prompted it.
+ *
+ * Two numbers kept apart on purpose. What the card earns every year from how
+ * you already spend is recurring; the welcome bonus happens once. Adding them
+ * into a single figure makes a mediocre card look excellent for exactly one
+ * year, which is the most common way a card comparison misleads.
+ */
+function Analyse({ o }: { o: RelevantPromotion }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<AcquisitionOpportunity | null>(null);
+
+  async function run() {
+    if (!o.acquisition_product) return;
+    setOpen(true);
+    setBusy(true);
+    setErr(null);
+    try {
+      setResult(await analyseAcquisition(o.acquisition_product.product_id, o.promotion.id));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const value = (c: number) => `$${money(Math.abs(c))}`;
+
+  return (
+    <>
+      <button className="secondary" onClick={run} disabled={busy}>
+        {busy ? 'Analysing…' : 'Analyse card'}
+      </button>
+      {open && (
+        <div className="addrule acq-analysis">
+          {err && <p className="err-text">{err}</p>}
+          {!result && !err && <p className="sub">Working it out…</p>}
+          {result && (
+            <>
+              <p className="sub">
+                <b>{result.product.product_name}</b>
+              </p>
+              <ul className="rules">
+                <li className="pass">
+                  <span>Ongoing value {value(result.value.ongoing_annual_cents)} a year</span>
+                  <p className="sub">From how you already spend, net of the annual fee.</p>
+                </li>
+                <li className="unknown">
+                  <span>Current welcome offer {value(result.value.welcome_once_cents)} once</span>
+                  <p className="sub">
+                    {result.promotion?.reward ?? 'a one-off bonus'}
+                    {result.promotion?.end_at ? ` · ends ${result.promotion.end_at}` : ''}
+                  </p>
+                </li>
+                <li className="pass">
+                  <span>First year {value(result.value.first_year_cents)}</span>
+                </li>
+                <li className="unknown">
+                  <span>After the offer ends {value(result.value.after_offer_annual_cents)} a year</span>
+                </li>
+              </ul>
+              {result.eligibility && (
+                <p className="sub">
+                  Eligibility: <b>{ELIGIBILITY_LABEL[result.eligibility.status]}</b>
+                  {result.eligibility.unresolved.length > 0 && ` · ${result.eligibility.unresolved.length} still to check`}
+                </p>
+              )}
+              {result.notes.map((n, i) => (
+                <p key={i} className="sub">
+                  {n}
+                </p>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
 
 const TIER_NAME: Record<number, string> = {
   1: 'the bank itself',
@@ -436,6 +541,33 @@ function Offer({ o, onChange }: { o: RelevantPromotion; onChange: () => void }) 
           </span>
         )}
       </div>
+
+      {/* What this is, and whether it can be had — said in words. The enum
+          never reaches the screen: a person once saw "not_applicable", which
+          reads as system noise rather than as an answer. */}
+      <p className="sub">
+        <span className={`chip ${RELATIONSHIP_CLASS[o.relationship] ?? 'never'}`}>
+          {RELATIONSHIP_LABEL[o.relationship]}
+        </span>{' '}
+        <span className={`chip ${ELIGIBILITY_CLASS[o.eligibility.status] ?? 'never'}`}>
+          {ELIGIBILITY_LABEL[o.eligibility.status]}
+        </span>
+      </p>
+
+      {o.relationship === 'acquisition_opportunity' && (
+        <p className="sub">You don’t currently hold this card. This offer may apply if you apply for it.</p>
+      )}
+      {o.relationship === 'unknown' && (
+        <p className="warn-num">
+          Miles Tracker could not determine whether this is intended for existing cardholders or new applicants.
+          Read the bank’s terms before relying on it.
+        </p>
+      )}
+      {o.relationship === 'targeted_offer' && (
+        <p className="warn-num">
+          This appears to be a targeted offer. Confirm that you received it before tracking it.
+        </p>
+      )}
       <p className="sub">
         {o.promotion.issuer && `${o.promotion.issuer} · `}
         {t.minimum_spend_cents ? `Spend ${money0(t.minimum_spend_cents)}` : null}
@@ -446,8 +578,50 @@ function Offer({ o, onChange }: { o: RelevantPromotion; onChange: () => void }) 
 
       {o.why.length > 0 && (
         <p className="offer2-why">
-          <b>Why you're seeing this:</b> {o.why.join(' ')}
+          <b>Why it may be relevant:</b> {o.why.join(' ')}
         </p>
+      )}
+
+      {(o.eligibility.confirmed.length > 0 || o.eligibility.unresolved.length > 0 || o.eligibility.failed.length > 0) && (
+        <details className="batches">
+          <summary>Eligibility — {ELIGIBILITY_LABEL[o.eligibility.status]}</summary>
+          {o.eligibility.confirmed.length > 0 && (
+            <>
+              <p className="sub">Confirmed from your own card history:</p>
+              <ul className="rules">
+                {o.eligibility.confirmed.map((c, i) => (
+                  <li key={i} className="pass">
+                    <span>{c}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {o.eligibility.failed.length > 0 && (
+            <>
+              <p className="sub">Ruled out:</p>
+              <ul className="rules">
+                {o.eligibility.failed.map((c, i) => (
+                  <li key={i} className="fail">
+                    <span>{c}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {o.eligibility.unresolved.length > 0 && (
+            <>
+              <p className="sub">Not knowable from what the app holds:</p>
+              <ul className="rules">
+                {o.eligibility.unresolved.map((c, i) => (
+                  <li key={i} className="unknown">
+                    <span>{c}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </details>
       )}
 
       {o.pays_varies && (
@@ -463,7 +637,33 @@ function Offer({ o, onChange }: { o: RelevantPromotion; onChange: () => void }) 
       ))}
 
       <div className="entry-foot rule-actions">
-        {!o.tracked && (
+        {o.relationship === 'acquisition_opportunity' && o.acquisition_product && (
+          <Analyse o={o} />
+        )}
+        {/* Track is withheld for a card you do not hold: there is nothing for
+            the spend to land on, and a progress bar that cannot move is worse
+            than none. Saving it is offered instead, and it starts counting by
+            itself once the card is added. */}
+        {!o.tracked && o.relationship === 'acquisition_opportunity' && (
+          <button
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                const r = await trackOffer(o.promotion.id);
+                setMsg(r.ok ? (r.summary ?? 'Saved.') : (r.error ?? 'that did not work'));
+                onChange();
+              } catch (e) {
+                setMsg((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Save this offer
+          </button>
+        )}
+        {!o.tracked && o.relationship !== 'acquisition_opportunity' && (
           <button
             disabled={busy}
             onClick={async () => {
@@ -610,12 +810,20 @@ export default function OfferInbox() {
   if (!box) return <p className="pad sub">Loading…</p>;
 
   const nothing =
-    !box.worth_checking.length && !box.ending_soon.length && !box.your_cards.length && !box.transfers.length;
+    !box.worth_checking.length &&
+    !box.ending_soon.length &&
+    !box.your_cards.length &&
+    !box.acquisition.length &&
+    !box.transfers.length;
 
   return (
     <>
       <Tracked rows={tracked} onChange={load} />
       <Section title="Worth checking" rows={box.worth_checking} onChange={load} />
+      {/* Its own section, because the old model had nowhere to put a welcome
+          offer for a card you do not hold and buried it under Everything —
+          the one place nobody looks. */}
+      <Section title="New-card offers" rows={box.acquisition} onChange={load} />
       <Section title="Ending soon" rows={box.ending_soon} onChange={load} />
       <Section title="Your cards" rows={box.your_cards} onChange={load} />
       <Section title="Point transfers" rows={box.transfers} onChange={load} />
@@ -644,9 +852,12 @@ export default function OfferInbox() {
               <li key={o.promotion.id} className={`offer2 ${o.relevance}`}>
                 <div className="offer2-head">
                   <span className="offer2-title">{o.promotion.title}</span>
-                  <span className={`chip ${o.relevance === 'not_applicable' ? 'never' : 'soon'}`}>{o.relevance}</span>
+                  {/* The relationship in words, not the relevance enum. */}
+                  <span className={`chip ${RELATIONSHIP_CLASS[o.relationship] ?? 'never'}`}>
+                    {RELATIONSHIP_LABEL[o.relationship]}
+                  </span>
                 </div>
-                <p className="sub">{[...o.why, ...o.blockers].join(' ') || 'No reason recorded.'}</p>
+                <p className="sub">{[...o.why, ...o.blockers].join(' ')}</p>
               </li>
             ))}
           </ul>

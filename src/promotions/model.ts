@@ -1,4 +1,5 @@
 import { today } from '../spend';
+import { audienceOf } from './audience';
 import type { Env } from '../types';
 
 /**
@@ -182,8 +183,8 @@ export async function savePromotion(
   const ins = await env.DB.prepare(
     `INSERT INTO promotions
        (promotion_key, promotion_type, issuer, title, description, start_at, end_at, registration_required,
-        source_url, source_type, retrieved_at, source_quote, confidence, terms_json, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        source_url, source_type, retrieved_at, source_quote, confidence, terms_json, status, audience_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       p.promotion_key ?? null,
@@ -200,7 +201,11 @@ export async function savePromotion(
       p.source_quote ?? null,
       p.confidence ?? 'medium',
       JSON.stringify(terms),
-      status
+      status,
+      // Denormalised from the terms, never guessed alongside them. An offer
+      // whose audience nobody established is 'unknown', which is a true
+      // statement; 'public' would be an assertion about the bank's rules.
+      audienceOf(terms as Record<string, unknown>).type
     )
     .run();
   return { ok: true, id: ins.meta.last_row_id };

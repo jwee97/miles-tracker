@@ -750,6 +750,12 @@ CREATE TABLE IF NOT EXISTS promotions (
   application_channel   TEXT    NOT NULL DEFAULT 'unknown',
   fingerprint           TEXT,
   audience              TEXT    NOT NULL DEFAULT 'everyone',
+  -- Who the offer is for, denormalised from terms_json.audience for querying.
+  -- terms_json stays the source of truth, including the raw wording it was
+  -- classified from; this is a derived index on it. Default 'unknown' rather
+  -- than 'public': absence of a restriction is not evidence of its absence,
+  -- and a promotion nobody has classified has not been established as open.
+  audience_type         TEXT    NOT NULL DEFAULT 'unknown',
   extended_from_promotion_id INTEGER REFERENCES promotions(id) ON DELETE SET NULL,
   last_verified_at      TEXT,
   independent_sources   INTEGER NOT NULL DEFAULT 0,

@@ -439,6 +439,11 @@ export async function saveCandidate(
     application_start: c.application_start,
     application_end: c.application_end,
     registration_required: c.registration_required,
+    eligibility_text: c.eligibility_text,
+    // Who the offer is for, carried as structured data rather than re-derived
+    // downstream. A product link says only that the offer concerns that card;
+    // this is what says whether holding it is required.
+    audience: c.audience,
   };
 
   const ins = await env.DB.prepare(

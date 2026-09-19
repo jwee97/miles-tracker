@@ -33,7 +33,7 @@ import { isDue, recordScan, seedSources, TIER, upsertSource } from '../src/promo
 import { shouldEscalate, verifyOfficial } from '../src/promotions/discovery/verify';
 import { promotionEvidence, changeSentence } from '../src/promotions/evidence';
 import { rate } from '../src/promotions/relevance';
-import { audienceOf, contributeTargeted, saveVariant, spread, variantsFor, viewVariants } from '../src/promotions/variants';
+import { variantAudienceOf, contributeTargeted, saveVariant, spread, variantsFor, viewVariants } from '../src/promotions/variants';
 import type { Env } from '../src/types';
 
 const db = new DatabaseSync(':memory:');
@@ -454,10 +454,10 @@ check('and says why', (attempt.reason ?? '').includes('no official domain'), Str
 // -------------------------------------------------------------------- variants
 // One campaign is rarely one offer, and flattening it forces a choice between
 // showing a number this person cannot get and hiding one they can.
-check('a new-customer rule is read', audienceOf('New-to-bank customers only.') === 'new_customer');
-check('an existing-customer rule too', audienceOf('For existing cardholders only') === 'existing');
-check('and an invitation is not a public offer', audienceOf('Targeted — emailed to selected customers') === 'targeted');
-check('but a vague sentence is left alone', audienceOf('Terms and conditions apply.') === 'everyone');
+check('a new-customer rule is read', variantAudienceOf('New-to-bank customers only.') === 'new_customer');
+check('an existing-customer rule too', variantAudienceOf('For existing cardholders only') === 'existing');
+check('and an invitation is not a public offer', variantAudienceOf('Targeted — emailed to selected customers') === 'targeted');
+check('but a vague sentence is left alone', variantAudienceOf('Terms and conditions apply.') === 'everyone');
 
 sql(`UPDATE promotions SET status = 'published', end_at = '2026-12-31' WHERE id = ?`, promoted.id);
 await saveVariant(env, promoted.id, {

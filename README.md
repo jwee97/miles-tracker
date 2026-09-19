@@ -560,6 +560,53 @@ Any number you type there is recorded as a claim sourced to you at the highest
 trust tier — a correction made during review is the strongest evidence the
 system ever gets.
 
+### "I do not own this card" is not "I cannot use this promotion"
+
+Those are different facts, and treating them as one produced the worst bug this
+app has had. A promotion linked to a card product, held by nobody, was reported
+as not applicable — correct for "existing OCBC Rewards cardholders get $20
+back", exactly backwards for "apply for the OCBC Rewards Card and get 20,000
+miles", where not holding it is the precondition rather than the
+disqualification.
+
+Six questions are now asked separately:
+
+| | |
+|---|---|
+| **Audience** | who the offer is for, structured, with the wording it came from |
+| **Relationship** | how it relates to you — held card, new-card offer, points, invitation, unknown |
+| **Eligibility** | whether you can qualify, computed from your own card history |
+| **Relevance** | whether it is worth showing, which encodes no ownership at all |
+| **Acquisition** | whether qualifying means getting the card |
+| **Confidence** | how sure any of that is |
+
+A link between a promotion and a card means only that the promotion concerns
+that card. The audience says what holding it has to do with anything.
+
+**Unknown stays unknown.** "No restriction was extracted" is not evidence that
+an offer is open to everyone — most articles never spell eligibility out — so
+absence of evidence resolves to `unknown`, never to `public`, and a linked card
+you do not hold with no established audience is shown at low relevance saying
+what could not be determined. The old model concluded a rejection from exactly
+that evidence.
+
+**Eligibility is arithmetic, never a guess.** It reuses the predicate evaluator
+the app already had: new-to-bank rules, exclusion windows and never-held
+conditions are evaluated against the cards you have entered, and anything the
+data cannot settle returns unresolved rather than a verdict. Extraction may
+propose that a sentence means "new-to-bank"; whether *you* are new to that bank
+is counting. Getting this wrong costs a hard credit pull and a twelve-month
+cooldown, which is why nothing here is inferred.
+
+**New-card offers get their own section**, and open the acquisition simulator
+with the offer attached — where the one-off bonus stays out of the annual
+figure, because a card whose whole case rests on a welcome bonus is a card
+worth having for one year.
+
+Tracking one saves it rather than pretending to measure it: there is no card
+for the spend to land on yet. Adding the card activates the requirement by
+itself.
+
 ### When a number is wrong
 
 Two things the app used to be able to state and not solve.

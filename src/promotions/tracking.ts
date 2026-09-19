@@ -61,6 +61,29 @@ export async function trackPromotion(env: Env, promotionId: number, cardId?: num
     .first();
   if (existing) return { ok: false, error: 'this offer is already being tracked' };
 
+  // An offer whose card you do not hold yet cannot have its spend measured —
+  // there is no card for the purchases to land on. Recording it as tracked
+  // anyway would show a progress bar that can never move, and silently
+  // attaching the threshold to some other card of yours would be worse: it
+  // would count spend toward a bonus that spend cannot earn.
+  //
+  // So it is watched. The offer is kept, the deadline is kept, and the
+  // requirement is created later — by activateWatchedPromotions — if and when
+  // the card actually arrives in the wallet.
+  if (t.minimum_spend_cents && !card) {
+    await env.DB.prepare(
+      `INSERT INTO promotion_tracking (promotion_id, card_id, status) VALUES (?, NULL, 'watching')`
+    )
+      .bind(promotionId)
+      .run();
+    return {
+      ok: true,
+      summary: p.end_at
+        ? `Saved until ${p.end_at}. Spend will only be counted once you add the card.`
+        : 'Saved. Spend will only be counted once you add the card.',
+    };
+  }
+
   // Without a spend threshold there is nothing to count, so it is followed
   // rather than measured: a reminder, not a progress bar that cannot move.
   if (!t.minimum_spend_cents || !card) {
@@ -231,4 +254,66 @@ export async function sweepCompleted(env: Env): Promise<CompletionReport> {
   }
 
   return report;
+}
+
+
+/**
+ * Turn watched offers into tracked ones, once the card exists.
+ *
+ * A saved acquisition offer has a threshold nobody could measure, because the
+ * card it applies to was not in the wallet. Adding that card is the moment it
+ * becomes measurable, and doing it here rather than asking the person to
+ * remember means the offer they saved months ago starts counting by itself.
+ *
+ * Idempotent, and it never invents a deadline: an offer whose window has
+ * already closed is left watched rather than being given a requirement that is
+ * dead on arrival.
+ */
+export async function activateWatchedPromotions(env: Env, cardId: number): Promise<{ activated: number; notes: string[] }> {
+  const card = await env.DB.prepare(`SELECT * FROM cards WHERE id = ?`).bind(cardId).first<any>();
+  if (!card?.product_id) return { activated: 0, notes: [] };
+
+  const { results } = await env.DB.prepare(
+    `SELECT pt.id AS tracking_id, p.*
+       FROM promotion_tracking pt
+       JOIN promotions p ON p.id = pt.promotion_id
+       JOIN promotion_card_products pc ON pc.promotion_id = p.id
+      WHERE pt.status = 'watching' AND pc.product_id = ?`
+  )
+    .bind(card.product_id)
+    .all<any>();
+
+  const notes: string[] = [];
+  let activated = 0;
+
+  for (const row of results ?? []) {
+    const t = termsOf(row as Promotion);
+    if (!t.minimum_spend_cents) continue;
+
+    const start = card.opened_at ?? row.start_at ?? today(env);
+    const deadline = row.end_at ?? (t.window_days ? addDays(start, t.window_days) : null);
+    if (!deadline || deadline < today(env)) {
+      notes.push(`${row.title}: the window has closed, so nothing is being counted.`);
+      continue;
+    }
+
+    const ins = await env.DB.prepare(
+      `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, min_txns, reward_note,
+         source_note, promotion_id)
+       VALUES (?, 'signup_min', ?, 'fixed_window', ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(card.id, t.minimum_spend_cents, deadline, start, t.min_txns ?? null, row.title, `promotion #${row.id}`, row.id)
+      .run();
+
+    await env.DB.prepare(
+      `UPDATE promotion_tracking SET status = 'tracked', card_id = ?, requirement_id = ? WHERE id = ?`
+    )
+      .bind(card.id, ins.meta.last_row_id, row.tracking_id)
+      .run();
+
+    activated++;
+    notes.push(`${row.title}: now counting $${money(t.minimum_spend_cents)} on ${card.nickname} by ${deadline}.`);
+  }
+
+  return { activated, notes };
 }

@@ -158,6 +158,11 @@ export const MATERIAL_FIELDS = [
   'application_end',
   'spend_window',
   'registration_required',
+  // Who the offer is for is a money-deciding term like any other: one source
+  // saying "new applicants" against another saying "existing cardholders" is
+  // the difference between an offer worth applying for and one that is not
+  // yours, and picking between them silently is exactly what must not happen.
+  'audience_type',
 ];
 
 export async function claimsFor(env: Env, candidateId: number): Promise<StoredClaim[]> {

@@ -2,6 +2,7 @@ import { today } from '../spend';
 import type { Env } from '../types';
 import { changeBetween, promotionTitle, recordChange, writeVersion } from './discovery/publish';
 import { PROMOTION_TYPES, termsOf, type Promotion, type PromotionType } from './model';
+import { AUDIENCE_TYPES, audienceOf, type PromotionAudienceType } from './audience';
 
 /**
  * Correcting an offer that is already published.
@@ -54,6 +55,15 @@ export interface CorrectionResult {
 export interface IdentityEdits {
   title?: string | null;
   promotion_type?: string | null;
+  /**
+   * Who the offer is for.
+   *
+   * Correctable because an extractor reading "existing cardmembers" as "new
+   * applicants" is the single most consequential mistake it can make — one
+   * direction sends a person to apply for a card they cannot benefit from,
+   * the other hides an offer they could take.
+   */
+  audience_type?: string | null;
 }
 
 async function applyIdentity(
@@ -71,6 +81,26 @@ async function applyIdentity(
     if (type !== promo.promotion_type) {
       await env.DB.prepare(`UPDATE promotions SET promotion_type = ? WHERE id = ?`).bind(type, promo.id).run();
       changed.push({ field: 'promotion_type', before: promo.promotion_type, after: type });
+    }
+  }
+
+  if (typeof edits.audience_type === 'string' && edits.audience_type.trim()) {
+    const type = edits.audience_type.trim() as PromotionAudienceType;
+    if (!AUDIENCE_TYPES.includes(type)) {
+      return { changed, error: `${type} is not an audience this app knows` };
+    }
+    const terms = termsOf(promo) as unknown as Record<string, unknown>;
+    const current = audienceOf(terms);
+    if (current.type !== type) {
+      // The raw wording is preserved: a person re-classifying a sentence is
+      // disagreeing with the reading, not claiming the sentence said something
+      // else, and the next reviewer needs to see what they were looking at.
+      const next = { ...current, type, confidence: 'high' as const };
+      await env.DB.prepare(`UPDATE promotions SET terms_json = ?, audience_type = ? WHERE id = ?`)
+        .bind(JSON.stringify({ ...terms, audience: next }), type, promo.id)
+        .run();
+      await recordChange(env, promo.id, 'audience_changed', current, next, 'app://correction');
+      changed.push({ field: 'audience_type', before: current.type, after: type });
     }
   }
 
