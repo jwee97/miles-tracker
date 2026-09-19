@@ -1,7 +1,7 @@
 import { today } from '../spend';
 import type { Env } from '../types';
-import { changeBetween, recordChange, writeVersion } from './discovery/publish';
-import { termsOf, type Promotion } from './model';
+import { changeBetween, promotionTitle, recordChange, writeVersion } from './discovery/publish';
+import { PROMOTION_TYPES, termsOf, type Promotion, type PromotionType } from './model';
 
 /**
  * Correcting an offer that is already published.
@@ -40,6 +40,51 @@ export interface CorrectionResult {
   promotion_id?: number;
   version?: number;
   changed?: { field: string; before: unknown; after: unknown }[];
+}
+
+/**
+ * What an offer IS, as opposed to what it pays.
+ *
+ * These are correctable for the same reason the figures are: an extractor can
+ * read a cashback welcome offer as a transfer bonus, and then it appears under
+ * "Point transfers" where nobody looking for it will find it. Nothing else in
+ * the app could put that right — the type decides which section an offer lives
+ * in, and it was write-once.
+ */
+export interface IdentityEdits {
+  title?: string | null;
+  promotion_type?: string | null;
+}
+
+async function applyIdentity(
+  env: Env,
+  promo: Promotion,
+  edits: IdentityEdits
+): Promise<{ changed: { field: string; before: unknown; after: unknown }[]; error?: string }> {
+  const changed: { field: string; before: unknown; after: unknown }[] = [];
+
+  if (typeof edits.promotion_type === 'string' && edits.promotion_type.trim()) {
+    const type = edits.promotion_type.trim() as PromotionType;
+    if (!PROMOTION_TYPES.includes(type)) {
+      return { changed, error: `${type} is not a kind of promotion this app knows` };
+    }
+    if (type !== promo.promotion_type) {
+      await env.DB.prepare(`UPDATE promotions SET promotion_type = ? WHERE id = ?`).bind(type, promo.id).run();
+      changed.push({ field: 'promotion_type', before: promo.promotion_type, after: type });
+    }
+  }
+
+  if (typeof edits.title === 'string' && edits.title.trim()) {
+    // Through the same tidier new offers get, so correcting a title cannot
+    // reintroduce the doubled issuer it is usually being corrected for.
+    const title = promotionTitle(promo.issuer, edits.title.trim());
+    if (title !== promo.title) {
+      await env.DB.prepare(`UPDATE promotions SET title = ? WHERE id = ?`).bind(title, promo.id).run();
+      changed.push({ field: 'title', before: promo.title, after: title });
+    }
+  }
+
+  return { changed };
 }
 
 const isMoney = (field: string) => field.endsWith('_cents');
@@ -82,10 +127,21 @@ export async function correctPromotion(
   env: Env,
   promotionId: number,
   edits: Record<string, unknown>,
-  opts: { note?: string | null; source_url?: string | null; allow_implausible?: boolean } = {}
+  opts: {
+    note?: string | null;
+    source_url?: string | null;
+    allow_implausible?: boolean;
+    identity?: IdentityEdits;
+  } = {}
 ): Promise<CorrectionResult> {
   const promo = await env.DB.prepare(`SELECT * FROM promotions WHERE id = ?`).bind(promotionId).first<Promotion>();
   if (!promo) return { ok: false, error: 'no such offer' };
+
+  // What it is, before what it pays: an offer filed as the wrong kind is
+  // invisible in the section a person would look in, however right its
+  // numbers are.
+  const identity = opts.identity ? await applyIdentity(env, promo, opts.identity) : { changed: [] };
+  if (identity.error) return { ok: false, error: identity.error };
 
   const before = termsOf(promo) as unknown as Record<string, unknown>;
   const after = { ...before };
@@ -113,7 +169,9 @@ export async function correctPromotion(
     after[field] = parsed;
   }
 
-  if (!changed.length) return { ok: true, promotion_id: promotionId, changed: [] };
+  if (!changed.length) {
+    return { ok: true, promotion_id: promotionId, changed: identity.changed };
+  }
 
   await env.DB.prepare(
     `UPDATE promotions SET terms_json = ?, verified_at = ?, last_verified_at = ?, confidence = 'high' WHERE id = ?`
@@ -148,5 +206,5 @@ export async function correctPromotion(
       .run();
   }
 
-  return { ok: true, promotion_id: promotionId, version, changed };
+  return { ok: true, promotion_id: promotionId, version, changed: [...identity.changed, ...changed] };
 }

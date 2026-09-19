@@ -244,10 +244,20 @@ export function promotionTitle(issuer: string | null, product: string | null): s
   const bank = (issuer ?? '').trim();
   if (!bank) return name || 'Promotion';
   if (!name) return bank;
+
+  // Collapse a bank already named twice in a row. Preventing a duplicate from
+  // being added is not enough on its own: records written before that guard
+  // existed still carry "OCBC OCBC INFINITY…", and a person retyping the name
+  // to fix it would otherwise have the doubling preserved for them.
+  let out = name;
+  const doubled = new RegExp(`^(${bank.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(\\s+\\1\\b)+`, 'i');
+  const collapsed = out.match(doubled);
+  if (collapsed) out = `${collapsed[1]}${out.slice(collapsed[0].length)}`;
+
   // A plain prefix match rather than a word boundary, because "Citibank Cash
   // Back" is Citi's and "Citi Citibank Cash Back" reads as a mistake. Against
   // this catalogue's issuers a name starting with the bank's is that bank's.
-  return name.toLowerCase().startsWith(bank.toLowerCase()) ? name : `${bank} ${name}`;
+  return out.toLowerCase().startsWith(bank.toLowerCase()) ? out : `${bank} ${out}`;
 }
 
 /**

@@ -1243,6 +1243,7 @@ export default {
             note: b.note ?? null,
             source_url: b.source_url ?? null,
             allow_implausible: b.allow_implausible === true,
+            identity: b.identity ?? undefined,
           });
           return json(r, r.ok ? 200 : 400);
         }

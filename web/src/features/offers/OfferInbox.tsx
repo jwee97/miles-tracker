@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   contributeTargetedOffer,
   correctPromotion,
+  PROMOTION_KINDS,
   dismissOffer,
   fetchOffers2,
   fetchPromotionEvidence,
@@ -199,6 +200,26 @@ function Correct({ o, onChange }: { o: RelevantPromotion; onChange: () => void }
   const [form, setForm] = useState<Record<string, string>>(() =>
     Object.fromEntries(fields.map((f) => [f.key, shown(f)]))
   );
+  const [title, setTitle] = useState(o.promotion.title);
+  const [kind, setKind] = useState(o.promotion.promotion_type);
+
+  /**
+   * Start each editing session from what the offer says now.
+   *
+   * Without this the boxes keep whatever was typed last time, so a second
+   * correction resubmits the first one's values as though they were fresh
+   * edits — which is exactly the "only send what changed" rule being quietly
+   * defeated by stale state.
+   */
+  function toggle() {
+    if (!open) {
+      setForm(Object.fromEntries(fields.map((f) => [f.key, shown(f)])));
+      setTitle(o.promotion.title);
+      setKind(o.promotion.promotion_type);
+      setErr(null);
+    }
+    setOpen((v) => !v);
+  }
 
   async function save() {
     setBusy(true);
@@ -222,12 +243,22 @@ function Correct({ o, onChange }: { o: RelevantPromotion; onChange: () => void }
         }
         terms[f.key] = f.money ? Math.round(n * 100) : n;
       }
-      if (!Object.keys(terms).length) {
+      // What it is, alongside what it pays. An offer filed as the wrong kind
+      // sits in a section nobody would look in — a cashback welcome offer
+      // under "Point transfers" is invisible however right its figures are —
+      // and nothing else in the app could put that right.
+      const identity: { title?: string; promotion_type?: string } = {};
+      if (title.trim() && title.trim() !== o.promotion.title) identity.title = title.trim();
+      if (kind !== o.promotion.promotion_type) identity.promotion_type = kind;
+
+      if (!Object.keys(terms).length && !Object.keys(identity).length) {
         setErr('Nothing was changed.');
         return;
       }
 
-      const r = await correctPromotion(o.promotion.id, terms);
+      const r = await correctPromotion(o.promotion.id, terms, {
+        identity: Object.keys(identity).length ? identity : undefined,
+      });
       if (!r.ok) {
         setErr(r.error ?? 'that did not work');
         return;
@@ -247,7 +278,7 @@ function Correct({ o, onChange }: { o: RelevantPromotion; onChange: () => void }
 
   return (
     <>
-      <button className="secondary" onClick={() => setOpen((v) => !v)}>
+      <button className="secondary" onClick={() => toggle()}>
         {open ? 'Cancel' : 'These numbers are wrong'}
       </button>
       {open && (
@@ -257,6 +288,20 @@ function Correct({ o, onChange }: { o: RelevantPromotion; onChange: () => void }
             later scan will not quietly put the old number back.
           </p>
           <div className="entry-grid">
+            <label className="f f-note">
+              <span>Name</span>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} />
+            </label>
+            <label className="f">
+              <span>Kind of offer</span>
+              <select value={kind} onChange={(e) => setKind(e.target.value)}>
+                {PROMOTION_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k.replace(/_/g, ' ')}
+                  </option>
+                ))}
+              </select>
+            </label>
             {fields.map((f) => (
               <label className="f" key={f.key}>
                 <span>{f.label}</span>
@@ -269,6 +314,10 @@ function Correct({ o, onChange }: { o: RelevantPromotion; onChange: () => void }
               </label>
             ))}
           </div>
+          <p className="sub">
+            The kind decides which section it appears under — a cashback welcome offer filed as a transfer bonus sits
+            where nobody would look for it.
+          </p>
           <div className="entry-foot">
             <button className="secondary" disabled={busy} onClick={save}>
               {busy ? 'Saving…' : 'Save the correction'}

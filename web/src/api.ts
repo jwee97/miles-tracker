@@ -851,10 +851,26 @@ export interface CorrectionResult {
   changed?: { field: string; before: unknown; after: unknown }[];
 }
 
+export const PROMOTION_KINDS = [
+  'welcome_offer',
+  'spend_bonus',
+  'merchant_offer',
+  'transfer_bonus',
+  'annual_fee_offer',
+  'points_conversion_offer',
+  'category_bonus',
+  'cardholder_offer',
+  'bank_campaign',
+] as const;
+
 export const correctPromotion = (
   id: number,
   terms: Record<string, number>,
-  opts: { note?: string | null; allow_implausible?: boolean } = {}
+  opts: {
+    note?: string | null;
+    allow_implausible?: boolean;
+    identity?: { title?: string | null; promotion_type?: string | null };
+  } = {}
 ) => post<CorrectionResult>(`/api/promotions/${id}/correct`, { terms, ...opts });
 
 export const contributeTargetedOffer = (

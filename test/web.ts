@@ -582,7 +582,14 @@ async function stub(page: Page) {
           400
         );
       }
-      return send({ ok: true, version: 2, changed: [{ field: 'reward_cashback_cents', before: 400, after: cash }] });
+      return send({
+        ok: true,
+        version: 2,
+        changed: [
+          ...(corrected?.identity?.promotion_type ? [{ field: 'promotion_type', before: 'transfer_bonus', after: corrected.identity.promotion_type }] : []),
+          { field: 'reward_cashback_cents', before: 400, after: cash },
+        ],
+      });
     }
     if (u.pathname.match(/^\/api\/promotions\/\d+\/evidence$/))
       return send({
@@ -1278,10 +1285,13 @@ async function main() {
     );
 
     // The exact mistake that produced "Spend $4.00 → $4.00 cashback".
-    // Scoped to the correction form: the targeted-offer form above is still
-    // open and also renders inputs.
+    // Scoped to the correction form (the targeted-offer form above is still
+    // open and also renders inputs), and targeted by label rather than by
+    // index, so adding a field to the form does not silently point these
+    // assertions at a different box.
     const form = first.locator('.correct-form');
-    await form.locator('input').nth(2).fill('4');
+    const field = (label: string) => form.locator('label', { hasText: label }).locator('input');
+    await field('Cashback').fill('4');
     await first.getByRole('button', { name: 'Save the correction' }).click();
     await form.locator('.err-text').waitFor();
     check('a dollars-for-cents mistake is refused', says(await first.innerText(), 'looks too small'), (await first.innerText()).slice(0, 2000));
@@ -1295,7 +1305,7 @@ async function main() {
     );
     check('with nothing still claiming to be in flight', !says(await form.innerText(), 'Saving…'), await form.innerText());
 
-    await form.locator('input').nth(2).fill('400');
+    await field('Cashback').fill('400');
     await first.getByRole('button', { name: 'Save the correction' }).click();
     await page.waitForFunction(() => !document.querySelector('.correct-form'));
     check('a real figure goes through', corrected?.terms?.reward_cashback_cents === 40000, JSON.stringify(corrected?.terms));
@@ -1308,6 +1318,20 @@ async function main() {
       Object.keys(corrected?.terms ?? {}).length === 1,
       JSON.stringify(corrected?.terms)
     );
+
+    // An offer filed as the wrong kind sits in a section nobody would look in,
+    // however right its figures are, and nothing else could put that right.
+    await first.getByRole('button', { name: 'These numbers are wrong' }).click();
+    const form2 = first.locator('.correct-form');
+    check('the kind of offer can be corrected', (await form2.locator('select').count()) === 1);
+    check('and it says why that matters', says(await form2.innerText(), 'decides which section'), (await form2.innerText()).slice(0, 900));
+    check('the name can be corrected too', says(await form2.innerText(), 'Name'), (await form2.innerText()).slice(0, 400));
+
+    await form2.locator('select').selectOption('welcome_offer');
+    await first.getByRole('button', { name: 'Save the correction' }).click();
+    await page.waitForFunction(() => !document.querySelector('.correct-form'));
+    check('the kind goes through', corrected?.identity?.promotion_type === 'welcome_offer', JSON.stringify(corrected?.identity));
+    check('without resending unchanged figures', Object.keys(corrected?.terms ?? {}).length === 0, JSON.stringify(corrected?.terms));
 
     await page.locator('.card', { hasText: 'Everything' }).getByRole('button', { name: 'Show' }).click();
     const everything = await page.locator('.card', { hasText: 'Everything' }).innerText();

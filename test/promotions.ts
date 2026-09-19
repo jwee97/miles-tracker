@@ -112,6 +112,34 @@ await linkApplicability(env, foreign.id!, { product_keys: ['other'] });
 await publishPromotion(env, foreign.id!);
 const foreignRated = await rate(env, one(`SELECT * FROM promotions WHERE id = ?`, foreign.id));
 check('an offer for a card you do not hold is not applicable', foreignRated.relevance === 'not_applicable', foreignRated.relevance);
+
+// The verdict used to be set with no sentence attached, so the offer arrived
+// in the list marked not_applicable with "No reason recorded" under it. For
+// every other relevance the offer is the content and the reason is a bonus;
+// here the reason IS the content.
+check('and it says why, rather than only that it decided', foreignRated.blockers.length > 0, JSON.stringify(foreignRated));
+check('naming the card it is actually for', foreignRated.blockers.some((b) => b.includes('Other')), JSON.stringify(foreignRated.blockers));
+check('and that you do not hold it', foreignRated.blockers.some((b) => b.includes('do not hold')), JSON.stringify(foreignRated.blockers));
+
+// Nothing may reach the screen saying only that the app decided something.
+// Asserted across every way an offer can end up not applicable, because each
+// of them is a separate branch and only one of them had the sentence missing.
+const dismissed = await savePromotion(env, { promotion_type: 'spend_bonus', title: 'Set aside', terms: { reward_points: 500 }, status: 'draft' });
+await publishPromotion(env, dismissed.id!);
+sql(`UPDATE promotions SET dismissed_at = '2026-09-01' WHERE id = ?`, dismissed.id);
+
+const ended = await savePromotion(env, { promotion_type: 'spend_bonus', title: 'Long over', end_at: '2026-01-01', terms: { reward_points: 500 }, status: 'draft' });
+await publishPromotion(env, ended.id!);
+
+const unlinked = await savePromotion(env, { promotion_type: 'spend_bonus', title: 'Nobody', terms: { reward_points: 500 }, status: 'draft' });
+await linkApplicability(env, unlinked.id!, { product_keys: ['other'] });
+await publishPromotion(env, unlinked.id!);
+
+for (const [label, id] of [['a dismissed offer', dismissed.id], ['an ended offer', ended.id], ['an unheld card', unlinked.id]] as const) {
+  const rated = await rate(env, one(`SELECT * FROM promotions WHERE id = ?`, id));
+  check(`${label} is not applicable`, rated.relevance === 'not_applicable', rated.relevance);
+  check(`${label} still carries a reason`, [...rated.why, ...rated.blockers].length > 0, JSON.stringify(rated));
+}
 void otherPid;
 
 // Spending history decides whether the threshold is reachable.

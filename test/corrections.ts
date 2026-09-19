@@ -112,10 +112,45 @@ const odd = await correctPromotion(env, pid, { reward_cashback_cents: 400 }, { a
 check('an override exists for a genuinely small offer', odd.ok === true, JSON.stringify(odd));
 await correctPromotion(env, pid, { reward_cashback_cents: 40000 }, { allow_implausible: true });
 
+// -------------------------------------------------- what an offer even is
+// A cashback welcome offer read as a transfer bonus appears under "Point
+// transfers", where nobody looking for it will ever see it — and the figures
+// being right does not help. Nothing else in the app could put that right.
+sql(`UPDATE promotions SET promotion_type = 'transfer_bonus', title = 'OCBC OCBC INFINITY Cashback Credit Card' WHERE id = ?`, pid);
+
+let identity = await correctPromotion(env, pid, {}, { identity: { promotion_type: 'not_a_kind' } });
+check('a kind the app does not know is refused', identity.ok === false, JSON.stringify(identity));
+check('and it says so plainly', (identity.error ?? '').includes('not a kind'), String(identity.error));
+check('leaving the offer as it was', one(`SELECT promotion_type FROM promotions WHERE id=?`, pid).promotion_type === 'transfer_bonus');
+
+identity = await correctPromotion(env, pid, {}, { identity: { promotion_type: 'welcome_offer' } });
+check('a real kind is accepted', identity.ok === true, JSON.stringify(identity));
+check('and recorded as a change', identity.changed?.some((c) => c.field === 'promotion_type') === true, JSON.stringify(identity.changed));
+check('so it now files under the right section', one(`SELECT promotion_type FROM promotions WHERE id=?`, pid).promotion_type === 'welcome_offer');
+
+identity = await correctPromotion(env, pid, {}, { identity: { title: 'OCBC INFINITY Cashback Credit Card' } });
+check('the name can be fixed too', identity.ok === true, JSON.stringify(identity));
+check('without the bank twice', one(`SELECT title FROM promotions WHERE id=?`, pid).title === 'OCBC INFINITY Cashback Credit Card');
+
+// Through the same tidier new offers get, so correcting a doubled title
+// cannot reintroduce the doubling it is being corrected for.
+await correctPromotion(env, pid, {}, { identity: { title: 'OCBC OCBC INFINITY Cashback Credit Card' } });
+check(
+  'and a doubled name cannot be typed back in',
+  one(`SELECT title FROM promotions WHERE id=?`, pid).title === 'OCBC INFINITY Cashback Credit Card',
+  one(`SELECT title FROM promotions WHERE id=?`, pid).title
+);
+
+const nothing = await correctPromotion(env, pid, {}, { identity: { promotion_type: 'welcome_offer' } });
+check('resubmitting the same kind changes nothing', nothing.ok === true && nothing.changed?.length === 0, JSON.stringify(nothing));
+
 // ------------------------------------------------------------- the title
 // Card names as articles write them usually carry the issuer already, so
 // prefixing it produced "OCBC OCBC INFINITY Cashback Credit Card".
 check('the bank is not named twice', promotionTitle('OCBC', 'OCBC INFINITY Cashback Credit Card') === 'OCBC INFINITY Cashback Credit Card');
+check('and one already doubled is collapsed', promotionTitle('OCBC', 'OCBC OCBC INFINITY Cashback Credit Card') === 'OCBC INFINITY Cashback Credit Card');
+check('however many times it repeats', promotionTitle('UOB', 'UOB UOB UOB One Card') === 'UOB One Card');
+check('but a genuine repeat inside the name is left alone', promotionTitle('Citi', 'Citi Cash Back Citi Edition') === 'Citi Cash Back Citi Edition');
 check('but is added when the name lacks it', promotionTitle('Citi', 'Rewards Card') === 'Citi Rewards Card');
 check('case does not matter', promotionTitle('DBS', 'dbs Altitude') === 'dbs Altitude');
 check('a partial word is not mistaken for the bank', promotionTitle('Citi', 'Citibank Cash Back') === 'Citibank Cash Back');

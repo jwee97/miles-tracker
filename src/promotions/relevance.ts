@@ -197,12 +197,16 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
 
   // A card-specific offer for a card nobody holds is not a low-relevance offer;
   // it is not an offer for this person at all, and saying so is more useful
-  // than ranking it.
+  // than ranking it. Saying so is the whole point — this branch used to set the
+  // verdict and write no sentence, so the offer arrived in the list marked
+  // not_applicable with "No reason recorded" underneath it.
   const needsCard = (linkedCards ?? []).length > 0;
   let relevance: Relevance;
   if (p.dismissed_at || p.status !== 'published' || (days !== null && days < 0)) relevance = 'not_applicable';
-  else if (needsCard && !cards?.length) relevance = 'not_applicable';
-  else if (tracked) relevance = 'high';
+  else if (needsCard && !cards?.length) {
+    relevance = 'not_applicable';
+    blockers.push(await cardNotHeld(env, linkedCards ?? []));
+  } else if (tracked) relevance = 'high';
   else if ((cards?.length && reachable !== false) || (progs?.length && p.promotion_type === 'transfer_bonus')) {
     relevance = reachable === true || spend === null ? 'high' : 'medium';
   } else if (cards?.length || progs?.length) relevance = 'medium';
@@ -236,6 +240,14 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
     why.push('It applies to any cardholder.');
   }
 
+  // A verdict with no reason is the one thing this list must never print. For
+  // every other relevance the offer itself is the content and the reason is a
+  // bonus; for not_applicable the reason IS the content, and without it the
+  // row says only that the app has decided something and will not say what.
+  if (relevance === 'not_applicable' && !blockers.length) {
+    blockers.push('It does not apply to your cards or your spending.');
+  }
+
   return {
     promotion: p,
     terms: t,
@@ -252,6 +264,30 @@ export async function rate(env: Env, p: Promotion): Promise<RelevantPromotion> {
     pays_varies: range.varies,
     currency: currencyOf(p, now),
   };
+}
+
+/**
+ * Which card an offer needs, said by name.
+ *
+ * "You do not hold the card this applies to" is true but unhelpful when the
+ * whole question is which card that is — and the answer is one lookup away,
+ * because the offer is already linked to its products.
+ */
+async function cardNotHeld(env: Env, linked: { product_id: number }[]): Promise<string> {
+  const ids = linked.map((l) => l.product_id).filter((id) => typeof id === 'number');
+  if (!ids.length) return 'It applies to a card you do not hold.';
+
+  const { results } = await env.DB.prepare(
+    `SELECT issuer, product_name FROM card_products WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY product_name`
+  )
+    .bind(...ids)
+    .all<{ issuer: string | null; product_name: string }>();
+
+  const names = (results ?? []).map((r) => r.product_name).filter(Boolean);
+  if (!names.length) return 'It applies to a card you do not hold.';
+  if (names.length === 1) return `It is for the ${names[0]}, which you do not hold.`;
+  if (names.length <= 3) return `It is for ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}, none of which you hold.`;
+  return `It is for ${names.length} cards you do not hold, including the ${names[0]}.`;
 }
 
 /**

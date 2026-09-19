@@ -579,6 +579,11 @@ and the history with it, so **These numbers are wrong** edits it in place: a new
 version, a change event, and a claim attributed to you at the tier an issuer
 gets, so the next scan cannot quietly put the old number back.
 
+An offer's **name and kind** are correctable too. The kind decides which
+section an offer appears under, so a cashback welcome offer read as a transfer
+bonus sits where nobody would look for it — and being right about its figures
+does not help.
+
 Amounts are entered in dollars everywhere, and a figure that could only be a
 units mistake is refused rather than stored — a $4.00 cashback bonus with a
 $4.00 threshold is not a real offer, and nothing else on the screen would have
