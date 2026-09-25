@@ -244,6 +244,35 @@ export async function resolveMerchantIntelligence(env: Env, input: ResolveInput)
         }
       }
     }
+    // A code could not be predicted, but the category still might be. There
+    // are over nine hundred codes and eighteen categories, so the same ledger
+    // is routinely too thin for one and thick enough for the other — and most
+    // earn rules are keyed on category, so this is often the answer that
+    // actually prices the purchase.
+    if (!category.value) {
+      const catModel = await activeModel(env, 'merchant_category');
+      if (catModel) {
+        const guess = await classify(env, input.descriptor, { model: catModel });
+        if (guess && guess.probability >= catModel.high_confidence) {
+          category = { value: guess.label, confidence: guess.probability };
+          if (source === 'none') source = 'self_trained_ml';
+          modelKey = modelKey ?? guess.model_key;
+          modelVersion = modelVersion ?? guess.model_version;
+          trail.push({
+            step: 'category_model',
+            outcome: `${guess.label} at ${Math.round(guess.probability * 100)}% from ${catModel.model_key} v${catModel.version}`,
+          });
+        } else {
+          trail.push({
+            step: 'category_model',
+            outcome: guess
+              ? `${catModel.model_key} suggests ${guess.label} at ${Math.round(guess.probability * 100)}%, below its bar`
+              : `${catModel.model_key} has not seen enough of this descriptor`,
+          });
+        }
+      }
+    }
+
     trail.push({ step: 'external', outcome: 'not configured' });
   }
 

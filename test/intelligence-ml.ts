@@ -375,6 +375,64 @@ check('at four bytes a class', atob(packed).length === 12, String(atob(packed).l
 
 check('the promotion bar still guards precision above all', PROMOTION_BAR.min_high_confidence_precision >= 0.9, String(PROMOTION_BAR.min_high_confidence_precision));
 
+// --- the other thing worth predicting -------------------------------------
+//
+// The same corpus is routinely too thin to learn codes from and thick enough
+// to learn categories from, because there are nine hundred of one and eighteen
+// of the other. Readiness has to report both, or a person cannot tell which
+// they are facing.
+const bothWays = await trainingReadiness(env);
+check('readiness reports codes', bothWays.per_category.length > 0, String(bothWays.per_category.length));
+check('and categories separately', Array.isArray(bothWays.per_spend_category), '');
+check(
+  'with categories no more numerous than codes',
+  bothWays.per_spend_category.length <= bothWays.per_category.length + 1,
+  `${bothWays.per_spend_category.length} categories vs ${bothWays.per_category.length} codes`
+);
+
+const bothExport = await exportTrainingData(env);
+check(
+  'and the export carries both labels, so either can be trained without another round trip',
+  bothExport.examples.some((e) => e.category !== null),
+  ''
+);
+
+// A category model answers where a code model cannot, and is consulted under
+// its own key so the two never overwrite one another.
+const catTrained = train(
+  CORPUS.flatMap((c) =>
+    Array.from({ length: 40 }, (_, i) => ({
+      text: c.make(i),
+      label: c.mcc === '5812' || c.mcc === '5814' ? 'dining' : c.mcc === '5411' ? 'groceries' : 'transport',
+    }))
+  ),
+  { folds: 0, epochs: 8, min_per_class: 20 }
+);
+if ('error' in catTrained) check('a category corpus trains', false, catTrained.error);
+else {
+  check('a category corpus trains', catTrained.classes.length === 3, catTrained.classes.join(','));
+  const catReg = await registerModel(env, {
+    model_key: 'merchant_category',
+    architecture: catTrained.architecture,
+    training_examples: catTrained.metrics.training_examples,
+    validation_metrics: { macro_f1: 0.9, high_confidence_precision: 0.95 },
+    classes: catTrained.classes,
+    intercept: catTrained.intercept,
+    high_confidence: 0.85,
+  });
+  check('a category model registers under its own key', catReg.ok, JSON.stringify(catReg));
+  check(
+    'and does not disturb the code model',
+    (await activeModel(env, 'merchant_mcc'))?.model_key === 'merchant_mcc',
+    ''
+  );
+  check(
+    'but is refused with three classes, same as any other',
+    !meetsBar((await listModels(env, 'merchant_category'))[0]).ok,
+    ''
+  );
+}
+
 // --- a model too narrow to be worth having --------------------------------
 //
 // Perfect scores on two classes is the failure mode that looks like success.

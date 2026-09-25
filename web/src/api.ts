@@ -2375,6 +2375,7 @@ export interface TrainingReadiness {
   distinct_merchants: number;
   categories_meeting_bar: number;
   per_category: { category: string; labels: number }[];
+  per_spend_category: { category: string; labels: number }[];
   thresholds: { min_labels: number; min_per_category: number; min_categories: number; min_merchants: number };
   ready: boolean;
   blocking: string[];
@@ -2475,6 +2476,13 @@ export const fetchTrainingData = () =>
   get<{ examples: { normalized_descriptor: string; confirmed_mcc: string | null; category: string | null }[]; count: number }>(
     '/api/intelligence/training-data'
   );
+
+/** The two things worth predicting from a descriptor. */
+export type TrainTarget = 'mcc' | 'category';
+export const MODEL_KEY: Record<TrainTarget, string> = {
+  mcc: 'merchant_mcc',
+  category: 'merchant_category',
+};
 
 export const fetchModels = () =>
   get<{ models: ModelRow[]; retired_predictions: unknown[] }>('/api/intelligence/models');

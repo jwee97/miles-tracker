@@ -384,7 +384,19 @@ export interface Readiness {
   labels: number;
   distinct_merchants: number;
   categories_meeting_bar: number;
+  /** Counted per merchant code — what the rules engine keys MCC rules on. */
   per_category: { category: string; labels: number }[];
+  /**
+   * Counted per spending category — the other thing worth predicting.
+   *
+   * Two breakdowns rather than one because they fail differently and a person
+   * cannot tell which they are facing from a total. There are over nine
+   * hundred codes and eighteen categories, so the same ledger is routinely too
+   * thin to learn codes from and thick enough to learn categories from — and
+   * the app's earn rules are keyed on category for most cards, so the cheaper
+   * target is often the more useful one.
+   */
+  per_spend_category: { category: string; labels: number }[];
   thresholds: typeof READINESS;
   ready: boolean;
   /** What is missing, in the order it blocks. */
@@ -421,6 +433,13 @@ export async function trainingReadiness(env: Env): Promise<Readiness> {
   const perCategory = (results ?? []).map((r) => ({ category: r.category, labels: r.n }));
   const meeting = perCategory.filter((c) => c.labels >= READINESS.min_per_category).length;
 
+  const { results: spendRows } = await env.DB.prepare(
+    `SELECT category, COUNT(*) AS n FROM merchant_training_labels
+      WHERE source IN (${sources}) AND category IS NOT NULL
+      GROUP BY category ORDER BY n DESC`
+  ).all<{ category: string; n: number }>();
+  const perSpend = (spendRows ?? []).map((r) => ({ category: r.category, labels: r.n }));
+
   const blocking: string[] = [];
   if (labels < READINESS.min_labels) blocking.push(`${READINESS.min_labels - labels} more confirmed labels`);
   if (merchants < READINESS.min_merchants) {
@@ -437,6 +456,7 @@ export async function trainingReadiness(env: Env): Promise<Readiness> {
     distinct_merchants: merchants,
     categories_meeting_bar: meeting,
     per_category: perCategory,
+    per_spend_category: perSpend,
     thresholds: READINESS,
     ready,
     blocking,
@@ -459,10 +479,13 @@ export async function exportTrainingData(
   env: Env
 ): Promise<{ examples: Record<string, unknown>[]; count: number; exported_at: string }> {
   const sources = `'${TRUSTED_SOURCES.join("','")}'`;
+  // Both targets are exported together rather than in two shapes: the caller
+  // picks which column is the label, and a corpus that carries both can be
+  // retrained against the other without another round trip.
   const { results } = await env.DB.prepare(
     `SELECT normalized_descriptor, processor, country, confirmed_mcc, category, channel
        FROM merchant_training_labels
-      WHERE source IN (${sources}) AND confirmed_mcc IS NOT NULL
+      WHERE source IN (${sources}) AND (confirmed_mcc IS NOT NULL OR category IS NOT NULL)
       ORDER BY id`
   ).all<Record<string, unknown>>();
 

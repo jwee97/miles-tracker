@@ -12,7 +12,9 @@ import {
   uploadModelFeatures,
   fetchHarvestDiagnostics,
   type HarvestDiagnostics,
+  MODEL_KEY,
   type ModelRow,
+  type TrainTarget,
   type TrainingReadiness,
 } from './api';
 
@@ -75,6 +77,17 @@ export default function ModelTrainer() {
    * precision, and the promotion bar still refuses anything under 90%.
    */
   const [minPerClass, setMinPerClass] = useState(25);
+  /**
+   * What the model predicts.
+   *
+   * Offered as a choice because the same ledger is routinely too thin to learn
+   * codes from and thick enough to learn categories from. There are over nine
+   * hundred codes and eighteen categories, so a corpus spread across seventeen
+   * codes at five examples each is hopeless as a code model and perfectly
+   * reasonable as a category one — and most earn rules are keyed on category,
+   * so the cheaper target is often the more useful answer anyway.
+   */
+  const [target, setTarget] = useState<TrainTarget>('mcc');
 
   function refresh() {
     fetchReadiness().then(setReadiness).catch(() => {});
@@ -110,8 +123,11 @@ export default function ModelTrainer() {
     try {
       const data = await fetchTrainingData();
       const examples: Example[] = data.examples
-        .filter((e) => e.normalized_descriptor && e.confirmed_mcc)
-        .map((e) => ({ text: e.normalized_descriptor, label: e.confirmed_mcc! }));
+        .filter((e) => e.normalized_descriptor && (target === 'mcc' ? e.confirmed_mcc : e.category))
+        .map((e) => ({
+          text: e.normalized_descriptor,
+          label: (target === 'mcc' ? e.confirmed_mcc : e.category)!,
+        }));
 
       if (examples.length < 50) {
         setPhase('idle');
@@ -153,14 +169,14 @@ export default function ModelTrainer() {
     setPhase('uploading');
     try {
       const reg = await registerModel({
-        model_key: 'merchant_mcc',
+        model_key: MODEL_KEY[target],
         architecture: model.architecture,
         training_examples: model.metrics.training_examples,
         validation_metrics: model.metrics as unknown as Record<string, unknown>,
         classes: model.classes,
         intercept: model.intercept,
         high_confidence: model.high_confidence,
-        note: `trained in the browser on ${model.metrics.training_examples} labels`,
+        note: `predicts ${target === 'mcc' ? 'merchant codes' : 'spending categories'}; trained in the browser on ${model.metrics.training_examples} labels`,
       });
       if (!reg.ok || !reg.version) throw new Error(reg.error ?? 'could not register the model');
 
@@ -174,7 +190,7 @@ export default function ModelTrainer() {
           note: `uploading ${i.toLocaleString()} of ${model.features.length.toLocaleString()} features`,
         });
         const r = await uploadModelFeatures({
-          model_key: 'merchant_mcc',
+          model_key: MODEL_KEY[target],
           version: reg.version,
           features: model.features.slice(i, i + SLICE),
         });
@@ -182,14 +198,14 @@ export default function ModelTrainer() {
       }
       setProgress(null);
 
-      const sealed = await sealModel({ model_key: 'merchant_mcc', version: reg.version });
+      const sealed = await sealModel({ model_key: MODEL_KEY[target], version: reg.version });
       if (sealed.feature_count !== model.features.length) {
         throw new Error(
           `only ${sealed.feature_count} of ${model.features.length} features arrived — the model was not deployed`
         );
       }
 
-      const promoted = await promoteModel({ model_key: 'merchant_mcc', version: reg.version, force });
+      const promoted = await promoteModel({ model_key: MODEL_KEY[target], version: reg.version, force });
       if (!promoted.ok) {
         setPhase('trained');
         setErr(
@@ -223,12 +239,13 @@ export default function ModelTrainer() {
     }
   }
 
-  const active = models?.find((m) => m.status === 'active');
+  const active = models?.find((m) => m.status === 'active' && m.model_key === MODEL_KEY[target]);
   const busy = phase === 'loading' || phase === 'training' || phase === 'uploading';
 
   // How many codes clear the threshold currently chosen, rather than the fixed
   // one the readiness gate reports against.
-  const eligible = (readiness?.per_category ?? []).filter((c) => c.labels >= minPerClass).length;
+  const counts = (target === 'mcc' ? readiness?.per_category : readiness?.per_spend_category) ?? [];
+  const eligible = counts.filter((c) => c.labels >= minPerClass).length;
   // Two classes is the floor below which there is literally nothing to tell
   // apart. Everything above that is a question for the measurement.
   const canTrain = eligible >= 2 && (readiness?.labels ?? 0) >= 60;
@@ -257,7 +274,8 @@ export default function ModelTrainer() {
         </p>
       ) : (
         <p className="sub">
-          No model is live. Codes are read from evidence alone, and unknown merchants go to Review.
+          No {target === 'mcc' ? 'code' : 'category'} model is live. {target === 'mcc' ? 'Codes are' : 'Categories are'}{' '}
+          read from evidence alone, and unknown merchants go to Review.
         </p>
       )}
 
@@ -310,11 +328,28 @@ export default function ModelTrainer() {
         codes with 25 each" fail for different reasons and need different
         answers, and a person can see which from this list in one glance.
       */}
-      {readiness && readiness.per_category.length > 0 && (
+      <label className="f f-note">
+        <span>What the model should predict</span>
+        <select value={target} onChange={(e) => setTarget(e.target.value as TrainTarget)} disabled={busy}>
+          <option value="mcc">
+            Merchant code — precise, {readiness?.per_category.length ?? 0} in your ledger
+          </option>
+          <option value="category">
+            Spending category — coarser, {readiness?.per_spend_category.length ?? 0} in your ledger
+          </option>
+        </select>
+      </label>
+      <p className="sub dim">
+        There are over nine hundred codes and eighteen categories, so the same ledger is often too thin to learn
+        codes from and thick enough to learn categories from. Most of your cards' earn rules are keyed on category,
+        so the coarser answer is usually the more useful one.
+      </p>
+
+      {counts.length > 0 && (
         <>
-          <h3>What you have, by code</h3>
+          <h3>What you have, by {target === 'mcc' ? 'code' : 'category'}</h3>
           <ul className="code-counts">
-            {readiness.per_category.slice(0, 12).map((c) => (
+            {counts.slice(0, 14).map((c) => (
               <li key={c.category} className={c.labels >= minPerClass ? 'enough' : ''}>
                 <span className="mono">{c.category}</span>
                 <span className="mono">{c.labels}</span>
@@ -322,15 +357,16 @@ export default function ModelTrainer() {
             ))}
           </ul>
           <p className="sub dim">
-            {eligible} code{eligible === 1 ? '' : 's'} at or above {minPerClass} example
+            {eligible} {target === 'mcc' ? 'code' : 'category'}
+            {eligible === 1 ? '' : 's'} at or above {minPerClass} example
             {minPerClass === 1 ? '' : 's'}. A model needs at least two to have anything to tell apart, and it will
-            never name a code below the line — those merchants keep going to Review.
+            never name one below the line — those merchants keep going to Review.
           </p>
         </>
       )}
 
       <label className="f f-note">
-        <span>Examples a code needs before the model may name it</span>
+        <span>Examples a {target === 'mcc' ? 'code' : 'category'} needs before the model may name it</span>
         <select value={minPerClass} onChange={(e) => setMinPerClass(Number(e.target.value))} disabled={busy}>
           <option value={25}>25 — cautious</option>
           <option value={15}>15 — more codes, thinner evidence</option>
@@ -393,7 +429,8 @@ export default function ModelTrainer() {
               accuracy <span className="mono">{pct(model.metrics.accuracy)}</span>
             </li>
             <li>
-              codes it can name <span className="mono">{model.metrics.classes}</span>
+              {target === 'mcc' ? 'codes' : 'categories'} it can name{' '}
+              <span className="mono">{model.metrics.classes}</span>
             </li>
           </ul>
           {/*
@@ -405,11 +442,11 @@ export default function ModelTrainer() {
           {model.classes.length < 4 && (
             <div className="impact impact-real">
               <p className="impact-note">
-                This names only {model.classes.length} code{model.classes.length === 1 ? '' : 's'}, so the score
-                above is flattering it. There are over nine hundred codes; a model with this few answers gives one of
-                them to every merchant it has never seen — and those are the only merchants it is ever asked about.
-                A perfect score here means it separated {model.classes.length} familiar names, not that it learned
-                what codes look like.
+                This names only {model.classes.length} {target === 'mcc' ? 'code' : 'category'}
+                {model.classes.length === 1 ? '' : 's'}, so the score above is flattering it. A model with this few
+                answers gives one of them to every merchant it has never seen — and those are the only merchants it
+                is ever asked about. A perfect score here means it separated {model.classes.length} familiar names,
+                not that it learned what {target === 'mcc' ? 'codes' : 'categories'} look like.
               </p>
               <p className="sub">
                 It will not deploy. Lower the threshold to bring more codes in, or come back when the ledger has
@@ -420,14 +457,17 @@ export default function ModelTrainer() {
 
           {model.metrics.excluded_classes.length > 0 && (
             <p className="sub dim">
-              {model.metrics.excluded_classes.length} code(s) were left out for having fewer than{' '}
+              {model.metrics.excluded_classes.length} {target === 'mcc' ? 'code' : 'category'}(s) were left out for
+              having fewer than{' '}
               {model.options.min_per_class} examples ({model.metrics.excluded_examples} transactions). The model will
               never name those — those merchants keep going to Review, which is the right outcome.
             </p>
           )}
 
           <details className="trail">
-            <summary>Per code ({model.metrics.per_class.length})</summary>
+            <summary>
+              Per {target === 'mcc' ? 'code' : 'category'} ({model.metrics.per_class.length})
+            </summary>
             <ul className="notes">
               {model.metrics.per_class
                 .slice()
