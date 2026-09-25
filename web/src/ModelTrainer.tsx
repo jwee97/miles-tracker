@@ -65,6 +65,16 @@ export default function ModelTrainer() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [diag, setDiag] = useState<HarvestDiagnostics | null>(null);
+  /**
+   * How many examples a code needs before the model may name it.
+   *
+   * Adjustable rather than fixed, because 25 was a judgement and the
+   * out-of-fold score is a measurement — and a measurement should be allowed
+   * to overrule a judgement. Lowering it lets the model name more codes on
+   * thinner evidence; whether that was a good idea shows up immediately in the
+   * precision, and the promotion bar still refuses anything under 90%.
+   */
+  const [minPerClass, setMinPerClass] = useState(25);
 
   function refresh() {
     fetchReadiness().then(setReadiness).catch(() => {});
@@ -117,6 +127,7 @@ export default function ModelTrainer() {
       await new Promise((r) => setTimeout(r, 30));
 
       const result = train(examples, {
+        min_per_class: minPerClass,
         onProgress: (done, total, note) => setProgress({ done, total, note }),
       });
 
@@ -215,6 +226,13 @@ export default function ModelTrainer() {
   const active = models?.find((m) => m.status === 'active');
   const busy = phase === 'loading' || phase === 'training' || phase === 'uploading';
 
+  // How many codes clear the threshold currently chosen, rather than the fixed
+  // one the readiness gate reports against.
+  const eligible = (readiness?.per_category ?? []).filter((c) => c.labels >= minPerClass).length;
+  // Two classes is the floor below which there is literally nothing to tell
+  // apart. Everything above that is a question for the measurement.
+  const canTrain = eligible >= 2 && (readiness?.labels ?? 0) >= 60;
+
   return (
     <section className="card">
       <header>
@@ -287,21 +305,63 @@ export default function ModelTrainer() {
         </ul>
       )}
 
+      {/*
+        The shape of the corpus, which the totals hide. "300 labels" and "four
+        codes with 25 each" fail for different reasons and need different
+        answers, and a person can see which from this list in one glance.
+      */}
+      {readiness && readiness.per_category.length > 0 && (
+        <>
+          <h3>What you have, by code</h3>
+          <ul className="code-counts">
+            {readiness.per_category.slice(0, 12).map((c) => (
+              <li key={c.category} className={c.labels >= minPerClass ? 'enough' : ''}>
+                <span className="mono">{c.category}</span>
+                <span className="mono">{c.labels}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="sub dim">
+            {eligible} code{eligible === 1 ? '' : 's'} at or above {minPerClass} example
+            {minPerClass === 1 ? '' : 's'}. A model needs at least two to have anything to tell apart, and it will
+            never name a code below the line — those merchants keep going to Review.
+          </p>
+        </>
+      )}
+
+      <label className="f f-note">
+        <span>Examples a code needs before the model may name it</span>
+        <select value={minPerClass} onChange={(e) => setMinPerClass(Number(e.target.value))} disabled={busy}>
+          <option value={25}>25 — cautious</option>
+          <option value={15}>15 — more codes, thinner evidence</option>
+          <option value={10}>10 — as low as is worth trying</option>
+        </select>
+      </label>
+
       <div className="entry-foot">
         <button className="secondary" onClick={harvest} disabled={busy}>
           Read codes from my ledger
         </button>
-        <button onClick={runTraining} disabled={busy || !readiness?.ready}>
+        <button onClick={runTraining} disabled={busy || !canTrain}>
           {phase === 'training' ? 'Training…' : phase === 'loading' ? 'Loading…' : 'Train a model'}
         </button>
         {msg && <span className="ok-text">{msg}</span>}
         {err && <span className="err-text">{err}</span>}
       </div>
 
-      {readiness && !readiness.ready && (
+      {readiness && !canTrain && (
         <p className="sub dim">
-          Not enough yet — {readiness.blocking.join(', ')}. Importing statements that carry codes is the fastest way
-          to move this; answering reviews is the other.
+          Nothing to train on yet — {readiness.blocking.join(', ')}. Importing statements that carry codes is the
+          fastest way to move this; answering reviews is the other.
+        </p>
+      )}
+
+      {readiness && canTrain && !readiness.ready && (
+        <p className="sub dim">
+          Below the {readiness.thresholds.min_labels}-label guideline, so this is worth a try rather than a
+          expectation. Training costs nothing and tells you where you stand: if the precision comes back under 90%
+          the model will not deploy, and you will have learned that from your own data rather than from a rule of
+          thumb.
         </p>
       )}
 

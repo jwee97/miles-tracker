@@ -917,6 +917,16 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .trail ol { counter-reset: step; }
 .trail li { padding: 4px 0; }
 
+/* The corpus by code. The shape is what decides whether a model is possible,
+   and a total hides it completely. */
+.code-counts { list-style: none; padding: 0; margin: 8px 0 0; font-size: 12.5px; }
+.code-counts li {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 3px 0; color: var(--dim); border-bottom: 1px solid var(--line);
+}
+.code-counts li.enough { color: var(--text); }
+.code-counts li.enough .mono:last-child { color: var(--ok); }
+
 /* This month's outlook. A range, not a figure: it should not read like the
    ledger, because it is not one. */
 .outlook-figure { margin: 8px 0 0; font-size: 19px; font-weight: 600; }
