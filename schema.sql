@@ -559,10 +559,41 @@ CREATE TABLE IF NOT EXISTS ml_models (
   status                 TEXT    NOT NULL DEFAULT 'candidate',
   deployed_at            TEXT,
   note                   TEXT,
+  -- What the model can say, and the bias term for each. Kept on the model row
+  -- rather than with the features: every prediction needs all of it, and it is
+  -- a few hundred bytes.
+  classes_json           TEXT,
+  intercept_json         TEXT,
+  feature_count          INTEGER NOT NULL DEFAULT 0,
+  -- The probability at or above which this model's answer may be acted on
+  -- without asking. Stored with the model because it was measured on it.
+  high_confidence        REAL    NOT NULL DEFAULT 0.85,
   created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
   UNIQUE(model_key, version)
 );
 CREATE INDEX IF NOT EXISTS ml_model_active ON ml_models(model_key, status);
+
+-- The model itself, one row per feature.
+--
+-- Not a blob, and not bundled into the Worker, for a reason worth stating.
+-- A Worker request gets 10 ms of CPU; deserialising a whole model and
+-- building a vocabulary Map costs tens of milliseconds, which is fine at
+-- module init and fatal per request. Stored this way, inference fetches only
+-- the handful of n-grams the descriptor being classified actually contains —
+-- one indexed query, a few hundred rows, no cold start at all. It also means
+-- retraining is a write, not a redeploy.
+--
+-- `weights_b64` is the per-class weight vector for this n-gram, packed as
+-- base64 float32 in the model's class order. Measured at 50k features, JSON
+-- costs 181 ms to parse where base64 costs 1 ms.
+CREATE TABLE IF NOT EXISTS ml_model_features (
+  model_id    INTEGER NOT NULL REFERENCES ml_models(id) ON DELETE CASCADE,
+  ngram       TEXT    NOT NULL,
+  idf         REAL    NOT NULL,
+  weights_b64 TEXT    NOT NULL,
+  PRIMARY KEY (model_id, ngram)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ml_feature_lookup ON ml_model_features(model_id, ngram);
 
 -- How one resolution was reached. Kept apart from the transaction because a
 -- transaction has one MCC and a resolution has a whole distribution behind it.

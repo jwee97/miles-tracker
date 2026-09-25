@@ -17,6 +17,7 @@ import {
   type Usage,
 } from './api';
 import { CountBars } from './charts';
+import ModelTrainer from './ModelTrainer';
 
 const bytes = (n: number) => {
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
@@ -174,6 +175,8 @@ export default function Settings() {
           <Maintenance />
 
           <Intelligence />
+
+          <ModelTrainer />
 
           <Platform />
 

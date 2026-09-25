@@ -274,7 +274,12 @@ check('registering does not deploy', (await activeModel(env, 'merchant_mcc')) ==
 
 const weak = (await listModels(env, 'merchant_mcc'))[0];
 check('a weak model fails the bar', !meetsBar(weak).ok, '');
-check('and the bar says why', meetsBar(weak).missing.length === 3, meetsBar(weak).missing.join('; '));
+check('and the bar says why, in full', meetsBar(weak).missing.length === 5, meetsBar(weak).missing.join('; '));
+check(
+  'including that no model was actually uploaded',
+  meetsBar(weak).missing.some((m) => /upload did not finish/.test(m)),
+  meetsBar(weak).missing.join('; ')
+);
 
 const refused = await promoteModel(env, 'merchant_mcc', 1);
 check('so promotion is refused', !refused.ok, refused.error ?? '');
@@ -290,8 +295,14 @@ await registerModel(env, {
   model_key: 'merchant_mcc',
   architecture: 'tfidf + logreg',
   training_examples: 2000,
-  validation_metrics: { macro_f1: 0.81, high_confidence_precision: 0.9 },
+  validation_metrics: { macro_f1: 0.81, high_confidence_precision: 0.93 },
+  classes: ['5812', '5411'],
+  intercept: [0.1, -0.1],
 });
+// Sealing is what records that the upload finished. Set here directly because
+// this suite is about the registry, not about uploading a model — the round
+// trip has its own file.
+sql(`UPDATE ml_models SET feature_count = 500 WHERE version = 2`);
 const good = await promoteModel(env, 'merchant_mcc', 2);
 check('a model that clears the bar promotes', good.ok, good.error ?? '');
 check('and the incumbent is retired, not deleted', good.retired === 1, String(good.retired));

@@ -35,6 +35,13 @@ export interface ModelRecord {
   status: ModelStatus;
   deployed_at: string | null;
   note: string | null;
+  /** The classes this model can name, as JSON. Null until features are uploaded. */
+  classes_json: string | null;
+  /** One bias term per class, same order, as JSON. */
+  intercept_json: string | null;
+  feature_count: number;
+  /** The probability this model has to reach before its answer may be used. */
+  high_confidence: number;
   created_at: string;
 }
 
@@ -82,6 +89,11 @@ export interface RegisterInput {
   artifact_hash?: string | null;
   trained_at?: string | null;
   note?: string | null;
+  /** What the model can predict, and the bias for each. */
+  classes?: string[] | null;
+  intercept?: number[] | null;
+  feature_count?: number;
+  high_confidence?: number;
 }
 
 /** Record a newly trained model. Always as a candidate — registering is not deploying. */
@@ -97,8 +109,8 @@ export async function registerModel(env: Env, input: RegisterInput): Promise<{ o
   await env.DB.prepare(
     `INSERT INTO ml_models
        (model_key, version, architecture, trained_at, training_examples, validation_metrics_json,
-        artifact_hash, status, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate', ?)`
+        artifact_hash, status, note, classes_json, intercept_json, feature_count, high_confidence)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?)`
   )
     .bind(
       input.model_key,
@@ -108,7 +120,11 @@ export async function registerModel(env: Env, input: RegisterInput): Promise<{ o
       input.training_examples,
       input.validation_metrics ? JSON.stringify(input.validation_metrics) : null,
       input.artifact_hash ?? null,
-      input.note ?? null
+      input.note ?? null,
+      input.classes ? JSON.stringify(input.classes) : null,
+      input.intercept ? JSON.stringify(input.intercept) : null,
+      input.feature_count ?? 0,
+      input.high_confidence ?? 0.85
     )
     .run();
 
@@ -126,10 +142,29 @@ export async function registerModel(env: Env, input: RegisterInput): Promise<{ o
  * afterwards.
  */
 export const PROMOTION_BAR = {
-  min_training_examples: 1500,
-  min_macro_f1: 0.75,
-  /** Of predictions the model calls high-confidence, this share must be right. */
-  min_high_confidence_precision: 0.85,
+  /**
+   * Enough descriptors to have measured anything. Lower than the 1,500 the
+   * architecture study named, and deliberately so: that number was for a model
+   * over all 18 categories trained from nothing. This model only ever predicts
+   * codes it has seen at least 25 examples of, and only ever speaks above its
+   * high-confidence threshold — so the protection comes from the two numbers
+   * below, and the count only has to be enough to measure them on.
+   */
+  min_training_examples: 300,
+  /** Low, because macro-F1 across a long tail of rare codes always is. */
+  min_macro_f1: 0.55,
+  /**
+   * The one that actually protects a recommendation.
+   *
+   * The resolver consults this model only after deterministic evidence has
+   * found nothing, and acts on it only above the model's own high-confidence
+   * threshold. So the question is not "how often is it right" but "when it
+   * says it is sure, how often is it right" — and a wrong code there produces
+   * a wrong card silently.
+   */
+  min_high_confidence_precision: 0.9,
+  /** A model with no features stored is an upload that did not finish. */
+  min_features: 100,
 } as const;
 
 export function meetsBar(m: ModelRecord): { ok: boolean; missing: string[] } {
@@ -149,6 +184,14 @@ export function meetsBar(m: ModelRecord): { ok: boolean; missing: string[] } {
   else if (p < PROMOTION_BAR.min_high_confidence_precision) {
     missing.push(`high-confidence precision ${p} below ${PROMOTION_BAR.min_high_confidence_precision}`);
   }
+
+  // An upload that stopped halfway leaves a model row with no model behind it.
+  // Promoting one would make every descriptor unrecognisable and look like the
+  // model had simply turned out to be bad.
+  if (m.feature_count < PROMOTION_BAR.min_features) {
+    missing.push(`only ${m.feature_count} features stored — the upload did not finish`);
+  }
+  if (!m.classes_json || !m.intercept_json) missing.push('the model has no classes recorded');
 
   return { ok: missing.length === 0, missing };
 }

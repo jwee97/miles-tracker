@@ -1,7 +1,0 @@
-# Pinned, because a training run that cannot be reproduced is not evidence.
-# Nothing here ever runs in production — inference in the Worker is TypeScript
-# over an exported artifact, and must never require Python.
-scikit-learn==1.5.2
-numpy==2.1.3
-scipy==1.14.1
-joblib==1.4.2

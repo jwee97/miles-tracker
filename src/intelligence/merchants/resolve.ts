@@ -2,6 +2,8 @@ import { candidates as mccCandidates, deriveMcc } from '../../merchants/evidence
 import { merchantByKey, resolveMerchant, similarMerchants } from '../../merchants/lookup';
 import { today } from '../../spend';
 import type { Env } from '../../types';
+import { classify } from '../models/classifier';
+import { activeModel } from '../models/registry';
 import { parseDescriptor, type NormalizedDescriptor } from './normalize';
 import {
   decideReview,
@@ -144,14 +146,6 @@ export async function resolveMerchantIntelligence(env: Env, input: ResolveInput)
     }
   }
 
-  // --- 7/8. model, external -------------------------------------------------
-  // Deliberately not implemented. Recorded in the trail so the absence is
-  // visible rather than looking like an oversight.
-  if (!merchant) {
-    trail.push({ step: 'self_trained_ml', outcome: 'no model deployed — see docs/intelligence-model-decision.md' });
-    trail.push({ step: 'external', outcome: 'not configured' });
-  }
-
   // --- MCC, as a distribution, never as a fact -----------------------------
   let mccOut: MccCandidateOut[] = [];
   let category: { value: string | null; confidence: number } = { value: null, confidence: 0 };
@@ -187,6 +181,70 @@ export async function resolveMerchantIntelligence(env: Env, input: ResolveInput)
       step: 'merchant_evidence',
       outcome: mccOut.length ? `${mccOut.length} candidate code(s)` : 'merchant known, no code evidence yet',
     });
+  }
+
+  // --- 7. the trained model ------------------------------------------------
+  //
+  // Consulted ONLY where evidence found nothing. This ordering is the whole
+  // safety property: a model can never overturn a code a person confirmed or
+  // a bank printed, because by the time it is asked, neither exists. The worst
+  // it can do is offer an answer where the alternative was no answer at all.
+  //
+  // It is also allowed to decline. `classify` returns null when the model has
+  // seen too little of the descriptor to have an opinion, which is the case
+  // that matters — a softmax will hand back a confident-looking number for a
+  // string it has never seen anything like.
+  let modelKey: string | null = null;
+  let modelVersion: number | null = null;
+
+  if (!mccOut.length) {
+    const model = await activeModel(env, 'merchant_mcc');
+    if (!model) {
+      trail.push({ step: 'self_trained_ml', outcome: 'no model deployed — see docs/intelligence-model-decision.md' });
+    } else {
+      const guess = await classify(env, input.descriptor, { model });
+      if (!guess) {
+        trail.push({
+          step: 'self_trained_ml',
+          outcome: `${model.model_key} v${model.version} has not seen enough of this descriptor to answer`,
+        });
+      } else if (guess.probability < model.high_confidence) {
+        // Below its own measured threshold the model is not better than
+        // asking, and the precision figure it was promoted on was measured
+        // above that line, not below it.
+        trail.push({
+          step: 'self_trained_ml',
+          outcome: `${model.model_key} v${model.version} suggests ${guess.label} at ${Math.round(
+            guess.probability * 100
+          )}%, below its ${Math.round(model.high_confidence * 100)}% bar — not used`,
+        });
+      } else {
+        source = 'self_trained_ml';
+        modelKey = guess.model_key;
+        modelVersion = guess.model_version;
+        mccOut = guess.distribution.map((d) => ({
+          mcc: d.label,
+          probability: d.probability,
+          description: null,
+          evidence: `predicted by ${guess.model_key} v${guess.model_version} from ${guess.matched_features} of ${guess.total_features} fragments`,
+        }));
+        trail.push({
+          step: 'self_trained_ml',
+          outcome: `${guess.label} at ${Math.round(guess.probability * 100)}% from ${model.model_key} v${model.version}`,
+        });
+
+        const row = await env.DB.prepare(`SELECT category FROM mcc_codes WHERE code = ?`)
+          .bind(guess.label)
+          .first<{ category: string | null }>();
+        if (row?.category) {
+          // A predicted category is only as good as the predicted code it was
+          // read from, so it inherits the model's own confidence rather than
+          // the merchant's.
+          category = { value: row.category, confidence: guess.probability };
+        }
+      }
+    }
+    trail.push({ step: 'external', outcome: 'not configured' });
   }
 
   // --- is it worth asking? -------------------------------------------------
@@ -225,8 +283,8 @@ export async function resolveMerchantIntelligence(env: Env, input: ResolveInput)
     reward_impact: spread,
     provenance: {
       prediction_source: source,
-      model_key: null,
-      model_version: null,
+      model_key: modelKey,
+      model_version: modelVersion,
       predicted_at: now,
       trail,
     },

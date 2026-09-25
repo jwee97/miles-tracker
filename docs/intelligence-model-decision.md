@@ -13,136 +13,154 @@ review — see **Failure and fallback** and the readiness/backtest endpoints.
 
 ## Project 1 — Merchant & MCC intelligence
 
+> **Revised 2026-09-25, after the original decision.** This section previously
+> read "D — no ML yet". It now reads "A — self-trained", because a premise
+> underneath the original decision turned out to be wrong. The original
+> reasoning is kept at the end of this section rather than deleted: a decision
+> record that quietly rewrites itself is worth nothing.
+
 ### Chosen architecture
 
-**D — no ML yet.** Deterministic evidence resolution, with the machinery for
-option C (hybrid) built and left unwired.
+**A — self-trained.** A multinomial logistic regression over character
+3–5-grams of the descriptor, predicting the merchant code directly.
 
-What runs in production: descriptor parsing → exact alias → processor-stripped
-alias → fuzzy candidate → per-merchant MCC evidence distribution → confidence →
-either resolve, resolve-with-uncertainty, or ask. Implemented in
-`src/intelligence/merchants/{normalize,resolve,reward-impact}.ts` over the
-existing `merchant_mcc_evidence` table.
+- Trained **in the browser** (`shared/ml/train.ts`), on the owner's own device.
+- Stored in D1 as **one row per n-gram** (`ml_model_features`).
+- Inferred in the Worker by fetching only the n-grams the descriptor actually
+  contains (`src/intelligence/models/classifier.ts`).
+- Consulted **only** at step 7 of the nine-step resolution, after every form of
+  evidence has found nothing.
 
-What is built but does not run: a model registry (`ml_models`), a prediction
-log with provenance (`merchant_predictions`), a label corpus
-(`merchant_training_labels`), and two resolution steps — `self_trained_ml` and
-`external` — that currently record *"no model deployed"* in the trail rather
-than being absent from it. Dropping a classifier in is a registry row and a
-function body, not a schema change.
+### Why this changed
 
-### Why
+The original decision rested on a single measured fact: **zero labelled
+descriptors**. That measurement was correct about the table it looked at and
+wrong about the ledger.
 
-Not because ML is unsuitable for the task — descriptor→MCC is a textbook text
-classification problem — but because **there are zero labels to train on**:
+Every imported statement that carried an MCC is a descriptor paired with **the
+acquirer's own code**. Those pairs had been accumulating in
+`merchant_mcc_evidence` since the first import, tagged with their source. The
+original design excluded them because the rule was "only train on what a person
+confirmed" — a rule written to prevent training on the app's own predictions,
+which is a real hazard. But a bank's MCC is not the app's prediction. It is the
+authoritative answer that a user confirmation is *trying to recover*.
 
-```
-seeded mcc_codes rows:      924   (code → category dictionary, not labels)
-seeded merchant_mcc rows:     0
-seeded descriptor labels:     0
-```
+So the corpus was there the whole time, mislabelled as unusable by a rule
+aimed at something else. Recognising that is what changed the decision; nothing
+about the compute, the catalogue or the model architecture changed at all.
 
-The app is single-user by construction, so every label must come from this
-person answering a review. At ~20–40 distinct new descriptors a month, of which
-only the answered ones become labels, a 1,800-label corpus is a multi-year
-proposition — and 924 MCC codes against a few hundred labels is hopeless per
-class regardless of total.
+Labels now come from exactly two sources, and nothing else is eligible:
 
-Two things that were *not* reasons, recorded because they were checked and came
-back the other way:
+| Source | What it is |
+|---|---|
+| `user_confirmed` | someone answered a review |
+| `statement_verified` | the code the issuer put on the transaction |
 
-- **Compute is not a reason.** Inference measures 8–11 µs and cold start 88 ms
-  at 50k features, against a module-init budget of 1 second that Cloudflare
-  bills separately from the 10 ms request limit. The first reading of these
-  numbers here concluded a model could never load; that was wrong, and the
-  correction is kept in `ml/bench/README.md` rather than quietly fixed.
-- **Cost is not a reason.** A self-trained artifact costs nothing to serve.
-
-The reason is data, and only data.
+`seed` rows remain excluded — a seed is somebody's note about what a merchant
+usually does, not an observation of what it billed as. Anything the app
+inferred remains excluded, which was the original rule's actual purpose and is
+untouched.
 
 ### Alternatives tested
 
-| Option | Score | Why not |
-|---|---|---|
-| A — self-trained TF-IDF + logistic regression | 39 | 0 labels. Benchmarked anyway: fast enough, trainable in minutes, simply has nothing to learn from. |
-| B — Workers AI | 37 | **The catalogue has no merchant or MCC classifier.** Its only text classifiers are `distilbert-sst-2-int8` (sentiment) and `bge-reranker-base` (reranking). Embeddings (`bge-*`) are real and need no labels — but with no labelled merchant set to embed *against*, they would buy a network dependency, a privacy cost and a quota failure mode for nothing measurable. |
-| C — hybrid | 53 | The right destination; premature as an implementation while its ML half is empty. Its interfaces ship. |
-| **D — deterministic** | **62** | Chosen. |
-
-Precision at high confidence was weighted heaviest. D wins it because it
-**abstains**: it answers from evidence it has and otherwise asks. A confidently
-wrong MCC is worse than a question, because it silently recommends the wrong
-card and nothing in the ledger looks unusual afterwards.
+| Option | Verdict |
+|---|---|
+| **A — self-trained** | **Chosen.** Char n-grams survive the abbreviations and misspellings that destroy word tokenisation: `KOPITIAM 88`, `KOPI TIAM 88` and `KPTM88` are one shop to this model and three unrelated tokens to a word model. |
+| B — Workers AI | Still rejected. The catalogue's only text classifiers are `distilbert-sst-2-int8` (sentiment) and `bge-reranker-base`. Embeddings would now be viable, but would add a network dependency, a per-request quota that *fails* on the free plan, and a privacy cost — to do worse than a model trained on this person's own codes. |
+| C — hybrid | What now runs, in the only sense that matters: deterministic evidence first, model only where evidence is silent. |
+| D — deterministic only | Still the fallback, still what answers whenever the model declines — which it does often, by design. |
 
 ### Data available
 
-| | Count |
-|---|---|
-| MCC dictionary (`mcc_codes`) | 924 codes → 18 categories |
-| Confirmed descriptor labels | 0 at time of writing; grows by one per MCC confirmation |
-| Merchant evidence rows | Per observation, weighted `user 100 / statement 40 / sms 20 / seed 5`, confirmed +200 |
-| External corpora used | None. No US merchant dataset was imported — it does not describe Singapore acquirer behaviour, and importing it as if it did is exactly the failure this design is organised against. |
+Harvested from the ledger, not imported from anywhere:
 
-Labels are captured at the one moment a person actually asserts something —
-`resolveReview()` calls `recordTrainingLabel()` with `source='user_confirmed'`,
-the only source that table accepts. Export
-(`exportTrainingData()`) emits `normalized_descriptor, processor, country,
-confirmed_mcc, category, channel` — no amounts, no dates, no card identifiers,
-no account numbers.
+- every statement/SMS transaction whose bank supplied an MCC
+- every MCC a person confirmed in Review
+
+Harvesting is idempotent and runs on the daily cron. No external corpus is
+used; a US merchant dataset does not describe Singapore acquirer behaviour, and
+importing one would put confident wrong codes into the evidence table.
 
 ### Validation metrics
 
-Because nothing is predicted, the metric today is **resolution quality**, not
-model accuracy:
+Measured out of fold, four-fold stratified, **with the vocabulary rebuilt
+inside each fold**. Fitting the vectoriser before splitting lets the training
+folds see which n-grams the held-out descriptors contain — a small leak that
+flatters every number afterwards.
 
-- coverage: share of transactions resolved without a question
-- abstention rate: share sent to review
-- correction rate: resolutions a person later overrode — the one that matters,
-  since it counts confident errors
-- reward-impact triage: share of questions avoided because every candidate MCC
-  paid the same on every card held
+Reported and stored with the model: macro F1, accuracy, high-confidence
+precision, high-confidence share, and per-code precision/recall/F1 with support.
 
-When a model exists, the gate it must pass before being registered as active:
-macro-F1 and per-class precision on a held-out split, plus calibration —
-predictions at claimed confidence ≥0.85 must be right at least 85% of the time,
-measured on `merchant_predictions` against later confirmations.
+### The promotion bar
+
+| Requirement | Value | Why |
+|---|---|---|
+| Labels | ≥ 300 | Enough to have measured the two below on |
+| Macro F1 | ≥ 0.55 | Low, because macro-F1 across a long tail of rare codes always is |
+| **High-confidence precision** | **≥ 0.90** | The one that protects a recommendation |
+| Features stored | ≥ 100 | A half-finished upload is not a model |
+
+Lower than the 1,500 labels the architecture study named, and deliberately.
+That figure was for a general 18-category classifier trained from nothing. This
+model only predicts codes **this person's spending has actually presented**, at
+least 25 examples each, and abstains everywhere else. The protection comes from
+precision, which is measured, not from corpus size, which is a proxy.
+
+High-confidence precision is weighted above everything because the resolver
+consults the model only where evidence is silent and acts on it only above the
+model's own threshold. A wrong code there produces a wrong card recommendation
+and nothing in the ledger looks unusual afterwards.
 
 ### Production cost
 
-S$0. No Neurons, no inference, no network calls, no added per-request CPU beyond
-the SQL the resolver already runs. A future 50k-feature artifact would add
-~4.8 MB to the bundle and ~88 ms of one-time isolate startup.
+S$0. No Neurons, no inference service, no network call. Inference is one
+indexed D1 query returning a few hundred rows, plus a dot product over them —
+proportional to the descriptor, not to the model. Training costs the owner's
+browser a few seconds.
 
 ### Cloudflare compatibility
 
-Runs inside the 10 ms request budget and the 128 MB isolate today. The reserved
-ML path was sized against real limits rather than assumed ones: weights ship as
-base64 typed arrays (1 ms to decode at 50k features, against 181 ms for the
-same data as JSON), and the vocabulary Map build lands in module init, which is
-budgeted at 1 second on Free and Paid alike. No Python at inference time, ever
-— training scaffolding is offline only.
+The reason the model is rows rather than a blob. A Worker request gets 10 ms of
+CPU; deserialising a model and building its vocabulary costs tens of
+milliseconds (~88 ms at 50k features, `ml/bench/README.md`). Module init has a
+separate one-second budget, but a model that lives in the database cannot load
+there, and a model in the bundle needs a redeploy per retrain.
+
+Storing features as rows removes the cold start entirely and makes retraining a
+write. Weights are base64 float32 — 1 ms to decode at 50k features against
+181 ms for the same data as JSON.
 
 ### Failure and fallback
 
-- Ambiguous evidence → resolve with uncertainty, or ask; never a silent pick.
-- **Reward-impact triage decides whether ambiguity is worth a question.**
-  `rewardImpactOfUncertainty()` runs the real recommendation engine once per
-  candidate MCC; if every candidate names the same card at the same value, the
-  uncertainty is `outcome_insensitive` and no question is asked. Only a spread
-  above `MCC_REVIEW_MIN_GAIN_CENTS` (default 50¢) earns one.
-- A registered model that fails to load, or predicts below
-  `MCC_LOW_CONFIDENCE`, falls through to the deterministic answer. There is no
-  state in which a missing model blocks a resolution.
-- User-confirmed evidence is never overwritten by any automated source.
-- Every resolution carries a trail of which step produced it, so a bad answer
-  can be traced to the rule that made it.
+The model is allowed to decline, and does so in four distinct situations:
 
-### What flips this decision
+1. **No model deployed** → deterministic path, recorded in the trail.
+2. **Class never seen enough** — a code with fewer than 25 examples is excluded
+   from the model, so it cannot be predicted at all.
+3. **Descriptor barely recognised** — below 15% n-gram overlap it returns
+   nothing. This is the case that matters: a softmax hands back a
+   confident-looking number for a string it has never seen anything like, and
+   the overlap floor is what stops "never seen this" becoming "probably a
+   restaurant".
+4. **Below its own threshold** — the precision it was promoted on was measured
+   above that line, not below it.
 
-`GET /api/intelligence/readiness` measures the live corpus against:
-**≥1,500 confirmed labels, ≥50 per category, ≥8 categories, ≥200 merchants.**
-It reports the current standing and what is blocking, so the decision
-re-evaluates itself against data rather than against opinion.
+Beyond that: it is never consulted where evidence exists, so it cannot overturn
+a confirmation or a bank's own code; promotion retires the incumbent rather
+than deleting it; `/api/intelligence/models` lists what a retired model decided
+while in charge; and every prediction records its model key and version.
+
+### The original decision, kept
+
+> **D — no ML yet**, scored 62 against C 53, A 39, B 37. "Not because ML is
+> unsuitable for the task — descriptor→MCC is a textbook text classification
+> problem — but because there are zero labels to train on."
+
+That was right about the architecture and wrong about the data, for the reason
+given above. Two things it got right are worth keeping: **compute was never the
+blocker** (the benchmark that first seemed to say otherwise was misread against
+the wrong CPU budget, and the correction is in `ml/bench/README.md`), and
+**Workers AI has no model for this task**, which is still true.
 
 ---
 
@@ -252,13 +270,16 @@ on.
 
 | | Project 1 | Project 2 |
 |---|---|---|
-| Chosen | D — deterministic, hybrid interfaces reserved | D — statistical |
-| Blocking reason | Zero labelled descriptors | No suitable model; insufficient per-dimension history |
-| Workers AI | No classifier for the task; embeddings deferred | No tabular/time-series model at all |
-| ML in request path | None | None |
+| Chosen | **A — self-trained**, behind deterministic evidence | D — statistical |
+| Was | D — no ML yet (revised; see above) | unchanged |
+| Workers AI | No classifier for the task | No tabular/time-series model at all |
+| ML in request path | One indexed query + a dot product | None |
 | Cost | S$0 | S$0 |
-| Re-decision mechanism | Readiness gate on the live corpus | Stored forecasts scored against actuals |
+| Re-decision mechanism | Precision measured out of fold, per model version | Stored forecasts scored against actuals |
 
-The two projects were decided independently and happened to land on the same
-letter for entirely different reasons: Project 1 has the right algorithm and no
-data, Project 2 has data and no algorithm worth adding.
+The two projects no longer agree, and the disagreement is the honest outcome.
+Project 1 had the right algorithm and turned out to have had the data all
+along, filed under a rule that was guarding against something else. Project 2
+has the data and still has no algorithm worth adding — the catalogue contains
+nothing that forecasts, and a year of weekly history is ~52 rows per category,
+fewer than a tabular model has hyperparameters to overfit with.

@@ -2430,6 +2430,64 @@ export const resolveDescriptor = (body: {
   channel?: string | null;
 }) => post<MerchantResolution>('/api/intelligence/merchant/resolve', body);
 
+export interface ModelRow {
+  id: number;
+  model_key: string;
+  version: number;
+  architecture: string;
+  trained_at: string | null;
+  training_examples: number;
+  validation_metrics: Record<string, unknown> | null;
+  status: 'candidate' | 'active' | 'retired' | 'rejected';
+  deployed_at: string | null;
+  note: string | null;
+  feature_count: number;
+  high_confidence: number;
+}
+
+export const harvestLabels = () =>
+  post<{ scanned: number; added: number; already_had: number; by_source: Record<string, number>; readiness: TrainingReadiness }>(
+    '/api/intelligence/harvest',
+    {}
+  );
+
+export const fetchTrainingData = () =>
+  get<{ examples: { normalized_descriptor: string; confirmed_mcc: string | null; category: string | null }[]; count: number }>(
+    '/api/intelligence/training-data'
+  );
+
+export const fetchModels = () =>
+  get<{ models: ModelRow[]; retired_predictions: unknown[] }>('/api/intelligence/models');
+
+export const registerModel = (body: {
+  model_key: string;
+  architecture: string;
+  training_examples: number;
+  validation_metrics: Record<string, unknown>;
+  classes: string[];
+  intercept: number[];
+  high_confidence: number;
+  note?: string;
+}) => post<{ ok: boolean; version?: number; error?: string }>('/api/intelligence/models', body);
+
+export const uploadModelFeatures = (body: {
+  model_key: string;
+  version: number;
+  features: { ngram: string; idf: number; weights: number[] }[];
+}) => post<{ ok: boolean; written: number; error?: string }>('/api/intelligence/models/features', body);
+
+export const sealModel = (body: { model_key: string; version: number }) =>
+  post<{ ok: boolean; feature_count: number }>('/api/intelligence/models/seal', body);
+
+export const promoteModel = (body: { model_key: string; version: number; force?: boolean }) =>
+  post<{ ok: boolean; error?: string; missing?: string[]; retired?: number | null }>(
+    '/api/intelligence/models/promote',
+    body
+  );
+
+export const retireModelApi = (body: { model_key: string; version: number }) =>
+  post<{ ok: boolean }>('/api/intelligence/models/retire', body);
+
 export const fetchForecast = () => get<PeriodOutlook>('/api/intelligence/forecast');
 export const fetchSpendPlan = () => get<SpendPlan>('/api/intelligence/plan');
 export const fetchReadiness = () => get<TrainingReadiness>('/api/intelligence/readiness');

@@ -1,6 +1,7 @@
 import { safeEqual, verifyToken } from './auth';
 import { resolveMerchantIntelligence } from './intelligence/merchants/resolve';
-import { exportTrainingData, trainingReadiness } from './intelligence/merchants/labels';
+import { exportTrainingData, harvestLabels, trainingReadiness } from './intelligence/merchants/labels';
+import { classify, featureCount, storeFeatures } from './intelligence/models/classifier';
 import { merchantMetrics } from './intelligence/merchants/metrics';
 import { listModels, promoteModel, registerModel, retireModel, predictionsFromRetiredModels } from './intelligence/models/registry';
 import { evaluateFinishedForecasts, periodOutlook, storeForecast } from './intelligence/forecasting/forecast';
@@ -706,6 +707,51 @@ export default {
             note: b.note ?? null,
           });
           return json(r, r.ok ? 200 : 400);
+        }
+
+        // Read the codes already in the ledger as training labels. Nothing is
+        // inferred here — every row comes from a bank's own MCC or a person's
+        // confirmation, which is why it is safe to learn from.
+        if (url.pathname === '/api/intelligence/harvest' && req.method === 'POST') {
+          const harvested = await harvestLabels(env);
+          return json({ ...harvested, readiness: await trainingReadiness(env) });
+        }
+
+        // A model is uploaded in pieces: the description first, then its
+        // features, then a seal that records how many actually landed. A
+        // half-finished upload cannot be promoted, because the seal will not
+        // match.
+        if (url.pathname === '/api/intelligence/models/features' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+          if (!Array.isArray(b.features)) return json({ error: 'features must be an array' }, 400);
+          if (b.features.length > 4000) return json({ error: 'send at most 4000 features per request' }, 400);
+          const r = await storeFeatures(env, {
+            model_key: String(b.model_key ?? ''),
+            version: Number(b.version ?? 0),
+            features: b.features,
+          });
+          return json(r, r.ok ? 200 : 400);
+        }
+
+        if (url.pathname === '/api/intelligence/models/seal' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+          const m = await env.DB.prepare(`SELECT id FROM ml_models WHERE model_key = ? AND version = ?`)
+            .bind(String(b.model_key ?? ''), Number(b.version ?? 0))
+            .first<{ id: number }>();
+          if (!m) return json({ error: 'no such model version' }, 400);
+          const n = await featureCount(env, m.id);
+          await env.DB.prepare(`UPDATE ml_models SET feature_count = ? WHERE id = ?`).bind(n, m.id).run();
+          return json({ ok: true, feature_count: n });
+        }
+
+        // Ask a model directly, without going through resolution. For checking
+        // what it does on a descriptor whose answer you already know.
+        if (url.pathname === '/api/intelligence/models/classify' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+          const descriptor = String(b.descriptor ?? '').trim();
+          if (!descriptor) return json({ error: 'a descriptor is required' }, 400);
+          const r = await classify(env, descriptor);
+          return json(r ?? { prediction: null, reason: 'no active model, or too little of this descriptor is known' });
         }
 
         if (url.pathname === '/api/intelligence/models/promote' && req.method === 'POST') {
@@ -3262,6 +3308,14 @@ export default {
             await scanRecurring(env);
           } catch (e) {
             console.error('recurring scan failed', (e as Error).message);
+          }
+          // Codes the banks supplied become training labels on their own.
+          // Idempotent, so running it daily costs nothing and means the corpus
+          // is never behind the ledger.
+          try {
+            await harvestLabels(env);
+          } catch (e) {
+            console.error('label harvest failed', (e as Error).message);
           }
           try {
             await evaluateFinishedForecasts(env);

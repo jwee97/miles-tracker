@@ -154,6 +154,16 @@ Notes on the low scores, since the totals hide the reasoning:
 - **D scores 5 on precision** not because it is always right but because it
   *abstains* — it only answers from evidence it has, and otherwise asks.
 
+> **Superseded 2026-09-25.** Project 1 now trains a model. The premise this
+> section rests on — that there are no labels — was wrong: every imported
+> statement that carried an MCC is a descriptor paired with the acquirer's own
+> code, and those were excluded by a rule written to prevent training on the
+> app's *own predictions*, which a bank's code is not. The measurement below is
+> still what was true of the `merchant_training_labels` table at the time;
+> `docs/intelligence-model-decision.md` has the revised decision and why it
+> changed. Everything else in this study — the compute reversal, the Workers AI
+> catalogue, Project 2 — stands.
+
 ### Decision for Project 1: **D now, C by construction**
 
 Deterministic evidence is the production path today. But "no ML yet" is only a
@@ -236,10 +246,10 @@ improvement available here.
 
 ## 6. What would change these decisions
 
-**Project 1** flips to a self-trained classifier when the readiness gate passes:
-≥1,500 confirmed descriptor labels with ≥50 per category across ≥8 categories.
-`GET /api/intelligence/readiness` reports current standing against exactly
-those numbers.
+**Project 1** flipped, in the event, for a reason not on this list: the corpus
+was already there. The gate itself survives with different numbers, tuned to
+the model that actually exists — see `docs/intelligence-model-decision.md`.
+`GET /api/intelligence/readiness` reports current standing against them.
 
 It flips to Workers AI embeddings sooner if a legally reusable **Singapore**
 merchant corpus appears — the constraint there is geography, not licensing in

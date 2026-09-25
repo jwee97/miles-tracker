@@ -17,6 +17,19 @@ import type { Env } from './types';
  * EXISTS, so each is checked against PRAGMA table_info first.
  */
 const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
+  // --- a trained model's own description (intelligence) ---
+  { table: 'ml_models', column: 'classes_json', ddl: 'ALTER TABLE ml_models ADD COLUMN classes_json TEXT' },
+  { table: 'ml_models', column: 'intercept_json', ddl: 'ALTER TABLE ml_models ADD COLUMN intercept_json TEXT' },
+  {
+    table: 'ml_models',
+    column: 'feature_count',
+    ddl: 'ALTER TABLE ml_models ADD COLUMN feature_count INTEGER NOT NULL DEFAULT 0',
+  },
+  {
+    table: 'ml_models',
+    column: 'high_confidence',
+    ddl: 'ALTER TABLE ml_models ADD COLUMN high_confidence REAL NOT NULL DEFAULT 0.85',
+  },
   // --- the product layer (P0 phase 1) ---
   { table: 'cards', column: 'product_id', ddl: 'ALTER TABLE cards ADD COLUMN product_id INTEGER' },
   { table: 'earn_rules', column: 'rule_set_id', ddl: 'ALTER TABLE earn_rules ADD COLUMN rule_set_id INTEGER' },
