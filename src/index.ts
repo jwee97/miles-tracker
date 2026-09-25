@@ -1,4 +1,11 @@
 import { safeEqual, verifyToken } from './auth';
+import { resolveMerchantIntelligence } from './intelligence/merchants/resolve';
+import { exportTrainingData, trainingReadiness } from './intelligence/merchants/labels';
+import { merchantMetrics } from './intelligence/merchants/metrics';
+import { listModels, promoteModel, registerModel, retireModel, predictionsFromRetiredModels } from './intelligence/models/registry';
+import { evaluateFinishedForecasts, periodOutlook, storeForecast } from './intelligence/forecasting/forecast';
+import { recurringDue, scanRecurring } from './intelligence/forecasting/recurring';
+import { capOutlook, minimumSpendOutlook, spendPlan } from './intelligence/forecasting/plan';
 import { buildDigest, checkAlerts } from './digest';
 import { decideRule, evaluateOffer } from './eligibility';
 import { extractionPrompt } from './extraction';
@@ -636,6 +643,123 @@ export default {
             merchant: b.merchant ?? null,
           });
           return json(r, r.ok ? 200 : 400);
+        }
+
+        // --- intelligence ----------------------------------------------------
+        // Estimates, and the record of how good they are. Nothing here decides
+        // a reward: the deterministic engine does that, and these endpoints
+        // only describe the uncertain facts it is fed.
+
+        if (url.pathname === '/api/intelligence/merchant/resolve' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as {
+            descriptor?: string;
+            amount_cents?: number;
+            channel?: string | null;
+            card_id?: number | null;
+            occurred_at?: string | null;
+          };
+          const descriptor = String(b.descriptor ?? '').trim();
+          if (!descriptor) return json({ error: 'a descriptor is required' }, 400);
+          return json(
+            await resolveMerchantIntelligence(env, {
+              descriptor,
+              amount_cents: typeof b.amount_cents === 'number' ? b.amount_cents : undefined,
+              channel: b.channel ?? null,
+              card_id: typeof b.card_id === 'number' ? b.card_id : null,
+              occurred_at: b.occurred_at ?? null,
+            })
+          );
+        }
+
+        if (url.pathname === '/api/intelligence/readiness' && req.method === 'GET') {
+          return json(await trainingReadiness(env));
+        }
+
+        if (url.pathname === '/api/intelligence/metrics' && req.method === 'GET') {
+          const days = Math.min(730, parseInt(url.searchParams.get('days') ?? '90', 10) || 90);
+          return json(await merchantMetrics(env, days));
+        }
+
+        // The corpus, for training outside the Worker. Descriptors and what
+        // they were confirmed to be — no amounts, no dates, no card identifiers.
+        if (url.pathname === '/api/intelligence/training-data' && req.method === 'GET') {
+          return json(await exportTrainingData(env));
+        }
+
+        if (url.pathname === '/api/intelligence/models' && req.method === 'GET') {
+          const key = url.searchParams.get('key');
+          return json({
+            models: await listModels(env, key ?? undefined),
+            retired_predictions: await predictionsFromRetiredModels(env, 50),
+          });
+        }
+
+        if (url.pathname === '/api/intelligence/models' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+          const r = await registerModel(env, {
+            model_key: String(b.model_key ?? ''),
+            architecture: String(b.architecture ?? ''),
+            training_examples: Number(b.training_examples ?? 0),
+            validation_metrics: b.validation_metrics ?? null,
+            artifact_hash: b.artifact_hash ?? null,
+            trained_at: b.trained_at ?? null,
+            note: b.note ?? null,
+          });
+          return json(r, r.ok ? 200 : 400);
+        }
+
+        if (url.pathname === '/api/intelligence/models/promote' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+          const r = await promoteModel(env, String(b.model_key ?? ''), Number(b.version ?? 0), {
+            force: !!b.force,
+            note: b.note ?? null,
+          });
+          return json(r, r.ok ? 200 : 400);
+        }
+
+        if (url.pathname === '/api/intelligence/models/retire' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+          return json(await retireModel(env, String(b.model_key ?? ''), Number(b.version ?? 0), b.note ?? null));
+        }
+
+        // Forecasts describe; they never price. Cap headroom and minimum-spend
+        // progress below are read from the ledger by the deterministic engine —
+        // the forecast only estimates how much more will be spent.
+        if (url.pathname === '/api/intelligence/forecast' && req.method === 'GET') {
+          const period = url.searchParams.get('period') === 'cycle' ? null : calendarMonth(env);
+          const start = url.searchParams.get('from') ?? period?.start ?? today(env);
+          const end = url.searchParams.get('to') ?? period?.end ?? today(env);
+          const outlook = await periodOutlook(env, { start, end });
+          // Store what was claimed, so it can be scored when the period closes.
+          if (outlook.total) await storeForecast(env, outlook.total);
+          for (const c of outlook.categories) await storeForecast(env, c);
+          return json(outlook);
+        }
+
+        if (url.pathname === '/api/intelligence/forecast/accuracy' && req.method === 'GET') {
+          return json(await evaluateFinishedForecasts(env));
+        }
+
+        if (url.pathname === '/api/intelligence/plan' && req.method === 'GET') {
+          return json(await spendPlan(env));
+        }
+
+        if (url.pathname === '/api/intelligence/plan/caps' && req.method === 'GET') {
+          return json({ caps: await capOutlook(env), as_of: today(env) });
+        }
+
+        if (url.pathname === '/api/intelligence/plan/minimums' && req.method === 'GET') {
+          return json({ minimums: await minimumSpendOutlook(env), as_of: today(env) });
+        }
+
+        if (url.pathname === '/api/intelligence/recurring' && req.method === 'GET') {
+          const from = url.searchParams.get('from') ?? today(env);
+          const to = url.searchParams.get('to') ?? calendarMonth(env).end;
+          return json(await recurringDue(env, from, to));
+        }
+
+        if (url.pathname === '/api/intelligence/recurring/scan' && req.method === 'POST') {
+          return json(await scanRecurring(env));
         }
 
         if (url.pathname === '/api/settings' && req.method === 'GET') {
@@ -3129,6 +3253,21 @@ export default {
         } else {
           await send(env, env.OWNER_CHAT_ID, await buildDigest(env));
           for (const alert of await checkAlerts(env)) await send(env, env.OWNER_CHAT_ID, alert);
+
+          // Re-derive recurring patterns and score any forecast whose window
+          // has closed. Both are total re-derivations, so a run that dies
+          // halfway costs nothing but the next run. Failure here must not take
+          // the digest with it — a forecast is a convenience, the digest is not.
+          try {
+            await scanRecurring(env);
+          } catch (e) {
+            console.error('recurring scan failed', (e as Error).message);
+          }
+          try {
+            await evaluateFinishedForecasts(env);
+          } catch (e) {
+            console.error('forecast evaluation failed', (e as Error).message);
+          }
         }
       })()
     );

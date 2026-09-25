@@ -22,6 +22,18 @@ export interface Env {
   /** Splitting a payment below this gain in cents is noise, not advice. */
   SPLIT_MIN_GAIN_CENTS: string;
 
+  // --- intelligence thresholds (all optional, all defaulted) --------------
+  /**
+   * When a code's reward outcome differs by less than this, the difference is
+   * not worth a person's attention. Named rather than hard-coded because what
+   * counts as material depends on how much somebody spends.
+   */
+  MCC_REVIEW_MIN_GAIN_CENTS: string;
+  /** At or above this confidence a code is taken without asking. Default 0.85. */
+  MCC_HIGH_CONFIDENCE: string;
+  /** Below this, nothing is resolved automatically. Default 0.5. */
+  MCC_LOW_CONFIDENCE: string;
+
   // --- search discovery (both optional) -----------------------------------
   /**
    * Which search provider to use: 'brave' today. Absent means search discovery

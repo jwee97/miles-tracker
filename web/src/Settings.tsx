@@ -1,12 +1,18 @@
 import { useEffect, useState } from 'react';
 import {
+  fetchForecastAccuracy,
+  fetchIntelligenceMetrics,
   fetchPlatform,
+  money,
   fetchSettings,
   fetchUsage,
   runMigrate,
   runSeed,
   saveSetting,
+  fetchReadiness,
+  type IntelligenceMetrics,
   type PlatformReport,
+  type TrainingReadiness,
   type SettingRow,
   type Usage,
 } from './api';
@@ -167,6 +173,8 @@ export default function Settings() {
 
           <Maintenance />
 
+          <Intelligence />
+
           <Platform />
 
           <StorageNotes usage={usage} />
@@ -217,6 +225,114 @@ const WINDOWS: { days: number; label: string }[] = [
 ];
 
 /** A number against its daily allowance, with the number said out loud. */
+
+/**
+ * How well the app's own estimates are doing, and whether it has enough
+ * confirmed data to do better.
+ *
+ * Put in Settings rather than on the home screen on purpose: this is the
+ * app grading itself, which is worth being able to check and not worth
+ * interrupting anyone with. The numbers are also the baseline any future model
+ * has to beat, recorded before there was a model anyone wanted to like.
+ */
+function Intelligence() {
+  const [readiness, setReadiness] = useState<TrainingReadiness | null>(null);
+  const [metrics, setMetrics] = useState<IntelligenceMetrics | null>(null);
+  const [accuracy, setAccuracy] = useState<{
+    evaluated: number;
+    mae_cents: number;
+    bias_cents: number;
+    coverage: number;
+    by_model: { model: string; mae_cents: number; coverage: number; n: number }[];
+  } | null>(null);
+
+  useEffect(() => {
+    fetchReadiness().then(setReadiness).catch(() => {});
+    fetchIntelligenceMetrics().then(setMetrics).catch(() => {});
+    fetchForecastAccuracy().then(setAccuracy).catch(() => {});
+  }, []);
+
+  const pct = (n: number | null) => (n === null ? '—' : `${Math.round(n * 100)}%`);
+
+  return (
+    <section className="card">
+      <header>
+        <div>
+          <h2>Intelligence</h2>
+          <p className="sub">What the app estimates, and how often it turns out to be right</p>
+        </div>
+      </header>
+
+      {metrics && (
+        <>
+          <h3>Merchant and code resolution</h3>
+          {metrics.resolutions === 0 ? (
+            <p className="sub">{metrics.note}</p>
+          ) : (
+            <ul className="stmt-summary">
+              <li>
+                resolved without asking <span className="mono">{pct(metrics.coverage)}</span>
+              </li>
+              <li>
+                sent to review <span className="mono">{pct(metrics.abstention_rate)}</span>
+              </li>
+              <li>
+                later corrected <span className="mono">{pct(metrics.correction_rate)}</span>
+              </li>
+              <li>
+                high-confidence precision <span className="mono">{pct(metrics.high_confidence_precision)}</span>
+              </li>
+              <li>
+                questions not worth asking <span className="mono">{metrics.spared_by_reward_impact}</span>
+              </li>
+            </ul>
+          )}
+        </>
+      )}
+
+      {readiness && (
+        <>
+          <h3>Training data</h3>
+          <p className="sub">
+            {readiness.labels} of {readiness.thresholds.min_labels} confirmed labels,{' '}
+            {readiness.distinct_merchants} of {readiness.thresholds.min_merchants} distinct merchants,{' '}
+            {readiness.categories_meeting_bar} of {readiness.thresholds.min_categories} categories with at least{' '}
+            {readiness.thresholds.min_per_category}.
+          </p>
+          <p className="sub dim">{readiness.verdict}</p>
+        </>
+      )}
+
+      {accuracy && accuracy.evaluated > 0 && (
+        <>
+          <h3>Forecast accuracy</h3>
+          <ul className="stmt-summary">
+            <li>
+              scored forecasts <span className="mono">{accuracy.evaluated}</span>
+            </li>
+            <li>
+              average error <span className="mono">${money(accuracy.mae_cents)}</span>
+            </li>
+            <li>
+              bias <span className="mono">${money(accuracy.bias_cents)}</span>
+            </li>
+            <li>
+              interval coverage <span className="mono">{Math.round(accuracy.coverage * 100)}%</span>
+              <span className="sub"> (80% is the target)</span>
+            </li>
+          </ul>
+          {accuracy.by_model.length > 1 && (
+            <p className="sub dim">
+              Best method so far: {accuracy.by_model[0].model.replace(/_/g, ' ')} at $
+              {money(accuracy.by_model[0].mae_cents)} average error over {accuracy.by_model[0].n}.
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 function Allowance({ label, used, cap, unit }: { label: string; used: number | null; cap: number; unit: string }) {
   const pct = used === null ? null : Math.min(100, (used / cap) * 100);
   const tone = pct === null ? 'ok' : pct >= 80 ? 'bad' : pct >= 50 ? 'mid' : 'ok';

@@ -78,6 +78,15 @@ OBJECTIVE = "balanced"
 # Below this gain in cents, splitting a payment across two cards is not worth
 # suggesting: two taps at the till for a few cents is noise, not advice.
 SPLIT_MIN_GAIN_CENTS = "150"
+# When two possible merchant codes lead to rewards closer than this, the
+# difference is not worth interrupting you about. Uncertainty alone is not a
+# reason to ask — uncertainty that changes what a purchase earns is.
+MCC_REVIEW_MIN_GAIN_CENTS = "50"
+# At or above this confidence a merchant code is taken without asking, provided
+# the code does not change the reward.
+MCC_HIGH_CONFIDENCE = "0.85"
+# Below this, nothing is resolved automatically however small the stakes.
+MCC_LOW_CONFIDENCE = "0.5"
 # Which search provider promotion discovery uses: "brave" today. This belongs
 # here rather than in Settings, because the key that goes with it is a secret
 # and the two have to match. Leave it empty to switch search discovery off —

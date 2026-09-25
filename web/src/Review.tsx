@@ -46,6 +46,28 @@ function Item({ i, onDone }: { i: ReviewItem; onDone: (msg: string) => void }) {
       <p className="review-question">{HEADING[i.reason]}</p>
       {i.detail && <p className="sub">{i.detail}</p>}
 
+      {/*
+        What answering is worth. When the codes pay the same, saying so is more
+        respectful of someone's time than asking and letting them assume it
+        mattered.
+      */}
+      {i.reward_impact && i.impact_note && (
+        <div className={`impact ${i.reward_impact.outcome_insensitive ? 'impact-none' : 'impact-real'}`}>
+          <p className="impact-note">{i.impact_note}</p>
+          {!i.reward_impact.outcome_insensitive && (
+            <ul className="impact-rows">
+              {i.reward_impact.per_mcc.map((m) => (
+                <li key={m.mcc}>
+                  <span className="mono">{m.mcc}</span> → {m.card ?? 'no card qualifies'}{' '}
+                  <span className="mono">${money(m.value_cents)}</span>
+                  {m.reward ? <span className="sub"> ({m.reward})</span> : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {(i.reason === 'unknown_mcc' || i.reason === 'ambiguous_mcc') && (
         <>
           {i.suggestion && (

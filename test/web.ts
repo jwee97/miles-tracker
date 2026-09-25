@@ -405,6 +405,68 @@ async function serve(): Promise<{ url: string; close: () => Promise<void> }> {
   };
 }
 
+
+/**
+ * The month's outlook, and what it means for a cap.
+ *
+ * Deliberately a case where the cap is already full: the app's job there is to
+ * say so and point elsewhere, not to encourage more spending, and that wording
+ * is worth pinning down in a test.
+ */
+const FORECAST = {
+  period_start: '2026-09-18',
+  period_end: '2026-09-30',
+  cold_start: {
+    months_of_history: 9,
+    confidence: 'high',
+    method: 'full',
+    note: 'Six months or more of history, compared across methods by rolling backtest.',
+  },
+  total: {
+    dimension_type: 'total',
+    dimension_key: 'all',
+    period_start: '2026-09-18',
+    period_end: '2026-09-30',
+    expected_cents: 143000,
+    lower_cents: 98000,
+    upper_cents: 188000,
+    recurring_cents: 1499,
+    model: 'moving_average',
+    model_reason: 'lowest error in a rolling backtest',
+    confidence: 'high',
+    observations: 24,
+    explanation: 'Over the last 24 weeks with spending you averaged about $110 a week here, and there are 12 days in this window.',
+  },
+  categories: [
+    {
+      dimension_type: 'category',
+      dimension_key: 'dining',
+      period_start: '2026-09-18',
+      period_end: '2026-09-30',
+      expected_cents: 62000,
+      lower_cents: 41000,
+      upper_cents: 83000,
+      recurring_cents: 0,
+      model: 'ewma',
+      model_reason: 'lowest error in a rolling backtest',
+      confidence: 'high',
+      observations: 24,
+      explanation: '',
+    },
+  ],
+  recurring_cents: 1499,
+  as_of: '2026-09-18',
+};
+
+const PLAN = {
+  as_of: '2026-09-18',
+  caps: [],
+  minimums: [],
+  headlines: [
+    "At your usual pace the 4 mpd cap on wwmc fills around 2026-09-24; dining spending after that earns the base rate.",
+  ],
+};
+
 /** Every API call the app can make, answered from fixtures rather than a Worker. */
 async function stub(page: Page) {
   await page.route('**/api/**', async (route) => {
@@ -1046,6 +1108,8 @@ async function stub(page: Page) {
       usedCalls++;
       return send(USED);
     }
+    if (u.pathname === '/api/intelligence/forecast') return send(FORECAST);
+    if (u.pathname === '/api/intelligence/plan') return send(PLAN);
     if (u.pathname === '/api/catalog/cards') return send(CATALOG);
     if (u.pathname === '/api/catalog/stale')
       return send({
@@ -1123,6 +1187,27 @@ async function main() {
     await page.locator('.actions .action').first().waitFor();
     check('the action centre still arrives', (await page.locator('.actions .action').count()) === 3);
     slowActions = false;
+
+    // --- this month's outlook --------------------------------------------
+    // An estimate sharing a page with a ledger has to be unmistakably an
+    // estimate, so what is checked here is the framing as much as the number.
+    const outlook = page.locator('.outlook-figure');
+    await outlook.waitFor();
+    check('the outlook shows a range rather than a figure', (await outlook.innerText()).includes('–'), await outlook.innerText());
+    check(
+      'and labels its own confidence',
+      /confidence/i.test(await page.locator('.pill.conf-high').first().innerText())
+    );
+    const outlookCard = page.locator('section.card', { hasText: "This month’s outlook" });
+    const outlookText = await outlookCard.innerText();
+    check('it says what is already known to repeat', outlookText.includes('known to repeat'), outlookText.slice(0, 300));
+    check('it names the method rather than sounding oracular', /moving average/.test(outlookText), outlookText.slice(0, 300));
+    check('it disclaims any effect on what a purchase earns', outlookText.includes('Nothing here changes what a purchase earns'));
+    check(
+      'a cap heading for its limit points elsewhere, and never urges spending',
+      outlookText.includes('earns the base rate') && !/spend more/i.test(outlookText),
+      outlookText.slice(0, 400)
+    );
 
     // A crash must read as a crash. React unmounts the whole tree when a render
     // throws, so without a boundary one bad row anywhere is a blank page — the

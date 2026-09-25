@@ -10,11 +10,12 @@
     "db:init:local": "wrangler d1 execute miles --local --file=./schema.sql",
     "db:seed": "echo 'seed.sql carries static reference data only. The canonical seed \u2014 the card catalogue, aliases, and the discovery sources \u2014 lives in runSeed() and is applied by POSTing /api/seed to the deployed Worker. Run: npm run db:seed:static, then POST /api/seed.' && exit 1",
     "tail": "wrangler tail",
-    "test": "npm run test:config && npm run test:units && npm run test:e2e && npm run test:migrate && npm run test:api && npm run test:analytics && npm run test:patterns && npm run test:rules && npm run test:advice && npm run test:rss && npm run test:review && npm run test:wallet && npm run test:mcc && npm run test:statement && npm run test:banks && npm run test:other && npm run test:cardscan && npm run test:tiers && npm run test:platform && npm run test:tidy && npm run test:rulesets && npm run test:recommend && npm run test:actions && npm run test:ingest && npm run test:catalog && npm run test:recalculate && npm run test:onboarding && npm run test:rewards && npm run test:reconcile && npm run test:transfers && npm run test:promotions && npm run test:applicability && npm run test:acquisition && npm run test:discovery && npm run test:cadence && npm run test:search && npm run test:extract && npm run test:corrections && npm run test:web",
+    "test": "npm run test:config && npm run test:units && npm run test:e2e && npm run test:migrate && npm run test:api && npm run test:analytics && npm run test:patterns && npm run test:rules && npm run test:advice && npm run test:rss && npm run test:review && npm run test:wallet && npm run test:mcc && npm run test:statement && npm run test:banks && npm run test:other && npm run test:cardscan && npm run test:tiers && npm run test:platform && npm run test:tidy && npm run test:rulesets && npm run test:recommend && npm run test:actions && npm run test:ingest && npm run test:catalog && npm run test:recalculate && npm run test:onboarding && npm run test:rewards && npm run test:reconcile && npm run test:transfers && npm run test:promotions && npm run test:applicability && npm run test:acquisition && npm run test:discovery && npm run test:cadence && npm run test:search && npm run test:extract && npm run test:corrections && npm run test:intel-merchants && npm run test:intel-forecast && npm run test:web",
     "test:units": "esbuild test/units.ts --bundle --loader:.sql=text --platform=node --format=esm --outfile=test/.units.mjs && node test/.units.mjs",
     "test:e2e": "esbuild test/e2e.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.e2e.mjs && node test/.e2e.mjs",
     "build": "npm --prefix web ci && npm --prefix web run build",
     "typecheck": "tsc --noEmit",
+    "ml:export-training-data": "node ml/export-training-data.mjs",
     "test:migrate": "esbuild test/migrate.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.migrate.mjs && node test/.migrate.mjs",
     "test:api": "esbuild test/api.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.api.mjs && node test/.api.mjs",
     "test:analytics": "esbuild test/analytics.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.analytics.mjs && node test/.analytics.mjs",
@@ -52,7 +53,9 @@
     "db:seed:static": "wrangler d1 execute miles --remote --file=./seed.sql",
     "test:config": "esbuild test/config.ts --bundle --platform=node --format=esm --external:node:* --outfile=test/.config.mjs && node test/.config.mjs",
     "test:corrections": "esbuild test/corrections.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.corrections.mjs && node test/.corrections.mjs",
-    "test:applicability": "esbuild test/applicability.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.applicability.mjs && node test/.applicability.mjs"
+    "test:applicability": "esbuild test/applicability.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.applicability.mjs && node test/.applicability.mjs",
+    "test:intel-merchants": "esbuild test/intelligence-merchants.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.intel-merchants.mjs && node test/.intel-merchants.mjs",
+    "test:intel-forecast": "esbuild test/intelligence-forecast.ts --bundle --loader:.sql=text --platform=node --format=esm --external:node:* --outfile=test/.intel-forecast.mjs && node test/.intel-forecast.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",

@@ -1726,6 +1726,16 @@ export interface ReviewItem {
   nickname: string;
   product: string;
   options: { mcc: string; description: string | null; observations: number }[];
+  reward_impact: RewardSpread | null;
+  impact_note: string | null;
+}
+
+export interface RewardSpread {
+  spread_cents: number;
+  best: { mcc: string; card: string | null; value_cents: number } | null;
+  worst: { mcc: string; card: string | null; value_cents: number } | null;
+  outcome_insensitive: boolean;
+  per_mcc: { mcc: string; card: string | null; value_cents: number; reward: string | null }[];
 }
 
 export const fetchReviewQueue = () => get<{ items: ReviewItem[] }>('/api/review/queue');
@@ -2279,3 +2289,126 @@ export const renameMerchant = (body: { match: string; to: string; mode?: string;
 
 export const money = (cents: number) =>
   (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// --- intelligence ---------------------------------------------------------
+// Estimates, kept visibly apart from the ledger's facts. Every figure here
+// carries an interval and a confidence, and the app says when it has too
+// little history to answer at all.
+
+export type ForecastConfidence = 'none' | 'low' | 'medium' | 'high';
+
+export interface ForecastResult {
+  dimension_type: 'category' | 'card' | 'total';
+  dimension_key: string;
+  period_start: string;
+  period_end: string;
+  expected_cents: number;
+  lower_cents: number;
+  upper_cents: number;
+  recurring_cents: number;
+  model: string;
+  model_reason: string;
+  confidence: ForecastConfidence;
+  observations: number;
+  explanation: string;
+}
+
+export interface PeriodOutlook {
+  period_start: string;
+  period_end: string;
+  cold_start: {
+    months_of_history: number;
+    confidence: ForecastConfidence;
+    method: 'none' | 'recent_spend' | 'category_baseline' | 'full';
+    note: string;
+  };
+  total: ForecastResult | null;
+  categories: ForecastResult[];
+  recurring_cents: number;
+  as_of: string;
+}
+
+export interface CapOutlook {
+  card: { id: number; nickname: string; product: string };
+  group: string;
+  categories: string[];
+  rate: number;
+  reward_type: 'miles' | 'cashback';
+  window: { start: string; end: string };
+  cap_cents: number;
+  spent_cents: number;
+  headroom_cents: number;
+  expected_further_cents: number | null;
+  probability_of_filling: number | null;
+  fills_on: string | null;
+  confidence: ForecastConfidence | null;
+  state: 'filled' | 'likely_to_fill' | 'unlikely_to_fill' | 'unknown';
+  advice: string | null;
+}
+
+export interface MinSpendOutlook {
+  card: { id: number; nickname: string; product: string };
+  requirement_id: number;
+  label: string;
+  window: { start: string; end: string };
+  days_left: number;
+  required_cents: number;
+  spent_cents: number;
+  shortfall_cents: number;
+  expected_further_cents: number | null;
+  probability_of_meeting: number | null;
+  confidence: ForecastConfidence | null;
+  state: 'met' | 'on_track' | 'at_risk' | 'unlikely' | 'lost' | 'unknown';
+  outlook: string;
+  txns_remaining: number;
+}
+
+export interface SpendPlan {
+  as_of: string;
+  caps: CapOutlook[];
+  minimums: MinSpendOutlook[];
+  headlines: string[];
+}
+
+export interface TrainingReadiness {
+  labels: number;
+  distinct_merchants: number;
+  categories_meeting_bar: number;
+  per_category: { category: string; labels: number }[];
+  thresholds: { min_labels: number; min_per_category: number; min_categories: number; min_merchants: number };
+  ready: boolean;
+  blocking: string[];
+  verdict: string;
+  as_of: string;
+}
+
+export interface IntelligenceMetrics {
+  window_days: number;
+  resolutions: number;
+  auto_resolved: number;
+  coverage: number;
+  abstained: number;
+  abstention_rate: number;
+  corrections: number;
+  correction_rate: number;
+  high_confidence: number;
+  high_confidence_precision: number | null;
+  spared_by_reward_impact: number;
+  by_source: { source: string; n: number; corrections: number }[];
+  as_of: string;
+  note: string;
+}
+
+export const fetchForecast = () => get<PeriodOutlook>('/api/intelligence/forecast');
+export const fetchSpendPlan = () => get<SpendPlan>('/api/intelligence/plan');
+export const fetchReadiness = () => get<TrainingReadiness>('/api/intelligence/readiness');
+export const fetchIntelligenceMetrics = () => get<IntelligenceMetrics>('/api/intelligence/metrics');
+export const fetchForecastAccuracy = () =>
+  get<{
+    evaluated: number;
+    mae_cents: number;
+    bias_cents: number;
+    coverage: number;
+    by_model: { model: string; mae_cents: number; coverage: number; n: number }[];
+    as_of: string;
+  }>('/api/intelligence/forecast/accuracy');

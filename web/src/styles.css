@@ -899,6 +899,33 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .review-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .review-item .advisor-row { margin-top: 10px; }
 
+/* What answering a review question is actually worth. A question that changes
+   nothing says so, quietly, instead of looking as urgent as one that does. */
+.impact { margin-top: 10px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); }
+.impact-none { border-style: dashed; }
+.impact-real { border-color: var(--mid); }
+.impact-note { margin: 0; font-size: 12.5px; }
+.impact-none .impact-note { color: var(--dim); }
+.impact-rows { list-style: none; padding: 0; margin: 6px 0 0; font-size: 12.5px; color: var(--dim); }
+.impact-rows li { padding: 2px 0; }
+.impact-rows .mono { color: var(--text); }
+
+/* This month's outlook. A range, not a figure: it should not read like the
+   ledger, because it is not one. */
+.outlook-figure { margin: 8px 0 0; font-size: 19px; font-weight: 600; }
+.outlook-figure .sub { display: block; font-weight: 400; }
+.outlook-lines { list-style: none; padding: 0; margin: 10px 0 0; font-size: 13px; }
+.outlook-lines li { padding: 6px 0; border-top: 1px solid var(--line); }
+.outlook-cats { list-style: none; padding: 0; margin: 10px 0 0; font-size: 12.5px; color: var(--dim); }
+.outlook-cats li { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.pill {
+  font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--dim); white-space: nowrap;
+}
+.pill.conf-high { color: var(--ok); }
+.pill.conf-medium { color: var(--mid); }
+.pill.conf-low { color: var(--warn); }
+
 .stmt-summary { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--dim); }
 .stmt-summary .mono { color: var(--text); font-weight: 600; }
 

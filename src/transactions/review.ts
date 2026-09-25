@@ -1,7 +1,9 @@
 import { candidates, recordEvidence } from '../merchants/evidence';
+import { rewardImpactOfUncertainty, type RewardSpread } from '../intelligence/merchants/reward-impact';
+import { recordTrainingLabel } from '../intelligence/merchants/labels';
 import { linkAlias } from '../merchants/lookup';
 import { rememberMerchant } from '../points';
-import { today } from '../spend';
+import { money, today } from '../spend';
 import type { Env } from '../types';
 import type { ReviewReason } from './ingest';
 
@@ -39,6 +41,16 @@ export interface ReviewItem {
   product: string;
   /** For an unknown code: the codes this merchant has presented before. */
   options: { mcc: string; description: string | null; observations: number }[];
+  /**
+   * What the answer is actually worth, priced on this person's cards.
+   *
+   * Null when the question is not about a code, or when there is only one
+   * candidate and therefore nothing to compare. When it is present and
+   * `outcome_insensitive` is true, the honest thing to tell the person is that
+   * this question does not matter — see `impact_note`.
+   */
+  reward_impact: RewardSpread | null;
+  impact_note: string | null;
 }
 
 /** Worst first: a question whose answer changes the reward outranks a tidying job. */
@@ -80,13 +92,36 @@ export async function reviewQueue(env: Env, limit = 50): Promise<ReviewItem[]> {
         options.push({ mcc: c.mcc, description: desc?.description ?? null, observations: c.observations });
       }
     }
-    out.push({ ...r, options });
+    // Price the ambiguity. Two codes the person's cards treat identically are
+    // not worth a tap, and saying so is more useful than asking politely.
+    let reward_impact: RewardSpread | null = null;
+    let impact_note: string | null = null;
+    if (options.length > 1 && r.amount_cents) {
+      const total = options.reduce((s, o) => s + o.observations, 0) || 1;
+      reward_impact = await rewardImpactOfUncertainty(
+        env,
+        { amount_cents: r.amount_cents, channel: r.channel, merchant: r.merchant, on: r.occurred_at },
+        options.map((o) => ({ mcc: o.mcc, probability: o.observations / total }))
+      );
+      impact_note = reward_impact.outcome_insensitive
+        ? 'Either code earns the same on your cards — answer it if you like, but nothing changes.'
+        : reward_impact.spread_cents > 0
+          ? `Worth $${money(reward_impact.spread_cents)} on this transaction.`
+          : null;
+    }
+
+    out.push({ ...r, options, reward_impact, impact_note });
   }
 
   // Reason order decides the queue, not arrival: a possible duplicate can
   // double a month's spend, an uncategorised coffee cannot.
+  const stakes = (i: ReviewItem) => (i.reward_impact?.outcome_insensitive ? 0 : (i.reward_impact?.spread_cents ?? 0));
+
   return out.sort(
-    (a, b) => REASON_ORDER.indexOf(a.reason) - REASON_ORDER.indexOf(b.reason) || b.transaction_id - a.transaction_id
+    (a, b) =>
+      REASON_ORDER.indexOf(a.reason) - REASON_ORDER.indexOf(b.reason) ||
+      stakes(b) - stakes(a) ||
+      b.transaction_id - a.transaction_id
   );
 }
 
@@ -178,6 +213,27 @@ export async function resolveReview(env: Env, id: number, r: Resolution): Promis
         note: 'answered in review',
       });
     }
+    // A confirmation is also the only kind of training data this app will ever
+    // have. Written here rather than inferred later, because this is the exact
+    // moment a person asserted something — see intelligence/merchants/labels.
+    const mccRow = await env.DB.prepare(`SELECT category FROM mcc_codes WHERE code = ?`)
+      .bind(mcc)
+      .first<{ category: string | null }>();
+    await recordTrainingLabel(env, {
+      raw_descriptor: String(item.merchant_raw ?? item.merchant ?? ''),
+      normalized_descriptor: '',
+      processor: null,
+      country: null,
+      merchant_id: item.merchant_id ?? null,
+      canonical_merchant: item.merchant ?? null,
+      confirmed_mcc: mcc,
+      category: mccRow?.category ?? null,
+      channel: item.channel ?? null,
+      issuer: null,
+      network: null,
+      transaction_id: item.transaction_id ?? null,
+    });
+
     // The old per-merchant table stays the derived current answer, so every
     // existing lookup keeps working without knowing about evidence.
     if (item.merchant) {

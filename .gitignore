@@ -4,3 +4,10 @@ node_modules/
 dist/
 web/dist/
 test/.*.mjs
+
+# The exported training corpus and anything trained from it. Confirmed
+# descriptors are this person's own spending, and a repository is the wrong
+# place for them — the export exists to be read by a local training run and
+# then deleted.
+ml/merchant/data/
+ml/merchant/artifacts/

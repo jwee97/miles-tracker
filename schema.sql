@@ -504,6 +504,155 @@ CREATE TABLE IF NOT EXISTS merchant_mcc_evidence (
 );
 CREATE INDEX IF NOT EXISTS evidence_merchant ON merchant_mcc_evidence(merchant_id, mcc);
 
+-- ---------------------------------------------------------------------------
+-- Intelligence: estimates, and the record of how good they were.
+--
+-- Everything in this block ESTIMATES. None of it decides. A label is what a
+-- person confirmed, a prediction carries where it came from, a forecast
+-- carries the interval around it, and an evaluation says what actually
+-- happened. The deterministic engines read these as inputs and remain the only
+-- thing that turns them into money.
+-- ---------------------------------------------------------------------------
+
+-- One confirmed descriptor, kept so a classifier could one day be trained on
+-- it. Written only when a person answers — never from the app's own guess,
+-- because training on your own predictions teaches you your own mistakes.
+CREATE TABLE IF NOT EXISTS merchant_training_labels (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  raw_descriptor        TEXT    NOT NULL,
+  normalized_descriptor TEXT    NOT NULL,
+  processor             TEXT,
+  country               TEXT,
+  merchant_id           INTEGER REFERENCES merchants(id) ON DELETE SET NULL,
+  canonical_merchant    TEXT,
+  confirmed_mcc         TEXT,
+  category              TEXT,
+  channel               TEXT,
+  issuer                TEXT,
+  network               TEXT,
+  -- user_confirmed | imported | statement_verified. Only the first is
+  -- trusted for training; the others are recorded and excluded.
+  source                TEXT    NOT NULL DEFAULT 'user_confirmed',
+  transaction_id        INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  confirmed_at          TEXT    NOT NULL,
+  created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(normalized_descriptor, confirmed_mcc, confirmed_at)
+);
+CREATE INDEX IF NOT EXISTS label_norm ON merchant_training_labels(normalized_descriptor);
+CREATE INDEX IF NOT EXISTS label_category ON merchant_training_labels(category);
+
+-- Which models exist, what they scored, and which one is live. A prediction
+-- names its model version, so a resolution made six months ago can still be
+-- explained by the model that made it.
+CREATE TABLE IF NOT EXISTS ml_models (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  model_key              TEXT    NOT NULL,
+  version                INTEGER NOT NULL,
+  architecture           TEXT    NOT NULL,
+  trained_at             TEXT,
+  training_examples      INTEGER NOT NULL DEFAULT 0,
+  validation_metrics_json TEXT,
+  artifact_hash          TEXT,
+  -- candidate | active | retired | rejected. Only one active per model_key,
+  -- and promoting a candidate retires the incumbent rather than deleting it,
+  -- so a bad model is rolled back by flipping rows, not by shipping code.
+  status                 TEXT    NOT NULL DEFAULT 'candidate',
+  deployed_at            TEXT,
+  note                   TEXT,
+  created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(model_key, version)
+);
+CREATE INDEX IF NOT EXISTS ml_model_active ON ml_models(model_key, status);
+
+-- How one resolution was reached. Kept apart from the transaction because a
+-- transaction has one MCC and a resolution has a whole distribution behind it.
+CREATE TABLE IF NOT EXISTS merchant_predictions (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  transaction_id         INTEGER REFERENCES transactions(id) ON DELETE CASCADE,
+  raw_descriptor         TEXT    NOT NULL,
+  normalized_descriptor  TEXT,
+  merchant_id            INTEGER REFERENCES merchants(id) ON DELETE SET NULL,
+  predicted_mcc          TEXT,
+  predicted_category     TEXT,
+  confidence             REAL,
+  -- exact_alias | user_history | merchant_evidence | fuzzy | self_trained_ml
+  --   | workers_ai | external | user_confirmed | none
+  prediction_source      TEXT    NOT NULL,
+  model_key              TEXT,
+  model_version          INTEGER,
+  candidate_distribution_json TEXT,
+  needs_review           INTEGER NOT NULL DEFAULT 0,
+  review_reason          TEXT,
+  reward_spread_cents    INTEGER,
+  predicted_at           TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS prediction_txn ON merchant_predictions(transaction_id);
+CREATE INDEX IF NOT EXISTS prediction_source ON merchant_predictions(prediction_source, predicted_at);
+
+-- Spending that repeats. Detected before any forecasting, because a
+-- subscription is not a prediction problem — it is a known amount on a known
+-- date, and mixing it into a variable-spend average makes both worse.
+CREATE TABLE IF NOT EXISTS recurring_patterns (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id          INTEGER REFERENCES merchants(id) ON DELETE CASCADE,
+  merchant_key         TEXT,
+  card_id              INTEGER REFERENCES cards(id) ON DELETE SET NULL,
+  category             TEXT,
+  -- weekly | fortnightly | monthly | quarterly | annual
+  frequency            TEXT    NOT NULL,
+  expected_amount_cents INTEGER NOT NULL,
+  amount_variance_cents INTEGER NOT NULL DEFAULT 0,
+  interval_days        REAL,
+  next_expected_date   TEXT,
+  confidence           REAL    NOT NULL DEFAULT 0,
+  observations         INTEGER NOT NULL DEFAULT 0,
+  first_observed_at    TEXT,
+  last_observed_at     TEXT,
+  active               INTEGER NOT NULL DEFAULT 1,
+  updated_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(merchant_key, card_id, frequency)
+);
+CREATE INDEX IF NOT EXISTS recurring_next ON recurring_patterns(active, next_expected_date);
+
+-- A forecast, stored when made so it can be judged later. A forecast nobody
+-- scored is an opinion; a forecast with its outcome attached is a measurement.
+CREATE TABLE IF NOT EXISTS spend_forecasts (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  generated_at          TEXT    NOT NULL,
+  period_start          TEXT    NOT NULL,
+  period_end            TEXT    NOT NULL,
+  -- category | mcc_group | card | requirement | total
+  dimension_type        TEXT    NOT NULL,
+  dimension_key         TEXT    NOT NULL,
+  expected_cents        INTEGER NOT NULL,
+  lower_cents           INTEGER NOT NULL,
+  upper_cents           INTEGER NOT NULL,
+  -- Of the expected figure, how much is already-known recurring spend.
+  recurring_cents       INTEGER NOT NULL DEFAULT 0,
+  model_key             TEXT    NOT NULL,
+  model_version         INTEGER,
+  training_window_start TEXT,
+  training_window_end   TEXT,
+  observations          INTEGER NOT NULL DEFAULT 0,
+  confidence            TEXT    NOT NULL DEFAULT 'low',
+  UNIQUE(period_start, period_end, dimension_type, dimension_key, model_key)
+);
+CREATE INDEX IF NOT EXISTS forecast_period ON spend_forecasts(period_start, period_end);
+
+-- What actually happened, against what was predicted.
+CREATE TABLE IF NOT EXISTS forecast_evaluations (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  forecast_id       INTEGER NOT NULL REFERENCES spend_forecasts(id) ON DELETE CASCADE,
+  evaluated_at      TEXT    NOT NULL,
+  actual_cents      INTEGER NOT NULL,
+  error_cents       INTEGER NOT NULL,
+  abs_error_cents   INTEGER NOT NULL,
+  pct_error         REAL,
+  within_interval   INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(forecast_id)
+);
+CREATE INDEX IF NOT EXISTS evaluation_forecast ON forecast_evaluations(forecast_id);
+
 -- Things the pipeline could not decide, queued rather than guessed at. One row
 -- per open question, so answering it is one action and not a hunt through the
 -- ledger.

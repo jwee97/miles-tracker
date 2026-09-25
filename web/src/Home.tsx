@@ -3,13 +3,17 @@ import Advisor from './Advisor';
 import Action from './components/ActionItem';
 import {
   fetchActions,
+  fetchForecast,
   fetchOnboarding,
+  fetchSpendPlan,
   fetchTransactions,
   logUsed,
   money,
   type ActionItem,
   type OnboardingView,
+  type PeriodOutlook,
   type RecommendationV2,
+  type SpendPlan,
   type Txn,
 } from './api';
 
@@ -46,6 +50,105 @@ function dayLabel(date: string, today: string): string {
   const y = new Date(now - 86_400_000).toISOString().slice(0, 10);
   if (date === y) return 'Yesterday';
   return date;
+}
+
+
+/**
+ * This month, as far as anyone can tell.
+ *
+ * Deliberately the least emphatic section on the page. Everything above it is
+ * something that happened; this is an estimate, and it is written so that it
+ * cannot be mistaken for the ledger — a range rather than a figure, the method
+ * named, and an explicit refusal when there is not enough history.
+ *
+ * It never suggests spending. A cap line says where the next dollar stops
+ * earning extra, so it can go on a better card; a minimum line states the
+ * shortfall and how often that gets met. Neither is an instruction to buy
+ * anything.
+ */
+function Outlook() {
+  const [outlook, setOutlook] = useState<PeriodOutlook | null>(null);
+  const [plan, setPlan] = useState<SpendPlan | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    Promise.all([fetchForecast(), fetchSpendPlan()])
+      .then(([f, p]) => {
+        if (!live) return;
+        setOutlook(f);
+        setPlan(p);
+      })
+      .catch(() => live && setFailed(true));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // A forecast failing is not worth a red banner on the home screen: nothing
+  // above it depends on this, and an error here would look like the ledger
+  // broke. A malformed answer counts as a failure too — this section is the
+  // least important thing on the page and must not be able to take the page
+  // down with it.
+  if (failed || !outlook?.cold_start) return null;
+
+  if (outlook.cold_start.method === 'none' || !outlook.total) {
+    return (
+      <section className="card">
+        <h2>This month&rsquo;s outlook</h2>
+        <p className="sub">{outlook.cold_start.note}</p>
+      </section>
+    );
+  }
+
+  const t = outlook.total;
+  const headlines = plan?.headlines ?? [];
+
+  return (
+    <section className="card">
+      <div className="section-head" style={{ marginTop: 0 }}>
+        <h2>This month&rsquo;s outlook</h2>
+        <span className={`pill conf-${t.confidence}`}>{t.confidence} confidence</span>
+      </div>
+
+      <p className="outlook-figure mono">
+        ${money(t.lower_cents)} &ndash; ${money(t.upper_cents)}
+        <span className="sub"> expected ${money(t.expected_cents)}</span>
+      </p>
+      <p className="sub">{t.explanation}</p>
+      {outlook.recurring_cents > 0 && (
+        <p className="sub">
+          ${money(outlook.recurring_cents)} of that is spending already known to repeat.
+        </p>
+      )}
+
+      {headlines.length > 0 && (
+        <ul className="outlook-lines">
+          {headlines.map((h, i) => (
+            <li key={i}>{h}</li>
+          ))}
+        </ul>
+      )}
+
+      {outlook.categories.length > 0 && (
+        <ul className="outlook-cats">
+          {outlook.categories.slice(0, 5).map((c) => (
+            <li key={c.dimension_key}>
+              <span>{c.dimension_key}</span>
+              <span className="mono">
+                ${money(c.lower_cents)}&ndash;${money(c.upper_cents)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <p className="sub dim">
+        Estimated from your own history by {t.model.replace(/_/g, ' ')}, and scored against what actually happens.
+        Nothing here changes what a purchase earns.
+      </p>
+    </section>
+  );
 }
 
 function RecentActivity({ rows, today }: { rows: Txn[]; today: string }) {
@@ -242,6 +345,8 @@ export default function Home({ onGo }: { onGo: (target: string) => void }) {
           </>
         )}
       </section>
+
+      <Outlook />
 
       <RecentActivity rows={recent} today={asOf} />
     </>
