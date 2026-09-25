@@ -4,7 +4,7 @@ import { ngrams, prepare, vectorize } from '../shared/ml/text';
 import { train, type Example } from '../shared/ml/train';
 import { classify, featureCount, packWeights, storeFeatures, MIN_FEATURE_OVERLAP } from '../src/intelligence/models/classifier';
 import { activeModel, meetsBar, listModels, promoteModel, registerModel, PROMOTION_BAR } from '../src/intelligence/models/registry';
-import { harvestLabels, trainingReadiness, exportTrainingData } from '../src/intelligence/merchants/labels';
+import { harvestDiagnostics, harvestLabels, trainingReadiness, exportTrainingData } from '../src/intelligence/merchants/labels';
 import { resolveMerchantIntelligence } from '../src/intelligence/merchants/resolve';
 import type { Env } from '../src/types';
 
@@ -298,6 +298,52 @@ check(
 
 const rerun = await harvestLabels(env);
 check('harvesting twice adds nothing', rerun.added === 0, String(rerun.added));
+
+// --- the case that started this: codes with no evidence behind them -------
+//
+// A ledger imported before the evidence table existed has transactions.mcc set
+// and nothing in merchant_mcc_evidence. Those are the bank's codes just the
+// same, and reading them as an empty corpus is what made a perfectly good
+// ledger look unusable.
+sql(`INSERT INTO merchants (canonical_name, normalized_key) VALUES ('Old Import Cafe', 'old import cafe')`);
+const orphan = (db.prepare(`SELECT id FROM merchants WHERE normalized_key='old import cafe'`).get() as any).id;
+for (let i = 0; i < 4; i++) {
+  sql(
+    `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, merchant_raw, merchant_id, mcc, source)
+     VALUES (?, 3000, '2026-08-0' || ?, 'Old Import Cafe', 'OLD IMPORT CAFE ' || ?, ?, '5499', 'import')`,
+    pref, i + 1, i, orphan
+  );
+}
+
+const orphanDiag = await harvestDiagnostics(env);
+check('a code with no evidence behind it is counted as usable', orphanDiag.bank_supplied_candidates >= 4, String(orphanDiag.bank_supplied_candidates));
+check('and the reading says what is there', orphanDiag.reading.length > 20, orphanDiag.reading);
+
+const orphanPass = await harvestLabels(env);
+check('and the second pass takes it', orphanPass.added >= 4, JSON.stringify({ added: orphanPass.added }));
+check(
+  'recorded as the bank\u2019s answer, not a confirmation',
+  (db.prepare(`SELECT source FROM merchant_training_labels WHERE confirmed_mcc='5499' LIMIT 1`).get() as any)?.source ===
+    'statement_verified',
+  ''
+);
+
+// The safety rule: a merchant WITH evidence is left to the evidence path, so a
+// code the app derived for itself can never sneak in as a label.
+sql(
+  `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant, merchant_raw, merchant_id, mcc, source)
+   VALUES (?, 3000, '2026-08-20', 'Din Tai Fung', 'DIN TAI FUNG DERIVED', ?, '9999', 'manual')`,
+  pref, mid
+);
+await harvestLabels(env);
+check(
+  'a code on a merchant that already has evidence is not harvested directly',
+  (db.prepare(`SELECT COUNT(*) AS n FROM merchant_training_labels WHERE confirmed_mcc='9999'`).get() as any).n === 0,
+  'that code could have been the app derivation, and a label must never be that'
+);
+
+const thirdRun = await harvestLabels(env);
+check('the second pass is idempotent too', thirdRun.added === 0, String(thirdRun.added));
 
 const ready = await trainingReadiness(env);
 check('readiness counts per code, not per category', ready.per_category.every((c) => /^\d{4}$/.test(c.category)), JSON.stringify(ready.per_category.slice(0, 3)));

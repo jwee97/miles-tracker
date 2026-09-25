@@ -10,6 +10,8 @@ import {
   retireModelApi,
   sealModel,
   uploadModelFeatures,
+  fetchHarvestDiagnostics,
+  type HarvestDiagnostics,
   type ModelRow,
   type TrainingReadiness,
 } from './api';
@@ -62,9 +64,13 @@ export default function ModelTrainer() {
   const [model, setModel] = useState<TrainedModel | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [diag, setDiag] = useState<HarvestDiagnostics | null>(null);
 
   function refresh() {
     fetchReadiness().then(setReadiness).catch(() => {});
+    fetchHarvestDiagnostics()
+      .then((d) => setDiag(d.diagnostics))
+      .catch(() => {});
     fetchModels()
       .then((d) => setModels(d.models))
       .catch(() => {});
@@ -77,6 +83,7 @@ export default function ModelTrainer() {
     try {
       const r = await harvestLabels();
       setReadiness(r.readiness);
+      setDiag(r.diagnostics);
       setMsg(
         `${r.scanned} coded transaction${r.scanned === 1 ? '' : 's'} read · ${r.added} new label${r.added === 1 ? '' : 's'}.`
       );
@@ -234,6 +241,34 @@ export default function ModelTrainer() {
         <p className="sub">
           No model is live. Codes are read from evidence alone, and unknown merchants go to Review.
         </p>
+      )}
+
+      {/*
+        Why the number is what it is. A harvest that reports a count and
+        nothing else leaves four quite different situations looking identical,
+        and zero is the one that most needs explaining.
+      */}
+      {diag && (
+        <>
+          <p className="sub">{diag.reading}</p>
+          <ul className="stmt-summary">
+            <li>
+              transactions <span className="mono">{diag.transactions.toLocaleString()}</span>
+            </li>
+            <li>
+              carrying a code <span className="mono">{diag.transactions_with_mcc.toLocaleString()}</span>
+            </li>
+            <li>
+              usable as labels <span className="mono">{diag.bank_supplied_candidates.toLocaleString()}</span>
+            </li>
+            <li>
+              distinct codes <span className="mono">{diag.distinct_codes_available}</span>
+            </li>
+            <li>
+              distinct lines <span className="mono">{diag.distinct_descriptors_available}</span>
+            </li>
+          </ul>
+        </>
       )}
 
       {readiness && (

@@ -2445,11 +2445,31 @@ export interface ModelRow {
   high_confidence: number;
 }
 
+export interface HarvestDiagnostics {
+  transactions: number;
+  transactions_with_mcc: number;
+  transactions_with_descriptor: number;
+  evidence_rows: number;
+  evidence_by_source: Record<string, number>;
+  evidence_linked_to_a_transaction: number;
+  bank_supplied_candidates: number;
+  distinct_codes_available: number;
+  distinct_descriptors_available: number;
+  reading: string;
+}
+
 export const harvestLabels = () =>
-  post<{ scanned: number; added: number; already_had: number; by_source: Record<string, number>; readiness: TrainingReadiness }>(
-    '/api/intelligence/harvest',
-    {}
-  );
+  post<{
+    scanned: number;
+    added: number;
+    already_had: number;
+    by_source: Record<string, number>;
+    diagnostics: HarvestDiagnostics;
+    readiness: TrainingReadiness;
+  }>('/api/intelligence/harvest', {});
+
+export const fetchHarvestDiagnostics = () =>
+  get<{ diagnostics: HarvestDiagnostics; readiness: TrainingReadiness }>('/api/intelligence/harvest');
 
 export const fetchTrainingData = () =>
   get<{ examples: { normalized_descriptor: string; confirmed_mcc: string | null; category: string | null }[]; count: number }>(

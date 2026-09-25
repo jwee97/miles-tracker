@@ -1,6 +1,6 @@
 import { safeEqual, verifyToken } from './auth';
 import { resolveMerchantIntelligence } from './intelligence/merchants/resolve';
-import { exportTrainingData, harvestLabels, trainingReadiness } from './intelligence/merchants/labels';
+import { exportTrainingData, harvestDiagnostics, harvestLabels, trainingReadiness } from './intelligence/merchants/labels';
 import { classify, featureCount, storeFeatures } from './intelligence/models/classifier';
 import { merchantMetrics } from './intelligence/merchants/metrics';
 import { listModels, promoteModel, registerModel, retireModel, predictionsFromRetiredModels } from './intelligence/models/registry';
@@ -712,6 +712,11 @@ export default {
         // Read the codes already in the ledger as training labels. Nothing is
         // inferred here — every row comes from a bank's own MCC or a person's
         // confirmation, which is why it is safe to learn from.
+        // What a harvest would find, without writing anything.
+        if (url.pathname === '/api/intelligence/harvest' && req.method === 'GET') {
+          return json({ diagnostics: await harvestDiagnostics(env), readiness: await trainingReadiness(env) });
+        }
+
         if (url.pathname === '/api/intelligence/harvest' && req.method === 'POST') {
           const harvested = await harvestLabels(env);
           return json({ ...harvested, readiness: await trainingReadiness(env) });
