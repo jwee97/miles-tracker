@@ -165,6 +165,22 @@ export const PROMOTION_BAR = {
   min_high_confidence_precision: 0.9,
   /** A model with no features stored is an upload that did not finish. */
   min_features: 100,
+  /**
+   * How many codes a model must be able to name.
+   *
+   * A two-class model scores beautifully and is close to useless, for a reason
+   * the accuracy figure cannot show. It is consulted only on merchants the app
+   * has never seen — and it will route every one of them to one of its two
+   * codes, because those are the only answers it has. There are over nine
+   * hundred codes; naming two is not classification, it is a coin weighted by
+   * whichever merchant happened to repeat most in the ledger.
+   *
+   * Worse, its confidence cannot save it. Abstention here rests on the
+   * probability clearing a threshold, and a softmax over two logits saturates
+   * almost immediately — so a two-class model is confident by construction,
+   * exactly where it has least right to be.
+   */
+  min_classes: 4,
 } as const;
 
 export function meetsBar(m: ModelRecord): { ok: boolean; missing: string[] } {
@@ -191,7 +207,23 @@ export function meetsBar(m: ModelRecord): { ok: boolean; missing: string[] } {
   if (m.feature_count < PROMOTION_BAR.min_features) {
     missing.push(`only ${m.feature_count} features stored — the upload did not finish`);
   }
-  if (!m.classes_json || !m.intercept_json) missing.push('the model has no classes recorded');
+  if (!m.classes_json || !m.intercept_json) {
+    missing.push('the model has no classes recorded');
+  } else {
+    let n = 0;
+    try {
+      const parsed = JSON.parse(m.classes_json);
+      n = Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      n = 0;
+    }
+    if (n < PROMOTION_BAR.min_classes) {
+      missing.push(
+        `names only ${n} code${n === 1 ? '' : 's'}, needs ${PROMOTION_BAR.min_classes} — ` +
+          `a model with this few answers gives one of them to every merchant it has never seen`
+      );
+    }
+  }
 
   return { ok: missing.length === 0, missing };
 }

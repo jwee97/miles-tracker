@@ -9,8 +9,22 @@ import { resolveMerchantIntelligence } from '../src/intelligence/merchants/resol
 import type { Env } from '../src/types';
 
 const db = new DatabaseSync(':memory:');
+
+/**
+ * D1 refuses a statement with more than 100 bound parameters; `node:sqlite`
+ * allows 999 and says nothing. So the harness has to impose the real limit,
+ * or a batch size that works here fails only in production — which is exactly
+ * what happened, with an error message that names a character offset rather
+ * than the limit it hit.
+ */
+const D1_MAX_BOUND_PARAMS = 100;
+let worstBind = { count: 0, sql: '' };
+
 const wrap = (sql: string, args: unknown[] = []): any => ({
-  bind: (...a: unknown[]) => wrap(sql, a),
+  bind: (...a: unknown[]) => {
+    if (a.length > worstBind.count) worstBind = { count: a.length, sql: sql.slice(0, 90) };
+    return wrap(sql, a);
+  },
   first: async () => db.prepare(sql).get(...(args as any)) ?? null,
   all: async () => ({ results: db.prepare(sql).all(...(args as any)) }),
   run: async () => {
@@ -360,6 +374,36 @@ check('weights pack to base64', typeof packed === 'string' && packed.length > 0,
 check('at four bytes a class', atob(packed).length === 12, String(atob(packed).length));
 
 check('the promotion bar still guards precision above all', PROMOTION_BAR.min_high_confidence_precision >= 0.9, String(PROMOTION_BAR.min_high_confidence_precision));
+
+// --- a model too narrow to be worth having --------------------------------
+//
+// Perfect scores on two classes is the failure mode that looks like success.
+const narrow = await registerModel(env, {
+  model_key: 'narrow_test',
+  architecture: 'tfidf + logreg',
+  training_examples: 400,
+  validation_metrics: { macro_f1: 1, high_confidence_precision: 1 },
+  classes: ['5812', '5411'],
+  intercept: [0, 0],
+});
+sql(`UPDATE ml_models SET feature_count = 900 WHERE model_key = 'narrow_test' AND version = ?`, narrow.version);
+const narrowRow = (await listModels(env, 'narrow_test'))[0];
+const verdict = meetsBar(narrowRow);
+check('a two-code model is refused despite perfect scores', !verdict.ok, JSON.stringify(verdict));
+check(
+  'and the reason is coverage, not accuracy',
+  verdict.missing.some((m) => /names only 2 codes/.test(m)),
+  verdict.missing.join('; ')
+);
+const narrowPromote = await promoteModel(env, 'narrow_test', narrow.version!);
+check('so it cannot be promoted', !narrowPromote.ok, JSON.stringify(narrowPromote));
+
+// --- the limit the test harness does not enforce on its own ---------------
+check(
+  'no statement in this run exceeds what D1 will accept',
+  worstBind.count <= D1_MAX_BOUND_PARAMS,
+  `${worstBind.count} parameters in: ${worstBind.sql}`
+);
 
 console.log(fails ? `\n${fails} check(s) failed` : '\nAll checks passed');
 process.exit(fails ? 1 : 0);

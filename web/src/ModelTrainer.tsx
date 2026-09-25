@@ -396,6 +396,28 @@ export default function ModelTrainer() {
               codes it can name <span className="mono">{model.metrics.classes}</span>
             </li>
           </ul>
+          {/*
+            The failure mode that looks like success. Two classes and perfect
+            scores means the model memorised two merchant names — and it will
+            hand one of those two codes to every merchant it has never seen,
+            which is the only situation it is ever asked about.
+          */}
+          {model.classes.length < 4 && (
+            <div className="impact impact-real">
+              <p className="impact-note">
+                This names only {model.classes.length} code{model.classes.length === 1 ? '' : 's'}, so the score
+                above is flattering it. There are over nine hundred codes; a model with this few answers gives one of
+                them to every merchant it has never seen — and those are the only merchants it is ever asked about.
+                A perfect score here means it separated {model.classes.length} familiar names, not that it learned
+                what codes look like.
+              </p>
+              <p className="sub">
+                It will not deploy. Lower the threshold to bring more codes in, or come back when the ledger has
+                more variety.
+              </p>
+            </div>
+          )}
+
           {model.metrics.excluded_classes.length > 0 && (
             <p className="sub dim">
               {model.metrics.excluded_classes.length} code(s) were left out for having fewer than{' '}

@@ -37,6 +37,26 @@ export interface Prediction {
 /** How much of a descriptor a model must recognise before it may answer. */
 export const MIN_FEATURE_OVERLAP = 0.15;
 
+/**
+ * D1 accepts at most 100 bound parameters in one statement.
+ *
+ * Not a SQLite limit — SQLite itself allows 999 by default, which is why this
+ * passed every test: `node:sqlite` in the test harness happily takes 400 and
+ * only the real database refuses. Exceeded, D1 returns
+ * `too many SQL variables at offset N`, where N is a character offset into the
+ * SQL and therefore says nothing useful about which limit was hit.
+ *
+ * Everything here that builds a variable-length statement counts against this,
+ * including the one parameter that is not part of the batch.
+ */
+export const MAX_BOUND_PARAMS = 100;
+
+/** n-grams per lookup: one parameter each, plus the model id. */
+const LOOKUP_CHUNK = MAX_BOUND_PARAMS - 1;
+
+/** Feature rows per insert: four columns each. */
+const INSERT_CHUNK = Math.floor(MAX_BOUND_PARAMS / 4);
+
 function unpack(b64: string, expected: number): Float32Array {
   const raw = atob(b64);
   const bytes = new Uint8Array(raw.length);
@@ -82,8 +102,8 @@ export async function classify(
   // One query, however long the descriptor. Chunked only because SQLite has a
   // ceiling on bound parameters, not because the model is large.
   const rows: { ngram: string; idf: number; weights_b64: string }[] = [];
-  for (let i = 0; i < grams.length; i += 200) {
-    const slice = grams.slice(i, i + 200);
+  for (let i = 0; i < grams.length; i += LOOKUP_CHUNK) {
+    const slice = grams.slice(i, i + LOOKUP_CHUNK);
     const placeholders = slice.map(() => '?').join(',');
     const { results } = await env.DB.prepare(
       `SELECT ngram, idf, weights_b64 FROM ml_model_features
@@ -160,11 +180,11 @@ export async function storeFeatures(env: Env, chunk: UploadChunk): Promise<{ ok:
   }
 
   let written = 0;
-  // D1 takes a bound-parameter ceiling, so rows go in batches rather than one
-  // statement per feature — the difference between one round trip and 12,000.
-  const BATCH = 100;
-  for (let i = 0; i < chunk.features.length; i += BATCH) {
-    const slice = chunk.features.slice(i, i + BATCH);
+  // Batched rather than one statement per feature — the difference between a
+  // few hundred round trips and twelve thousand — but bounded by D1's
+  // hundred-parameter ceiling, at four parameters a row.
+  for (let i = 0; i < chunk.features.length; i += INSERT_CHUNK) {
+    const slice = chunk.features.slice(i, i + INSERT_CHUNK);
     const values = slice.map(() => '(?, ?, ?, ?)').join(',');
     const args: unknown[] = [];
     for (const f of slice) {

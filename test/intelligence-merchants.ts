@@ -276,6 +276,13 @@ const weak = (await listModels(env, 'merchant_mcc'))[0];
 check('a weak model fails the bar', !meetsBar(weak).ok, '');
 check('and the bar says why, in full', meetsBar(weak).missing.length === 5, meetsBar(weak).missing.join('; '));
 check(
+  'coverage is judged as well as accuracy',
+  meetsBar({ ...weak, classes_json: '["5812","5411"]', intercept_json: '[0,0]' }).missing.some((m) =>
+    /names only 2 codes/.test(m)
+  ),
+  ''
+);
+check(
   'including that no model was actually uploaded',
   meetsBar(weak).missing.some((m) => /upload did not finish/.test(m)),
   meetsBar(weak).missing.join('; ')
@@ -296,8 +303,8 @@ await registerModel(env, {
   architecture: 'tfidf + logreg',
   training_examples: 2000,
   validation_metrics: { macro_f1: 0.81, high_confidence_precision: 0.93 },
-  classes: ['5812', '5411'],
-  intercept: [0.1, -0.1],
+  classes: ['5812', '5411', '4121', '5814'],
+  intercept: [0.1, -0.1, 0.05, 0],
 });
 // Sealing is what records that the upload finished. Set here directly because
 // this suite is about the registry, not about uploading a model — the round
