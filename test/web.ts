@@ -320,6 +320,20 @@ const REVIEW = {
         { mcc: '5814', description: 'Fast food restaurants', observations: 3 },
         { mcc: '5812', description: 'Eating places', observations: 1 },
       ],
+      // The two codes pay differently on the cards held, so the question is
+      // worth asking — and the screen has to say how much it is worth, not
+      // just that it is uncertain.
+      reward_impact: {
+        spread_cents: 414,
+        best: { mcc: '5812', card: "Woman's World Card", value_cents: 690 },
+        worst: { mcc: '5814', card: "Woman's World Card", value_cents: 276 },
+        outcome_insensitive: false,
+        per_mcc: [
+          { mcc: '5814', card: "Woman's World Card", value_cents: 276, reward: '184 miles' },
+          { mcc: '5812', card: "Woman's World Card", value_cents: 690, reward: '460 miles' },
+        ],
+      },
+      impact_note: 'Worth $4.14 on this transaction.',
     },
   ],
 };
@@ -1332,6 +1346,20 @@ async function main() {
     check('with what that code means', (await code.innerText()).includes('Fast food restaurants'));
     check('the other possibilities are there too', (await code.innerText()).includes('5812'));
     check('and the resemblance that suggested it is named', (await code.innerText()).includes('it may be Kopitiam 88'));
+
+    // What answering is worth. The whole point of pricing the ambiguity is
+    // that the person can see whether the tap is earning anything.
+    const codeText = await code.innerText();
+    check('the question says what answering it is worth', codeText.includes('$4.14'), codeText.slice(0, 400));
+    check(
+      'and prices each candidate rather than only the winner',
+      codeText.includes('460 miles') && codeText.includes('184 miles'),
+      codeText.slice(0, 400)
+    );
+    check(
+      'a question that changes money is marked as one',
+      (await code.locator('.impact-real').count()) === 1
+    );
 
     await code.getByRole('button', { name: /^Confirm 5814/ }).click();
     await page.locator('.ok-text').waitFor();

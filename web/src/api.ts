@@ -2399,6 +2399,37 @@ export interface IntelligenceMetrics {
   note: string;
 }
 
+export interface MerchantResolution {
+  descriptor: {
+    raw: string;
+    normalized: string;
+    key: string;
+    processor: string | null;
+    country_hint: string | null;
+    reference: string | null;
+  };
+  merchant: { id: number; name: string; confidence: number } | null;
+  category: { value: string | null; confidence: number };
+  mcc_candidates: { mcc: string; probability: number; description: string | null; evidence: string }[];
+  needs_review: boolean;
+  review_reason: string | null;
+  explanation: string | null;
+  reward_impact: RewardSpread | null;
+  provenance: {
+    prediction_source: string;
+    model_key: string | null;
+    model_version: number | null;
+    predicted_at: string;
+    trail: { step: string; outcome: string }[];
+  };
+}
+
+export const resolveDescriptor = (body: {
+  descriptor: string;
+  amount_cents?: number;
+  channel?: string | null;
+}) => post<MerchantResolution>('/api/intelligence/merchant/resolve', body);
+
 export const fetchForecast = () => get<PeriodOutlook>('/api/intelligence/forecast');
 export const fetchSpendPlan = () => get<SpendPlan>('/api/intelligence/plan');
 export const fetchReadiness = () => get<TrainingReadiness>('/api/intelligence/readiness');

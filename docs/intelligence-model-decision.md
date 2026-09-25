@@ -109,7 +109,7 @@ measured on `merchant_predictions` against later confirmations.
 
 ### Production cost
 
-£0. No Neurons, no inference, no network calls, no added per-request CPU beyond
+S$0. No Neurons, no inference, no network calls, no added per-request CPU beyond
 the SQL the resolver already runs. A future 50k-feature artifact would add
 ~4.8 MB to the bundle and ~88 ms of one-time isolate startup.
 
@@ -212,7 +212,7 @@ might be tempted to simplify it.
 
 ### Production cost
 
-£0. Arithmetic over rows already in D1. Pattern scanning and forecast
+S$0. Arithmetic over rows already in D1. Pattern scanning and forecast
 evaluation run on cron, not in request path.
 
 ### Cloudflare compatibility
@@ -256,7 +256,7 @@ on.
 | Blocking reason | Zero labelled descriptors | No suitable model; insufficient per-dimension history |
 | Workers AI | No classifier for the task; embeddings deferred | No tabular/time-series model at all |
 | ML in request path | None | None |
-| Cost | £0 | £0 |
+| Cost | S$0 | S$0 |
 | Re-decision mechanism | Readiness gate on the live corpus | Stored forecasts scored against actuals |
 
 The two projects were decided independently and happened to land on the same

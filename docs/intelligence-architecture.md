@@ -223,7 +223,7 @@ promotion criteria are written down and the storage already exists.
 | ML today | None | None |
 | Gate to change that | Labelled-corpus readiness thresholds | Rolling backtest vs baseline |
 | Workers AI | Interface only, not wired | Rejected outright |
-| Cost on Free tier | £0, no Neurons, no extra CPU | £0 |
+| Cost on Free tier | S$0, no Neurons, no extra CPU | S$0 |
 
 And the feature that motivated the whole exercise, which needs no ML at all:
 **reward-impact-aware review**. Two candidate MCCs that pay the same on every

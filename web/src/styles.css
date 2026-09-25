@@ -910,6 +910,13 @@ button.secondary.danger { color: var(--bad); border-color: rgba(248, 113, 113, .
 .impact-rows li { padding: 2px 0; }
 .impact-rows .mono { color: var(--text); }
 
+/* The resolution trail. Folded away by default — it is the answer to "why",
+   which only matters once you disagree with the "what". */
+.trail { margin-top: 12px; }
+.trail summary { font-size: 12.5px; color: var(--dim); cursor: pointer; }
+.trail ol { counter-reset: step; }
+.trail li { padding: 4px 0; }
+
 /* This month's outlook. A range, not a figure: it should not read like the
    ledger, because it is not one. */
 .outlook-figure { margin: 8px 0 0; font-size: 19px; font-weight: 600; }

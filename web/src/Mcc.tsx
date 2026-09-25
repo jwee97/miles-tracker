@@ -7,6 +7,7 @@ import {
   ignoreMerchant as ignoreMerchantApi,
   lookupMerchant,
   money,
+  resolveDescriptor,
   saveExclusion,
   scanMccDirectory,
   type MccCell,
@@ -14,6 +15,7 @@ import {
   type MccRow,
   type MccScanResult,
   type MerchantLookup,
+  type MerchantResolution,
   type UnknownMerchant,
   type UnknownPage,
 } from './api';
@@ -71,6 +73,200 @@ function Cell({ c, onPick }: { c: MccCell; onPick: () => void }) {
  * statement outranks any directory — and the directory's page for that name
  * after it. Nothing is recorded until you say so.
  */
+
+/**
+ * What the app works out from a line on a statement, and how it got there.
+ *
+ * The directory lookup above answers "what code does this shop use?". This
+ * answers a different question — "what will this app do with THIS line?" —
+ * which is the one that decides a recommendation, and until now could only be
+ * asked through the API.
+ *
+ * It shows the whole trail rather than the answer alone, including the two
+ * steps that are deliberately not implemented. A resolver that only printed
+ * its conclusion would be impossible to argue with, and the times it matters
+ * most are exactly the times it is wrong.
+ *
+ * Nothing here writes anything. Recording a code is a separate, explicit
+ * press, because this screen exists partly to find out what the app believes
+ * without teaching it anything new by accident.
+ */
+function DescriptorResolver() {
+  const [raw, setRaw] = useState('');
+  const [amount, setAmount] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<MerchantResolution | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function run() {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    setRes(null);
+    try {
+      const dollars = parseFloat(amount);
+      setRes(
+        await resolveDescriptor({
+          descriptor: raw.trim(),
+          amount_cents: Number.isFinite(dollars) && dollars > 0 ? Math.round(dollars * 100) : undefined,
+        })
+      );
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function record(mcc: string) {
+    if (!res?.merchant) return;
+    try {
+      const r = await assignMerchantCode(res.merchant.name, mcc);
+      setMsg(`${res.merchant.name} is ${mcc}${r.updated ? ` · ${r.updated} past purchase(s) updated` : ''}`);
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
+  }
+
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+
+  return (
+    <section className="card entry">
+      <h2>Work out a code from a statement line</h2>
+      <p className="sub">
+        Paste a descriptor exactly as the bank printed it. This runs the same resolution the app uses when a
+        transaction arrives, and shows every step it took — including the ones that found nothing.
+      </p>
+      <div className="entry-grid">
+        <label className="f f-note">
+          <span>Statement line</span>
+          <input
+            value={raw}
+            onChange={(e) => setRaw(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && raw.trim() && run()}
+            placeholder="GRAB*RIDE 8829 SINGAPORE SG"
+          />
+        </label>
+        <label className="f">
+          <span>Amount (optional)</span>
+          <input
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            inputMode="decimal"
+            placeholder="42.50"
+          />
+        </label>
+      </div>
+      <p className="sub dim">
+        An amount is only needed to price the difference between candidate codes — without one the app cannot say
+        whether the answer is worth knowing.
+      </p>
+      <div className="entry-foot">
+        <button onClick={run} disabled={busy || !raw.trim()}>
+          {busy ? 'Working it out…' : 'Work it out'}
+        </button>
+        {msg && <span className="sub">{msg}</span>}
+        {err && <span className="err-text">{err}</span>}
+      </div>
+
+      {res && (
+        <>
+          <ul className="stmt-summary">
+            <li>
+              reads as <span className="mono">{res.descriptor.normalized || '—'}</span>
+            </li>
+            {res.descriptor.processor && (
+              <li>
+                routed by <span className="mono">{res.descriptor.processor}</span>
+              </li>
+            )}
+            {res.descriptor.country_hint && (
+              <li>
+                country <span className="mono">{res.descriptor.country_hint}</span>
+              </li>
+            )}
+            {res.descriptor.reference && (
+              <li>
+                reference <span className="mono">{res.descriptor.reference}</span> (ignored)
+              </li>
+            )}
+          </ul>
+
+          <p className="sub">
+            {res.merchant ? (
+              <>
+                Recognised as <strong>{res.merchant.name}</strong> at {pct(res.merchant.confidence)} confidence, from{' '}
+                {res.provenance.prediction_source.replace(/_/g, ' ')}.
+              </>
+            ) : (
+              <>Not recognised. Nothing was created — asking is not the same as deciding.</>
+            )}
+          </p>
+
+          {res.category.value && (
+            <p className="sub">
+              Treated as <strong>{res.category.value}</strong> ({pct(res.category.confidence)}).
+            </p>
+          )}
+
+          {res.mcc_candidates.length > 0 ? (
+            <ul className="notes">
+              {res.mcc_candidates.map((c) => (
+                <li key={c.mcc}>
+                  <strong>{c.mcc}</strong> · {pct(c.probability)}
+                  <div className="sub">{c.evidence}</div>
+                  <button className="secondary" onClick={() => record(c.mcc)} disabled={!res.merchant}>
+                    Record {c.mcc}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="sub">No code has been observed for this merchant yet.</p>
+          )}
+
+          {res.reward_impact && (
+            <div className={`impact ${res.reward_impact.outcome_insensitive ? 'impact-none' : 'impact-real'}`}>
+              <p className="impact-note">
+                {res.reward_impact.outcome_insensitive
+                  ? 'Every candidate code earns the same on your cards, so which one it is does not change anything.'
+                  : `The code is worth $${money(res.reward_impact.spread_cents)} on this amount.`}
+              </p>
+              {!res.reward_impact.outcome_insensitive && (
+                <ul className="impact-rows">
+                  {res.reward_impact.per_mcc.map((m) => (
+                    <li key={m.mcc}>
+                      <span className="mono">{m.mcc}</span> → {m.card ?? 'no card qualifies'}{' '}
+                      <span className="mono">${money(m.value_cents)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {res.needs_review && res.review_reason && (
+            <p className="sub">Would be sent to review: {res.review_reason}.</p>
+          )}
+
+          <details className="trail">
+            <summary>How it got there ({res.provenance.trail.length} steps)</summary>
+            <ol className="notes">
+              {res.provenance.trail.map((t, i) => (
+                <li key={i}>
+                  <strong>{t.step.replace(/_/g, ' ')}</strong>
+                  <div className="sub">{t.outcome}</div>
+                </li>
+              ))}
+            </ol>
+          </details>
+        </>
+      )}
+    </section>
+  );
+}
+
 function MerchantLookupBox() {
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
@@ -441,6 +637,8 @@ export default function Mcc() {
           actually used
         </span>
       </section>
+
+      <DescriptorResolver />
 
       <MerchantLookupBox />
 
