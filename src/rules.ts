@@ -71,6 +71,80 @@ const csv = (s: string | null) => (s ? s.split(',').map((x) => x.trim()).filter(
  * MCC is set by the acquirer, differs between outlets of one brand and changes
  * without notice, so the answer always carries how much to trust it.
  */
+/**
+ * The same lookup, for a whole statement at once.
+ *
+ * One query instead of one per line. The contains-match cannot be expressed as
+ * a bounded `IN`, so the directory is read once and matched in memory — it is
+ * a personal table of a few thousand rows at most, and the alternative is a
+ * query per row against a fifty-subrequest ceiling.
+ *
+ * The ordering rule is the one `lookupMerchant` uses and matters: longest
+ * merchant name first, so a specific entry beats a short one that happens to
+ * be contained in the line.
+ */
+export async function lookupMerchantBulk(env: Env, queries: string[]): Promise<Map<string, MerchantGuess>> {
+  const out = new Map<string, MerchantGuess>();
+  const wanted = [...new Set(queries.map((q) => q.trim().toLowerCase()).filter(Boolean))];
+  if (!wanted.length) return out;
+
+  const { results } = await env.DB.prepare(
+    `SELECT m.merchant, m.mcc, m.channel, m.source, m.confidence, c.description, c.category
+       FROM merchant_mcc m LEFT JOIN mcc_codes c ON c.code = m.mcc
+      ORDER BY LENGTH(m.merchant) DESC
+      LIMIT 20000`
+  ).all<any>();
+  const directory = results ?? [];
+  const exact = new Map<string, any>();
+  for (const r of directory) if (!exact.has(r.merchant)) exact.set(r.merchant, r);
+
+  const shape = (query: string, row: any, alternatives: any[]): MerchantGuess => ({
+    query,
+    merchant: row.merchant,
+    mcc: row.mcc,
+    description: row.description ?? null,
+    category: row.category ?? null,
+    channel: row.channel ?? null,
+    confidence: row.confidence === 'confirmed' ? 'confirmed' : 'guess',
+    source: row.source,
+    alternatives: alternatives.map((r) => ({ merchant: r.merchant, mcc: r.mcc, description: r.description ?? null })),
+  });
+
+  for (const q of wanted) {
+    const hit = exact.get(q);
+    if (hit) {
+      out.set(q, shape(q, hit, []));
+      continue;
+    }
+    const near = directory.filter((r: any) => q.includes(r.merchant) || r.merchant.includes(q)).slice(0, 5);
+    if (near.length) out.set(q, shape(q, near[0], near.slice(1)));
+  }
+
+  return out;
+}
+
+/** Categories a person has taught the app, for a batch of merchants. */
+export async function categoriesForMerchants(env: Env, merchants: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const wanted = [...new Set(merchants.map((m) => m.trim().toLowerCase()).filter(Boolean))];
+  if (!wanted.length) return out;
+
+  // Chunked for D1's hundred-parameter ceiling, batched so the chunks cost one
+  // subrequest rather than one each.
+  const statements = [];
+  for (let i = 0; i < wanted.length; i += 99) {
+    const slice = wanted.slice(i, i + 99);
+    statements.push(
+      env.DB.prepare(
+        `SELECT merchant, category FROM merchant_categories WHERE merchant IN (${slice.map(() => '?').join(',')})`
+      ).bind(...slice)
+    );
+  }
+  const batches = await env.DB.batch<{ merchant: string; category: string }>(statements);
+  for (const b of batches) for (const r of b.results ?? []) out.set(r.merchant, r.category);
+  return out;
+}
+
 export async function lookupMerchant(env: Env, query: string): Promise<MerchantGuess> {
   const q = query.trim().toLowerCase();
   const empty: MerchantGuess = {

@@ -1,6 +1,6 @@
 import type { ParsedRow } from '../statement';
 import type { Env } from '../types';
-import { findDuplicate, rawHash } from './dedupe';
+import { buildDedupeIndex, findDuplicate, rawHash } from './dedupe';
 import { ingestTransaction, type IngestResult, type TransactionCandidate } from './ingest';
 
 /**
@@ -86,18 +86,37 @@ export async function previewStatement(
     needs_review: 0,
   };
 
-  for (const r of rows) {
-    const external_id = rowId(card.id, r);
-    const dup = await findDuplicate(env, {
-      card_id: card.id,
-      amount_cents: r.amount_cents,
-      occurred_at: r.occurred_at,
-      posted_at: r.posted_at,
-      merchant: r.merchant,
-      source: 'statement',
-      external_id,
-      raw_hash: rawHash(['statement', card.id, r.amount_cents, r.occurred_at, r.raw]),
-    });
+  // One pass to work out what every row would be looked up by, then one fetch
+  // for the lot. Without this a statement costs three queries a line and hits
+  // the Worker subrequest ceiling somewhere around the twentieth.
+  const prepared = rows.map((r) => ({
+    row: r,
+    external_id: rowId(card.id, r),
+    raw_hash: rawHash(['statement', card.id, r.amount_cents, r.occurred_at, r.raw]),
+  }));
+  const index = await buildDedupeIndex(env, {
+    card_id: card.id,
+    source: 'statement',
+    external_ids: prepared.map((p) => p.external_id),
+    raw_hashes: prepared.map((p) => p.raw_hash),
+    amounts: prepared.map((p) => p.row.amount_cents),
+  });
+
+  for (const { row: r, external_id, raw_hash: hash } of prepared) {
+    const dup = await findDuplicate(
+      env,
+      {
+        card_id: card.id,
+        amount_cents: r.amount_cents,
+        occurred_at: r.occurred_at,
+        posted_at: r.posted_at,
+        merchant: r.merchant,
+        source: 'statement',
+        external_id,
+        raw_hash: hash,
+      },
+      index
+    );
 
     let kind: RowKind;
     let detail: string;

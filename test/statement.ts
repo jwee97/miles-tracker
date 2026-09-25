@@ -1,20 +1,59 @@
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/migrate';
 import { markDuplicates, parseStatement } from '../src/statement';
+import { previewStatement } from '../src/transactions/reconcile';
 import { lookupMerchantOnline, parseMerchantPage, slugCandidates } from '../src/mccscan';
 import type { Env } from '../src/types';
 
 const db = new DatabaseSync(':memory:');
+
+/**
+ * Subrequests, counted the way Cloudflare counts them.
+ *
+ * A Worker invocation may make fifty on the free plan, and every D1 call is
+ * one — so a preview that queries per row fails on any statement worth
+ * pasting, with an error about API requests that says nothing about
+ * statements. A batch is one subrequest however many statements it carries,
+ * which is the whole reason to use one.
+ */
+const FREE_PLAN_SUBREQUESTS = 50;
+let subrequests = 0;
+let inBatch = false;
+const resetSubrequests = () => {
+  subrequests = 0;
+};
+const countOne = () => {
+  if (!inBatch) subrequests++;
+};
+
 const wrap = (sql: string, args: unknown[] = []): any => ({
   bind: (...a: unknown[]) => wrap(sql, a),
-  first: async () => db.prepare(sql).get(...(args as any)) ?? null,
-  all: async () => ({ results: db.prepare(sql).all(...(args as any)) }),
+  first: async () => {
+    countOne();
+    return db.prepare(sql).get(...(args as any)) ?? null;
+  },
+  all: async () => {
+    countOne();
+    return { results: db.prepare(sql).all(...(args as any)) };
+  },
   run: async () => {
+    countOne();
     const r = db.prepare(sql).run(...(args as any));
     return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
   },
 });
-const env = { DB: { prepare: (s: string) => wrap(s) }, TZ_OFFSET_MINUTES: '480' } as unknown as Env;
+const env = { DB: {
+    prepare: (s: string) => wrap(s),
+    batch: async (ss: any[]) => {
+      subrequests++;
+      inBatch = true;
+      try {
+        return await Promise.all(ss.map((x) => x.all()));
+      } finally {
+        inBatch = false;
+      }
+    },
+  }, TZ_OFFSET_MINUTES: '480' } as unknown as Env;
 
 let fails = 0;
 const check = (l: string, c: boolean, d = '') => {
@@ -172,6 +211,46 @@ const known = await lookupMerchantOnline(env, 'Circles Life');
 check('what you confirmed yourself is reported first', known.known?.mcc === '4814', JSON.stringify(known.known));
 check('and marked as yours', known.known?.source === 'user', String(known.known?.source));
 (globalThis as any).fetch = realFetch;
+
+// --- the ceiling a statement preview has to live under -----------------------
+//
+// This is the check that was missing. Every D1 call is a subrequest, a Worker
+// invocation gets fifty on the free plan, and the preview used to make three
+// per row — so a forty-line statement made a hundred and twenty and failed
+// with "Too many API requests by single Worker invocation", which names
+// neither statements nor rows nor the limit it hit.
+const manyRows = Array.from({ length: 40 }, (_, i) => ({
+  occurred_at: `2026-09-${String((i % 28) + 1).padStart(2, '0')}`,
+  posted_at: null,
+  merchant: `MERCHANT ${i} SINGAPORE SG`,
+  amount_cents: 1000 + i,
+  raw: `line ${i}`,
+  duplicate: false,
+  mcc: null,
+  category: null,
+})) as any;
+
+resetSubrequests();
+const preview = await previewStatement(env, card, manyRows, null);
+check('a forty-row preview reads every row', preview.rows.length === 40, String(preview.rows.length));
+check(
+  'and stays under what a Worker invocation is allowed',
+  subrequests <= FREE_PLAN_SUBREQUESTS,
+  `${subrequests} subrequests for 40 rows — the free-plan ceiling is ${FREE_PLAN_SUBREQUESTS}`
+);
+check(
+  'costing a handful of queries rather than one per row',
+  subrequests < 10,
+  `${subrequests} — a per-row query would show up here as 40 or more`
+);
+
+// The index must not change what dedupe decides, only how it is fetched.
+db.prepare(
+  `INSERT INTO transactions (card_id, amount_cents, occurred_at, merchant) VALUES (?, 1005, '2026-09-06', 'MERCHANT 5 SINGAPORE SG')`
+).run(card.id);
+const withDup = await previewStatement(env, card, manyRows, null);
+const matched = withDup.rows.filter((r) => r.kind === 'matched' || r.kind === 'possible_duplicate');
+check('a row already logged is still recognised through the index', matched.length === 1, JSON.stringify(matched.map((m) => m.merchant)));
 
 console.log(fails ? `\n${fails} check(s) failed` : '\nAll checks passed');
 process.exit(fails ? 1 : 0);

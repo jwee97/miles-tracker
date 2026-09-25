@@ -21,7 +21,7 @@ const wrap = (sql: string, args: unknown[] = []): any => ({
   },
 });
 const base = {
-  DB: { prepare: (s: string) => wrap(s) },
+  DB: { prepare: (s: string) => wrap(s), batch: async (ss: any[]) => Promise.all(ss.map((x) => x.all())) },
   TZ_OFFSET_MINUTES: '480',
   MILE_VALUE_CENTS: '1.5',
   POSTING_LAG_DAYS: '0',

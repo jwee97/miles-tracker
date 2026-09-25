@@ -12,7 +12,7 @@ const wrap = (sql: string, args: unknown[] = []): any => ({
   run: async () => { const r = db.prepare(sql).run(...(args as any)); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; },
 });
 const env = {
-  DB: { prepare: (s: string) => wrap(s) },
+  DB: { prepare: (s: string) => wrap(s), batch: async (ss: any[]) => Promise.all(ss.map((x) => x.all())) },
   TZ_OFFSET_MINUTES: '480', MILE_VALUE_CENTS: '1.5',
   MIN_SPEND_WARN_DAYS: '7', POSTING_LAG_DAYS: '3', OBJECTIVE: 'balanced',
 } as unknown as Env;

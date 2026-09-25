@@ -23,7 +23,7 @@ const wrap = (sql: string, args: unknown[] = []) => ({
   },
 });
 const env = {
-  DB: { prepare: (sql: string) => wrap(sql) },
+  DB: { prepare: (sql: string) => wrap(sql), batch: async (ss: any[]) => Promise.all(ss.map((x: any) => x.all())) },
   TZ_OFFSET_MINUTES: '480',
   UTIL_THRESHOLDS: '50,80,90',
   MIN_SPEND_WARN_DAYS: '7',

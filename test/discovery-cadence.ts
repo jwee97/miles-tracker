@@ -41,7 +41,7 @@ const wrap = (sql: string, args: unknown[] = []): any => ({
   },
 });
 const env = {
-  DB: { prepare: (s: string) => wrap(s) },
+  DB: { prepare: (s: string) => wrap(s), batch: async (ss: any[]) => Promise.all(ss.map((x) => x.all())) },
   TZ_OFFSET_MINUTES: '480',
   MILE_VALUE_CENTS: '1.5',
 } as unknown as Env;
@@ -414,7 +414,10 @@ check('while making clear feeds keep working', probe.note.includes('RSS discover
       return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
     },
   });
-  const freshEnv = { ...env, DB: { prepare: (q: string) => freshWrap(q) } } as unknown as Env;
+  const freshEnv = {
+    ...env,
+    DB: { prepare: (q: string) => freshWrap(q), batch: async (ss: any[]) => Promise.all(ss.map((x: any) => x.all())) },
+  } as unknown as Env;
   await runMigrations(freshEnv);
   await runSeed(freshEnv);
 

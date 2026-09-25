@@ -10,7 +10,7 @@ const wrap = (sql: string, args: unknown[] = []): any => ({
   all: async () => ({ results: db.prepare(sql).all(...(args as any)) }),
   run: async () => { const r = db.prepare(sql).run(...(args as any)); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; },
 });
-const env = { DB: { prepare: (s: string) => wrap(s) }, TZ_OFFSET_MINUTES: '480', MILE_VALUE_CENTS: '1.5' } as unknown as Env;
+const env = { DB: { prepare: (s: string) => wrap(s), batch: async (ss: any[]) => Promise.all(ss.map((x) => x.all())) }, TZ_OFFSET_MINUTES: '480', MILE_VALUE_CENTS: '1.5' } as unknown as Env;
 Date.now = () => Date.parse('2026-09-11T04:00:00Z');
 
 let fails = 0;

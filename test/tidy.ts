@@ -14,7 +14,7 @@ const wrap = (sql: string, args: unknown[] = []): any => ({
     return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
   },
 });
-const env = { DB: { prepare: (s: string) => wrap(s) }, TZ_OFFSET_MINUTES: '480' } as unknown as Env;
+const env = { DB: { prepare: (s: string) => wrap(s), batch: async (ss: any[]) => Promise.all(ss.map((x) => x.all())) }, TZ_OFFSET_MINUTES: '480' } as unknown as Env;
 
 let fails = 0;
 const check = (l: string, c: boolean, d = '') => {

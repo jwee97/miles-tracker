@@ -101,17 +101,21 @@ export async function classify(
   const grams = [...counts.keys()];
   // One query, however long the descriptor. Chunked only because SQLite has a
   // ceiling on bound parameters, not because the model is large.
-  const rows: { ngram: string; idf: number; weights_b64: string }[] = [];
+  // One subrequest whatever the descriptor's length: the chunking is D1's
+  // parameter ceiling, and `batch` keeps it from also being a round-trip count.
+  const lookups: D1PreparedStatement[] = [];
   for (let i = 0; i < grams.length; i += LOOKUP_CHUNK) {
     const slice = grams.slice(i, i + LOOKUP_CHUNK);
-    const placeholders = slice.map(() => '?').join(',');
-    const { results } = await env.DB.prepare(
-      `SELECT ngram, idf, weights_b64 FROM ml_model_features
-        WHERE model_id = ? AND ngram IN (${placeholders})`
-    )
-      .bind(model.id, ...slice)
-      .all<{ ngram: string; idf: number; weights_b64: string }>();
-    for (const r of results ?? []) rows.push(r);
+    lookups.push(
+      env.DB.prepare(
+        `SELECT ngram, idf, weights_b64 FROM ml_model_features
+          WHERE model_id = ? AND ngram IN (${slice.map(() => '?').join(',')})`
+      ).bind(model.id, ...slice)
+    );
+  }
+  const rows: { ngram: string; idf: number; weights_b64: string }[] = [];
+  for (const part of await env.DB.batch<{ ngram: string; idf: number; weights_b64: string }>(lookups)) {
+    for (const r of part.results ?? []) rows.push(r);
   }
 
   if (!rows.length) return null;
@@ -180,23 +184,26 @@ export async function storeFeatures(env: Env, chunk: UploadChunk): Promise<{ ok:
   }
 
   let written = 0;
-  // Batched rather than one statement per feature — the difference between a
-  // few hundred round trips and twelve thousand — but bounded by D1's
-  // hundred-parameter ceiling, at four parameters a row.
+  // Two ceilings apply at once and they pull in opposite directions. D1 takes
+  // at most a hundred bound parameters per statement, which caps a batch at
+  // twenty-five four-column rows; a Worker invocation makes at most fifty
+  // subrequests, which caps the number of statements. `batch` resolves it:
+  // many statements, one subrequest, and an implicit transaction so a chunk
+  // either lands or does not.
+  const statements: D1PreparedStatement[] = [];
   for (let i = 0; i < chunk.features.length; i += INSERT_CHUNK) {
     const slice = chunk.features.slice(i, i + INSERT_CHUNK);
     const values = slice.map(() => '(?, ?, ?, ?)').join(',');
     const args: unknown[] = [];
-    for (const f of slice) {
-      args.push(model.id, f.ngram, f.idf, packWeights(f.weights));
-    }
-    await env.DB.prepare(
-      `INSERT OR REPLACE INTO ml_model_features (model_id, ngram, idf, weights_b64) VALUES ${values}`
-    )
-      .bind(...args)
-      .run();
+    for (const f of slice) args.push(model.id, f.ngram, f.idf, packWeights(f.weights));
+    statements.push(
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO ml_model_features (model_id, ngram, idf, weights_b64) VALUES ${values}`
+      ).bind(...args)
+    );
     written += slice.length;
   }
+  if (statements.length) await env.DB.batch(statements);
 
   return { ok: true, written };
 }

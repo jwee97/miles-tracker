@@ -23,7 +23,7 @@ const wrap = (sql: string, args: unknown[] = []): any => ({
   },
 });
 const env = {
-  DB: { prepare: (sql: string) => wrap(sql) },
+  DB: { prepare: (sql: string) => wrap(sql), batch: async (ss: any[]) => Promise.all(ss.map((x: any) => x.all())) },
   APP_SECRET: 'test-secret',
   TELEGRAM_BOT_TOKEN: 'x',
   TELEGRAM_SECRET: 'y',
@@ -402,7 +402,10 @@ db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi Th
       return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
     },
   });
-  const oldEnv = { ...env, DB: { prepare: (s: string) => w2(s) } } as unknown as Env;
+  const oldEnv = {
+    ...env,
+    DB: { prepare: (s: string) => w2(s), batch: async (ss: any[]) => Promise.all(ss.map((x: any) => x.all())) },
+  } as unknown as Env;
 
   // The shape the database had before migration 006.
   old.exec(`CREATE TABLE cards (id INTEGER PRIMARY KEY, issuer TEXT, product TEXT, nickname TEXT)`);
@@ -430,7 +433,14 @@ db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi Th
 {
   const brokenEnv = {
     ...env,
-    DB: { prepare: () => { throw new Error('D1_ERROR: connection lost'); } },
+    DB: {
+      prepare: () => {
+        throw new Error('D1_ERROR: connection lost');
+      },
+      batch: () => {
+        throw new Error('D1_ERROR: connection lost');
+      },
+    },
   } as unknown as Env;
   const res = await worker.fetch(new Request(`https://x.test/api/points?t=${token}`), brokenEnv);
   const body = (await res.json()) as any;

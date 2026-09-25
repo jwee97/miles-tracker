@@ -52,14 +52,132 @@ export interface Candidate {
  * merchant within a few days, which is as close to certain as inference gets.
  * Level 3 is a resemblance, and a resemblance is a question, not an answer.
  */
-export async function findDuplicate(env: Env, c: Candidate): Promise<DuplicateMatch | null> {
+/**
+ * The working set a batch of candidates could possibly match against,
+ * fetched once.
+ *
+ * Checking rows one at a time costs three queries each, and a Worker
+ * invocation may make only fifty subrequests on the free plan — so a statement
+ * of twenty lines fails, with an error about API requests that says nothing
+ * about statements. Every one of those queries reads from the same three
+ * bounded sets, so they are fetched once and matched in memory.
+ *
+ * The matching logic below is unchanged and does not know the difference: an
+ * index is an optimisation, and a dedupe rule that behaved differently in
+ * batch than alone would be a much worse bug than the one it fixed.
+ */
+export interface DedupeIndex {
+  byExternal: Map<string, number>;
+  byHash: Map<string, number>;
+  /** Keyed `cardId|amountCents` — the pair every level-2 lookup starts from. */
+  byCardAmount: Map<string, NearRow[]>;
+}
+
+interface NearRow {
+  id: number;
+  occurred_at: string;
+  posted_at: string | null;
+  merchant: string | null;
+  merchant_raw: string | null;
+  status: string;
+}
+
+/** D1 refuses a statement with more than 100 bound parameters. */
+const PARAM_LIMIT = 99;
+
+const chunk = <T,>(xs: T[], n: number): T[][] => {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
+  return out;
+};
+
+export async function buildDedupeIndex(
+  env: Env,
+  c: {
+    card_id: number | null;
+    source: string;
+    external_ids: string[];
+    raw_hashes: string[];
+    amounts: number[];
+  }
+): Promise<DedupeIndex> {
+  const index: DedupeIndex = { byExternal: new Map(), byHash: new Map(), byCardAmount: new Map() };
+
+  // `batch` sends many statements as ONE subrequest, which is the whole point:
+  // the chunking here is about D1's parameter ceiling, not about round trips.
+  const statements: D1PreparedStatement[] = [];
+  const kinds: ('external' | 'hash')[] = [];
+
+  for (const ids of chunk([...new Set(c.external_ids.filter(Boolean))], PARAM_LIMIT)) {
+    statements.push(
+      env.DB.prepare(
+        `SELECT transaction_id, external_id FROM transaction_sources
+          WHERE source = ? AND external_id IN (${ids.map(() => '?').join(',')})`
+      ).bind(c.source, ...ids)
+    );
+    kinds.push('external');
+  }
+  for (const hs of chunk([...new Set(c.raw_hashes.filter(Boolean))], PARAM_LIMIT)) {
+    statements.push(
+      env.DB.prepare(
+        `SELECT transaction_id, raw_hash FROM transaction_sources
+          WHERE source = ? AND raw_hash IN (${hs.map(() => '?').join(',')})`
+      ).bind(c.source, ...hs)
+    );
+    kinds.push('hash');
+  }
+
+  if (statements.length) {
+    const results = await env.DB.batch<any>(statements);
+    results.forEach((r, i) => {
+      for (const row of r.results ?? []) {
+        if (kinds[i] === 'external') index.byExternal.set(String(row.external_id), row.transaction_id);
+        else index.byHash.set(String(row.raw_hash), row.transaction_id);
+      }
+    });
+  }
+
+  if (c.card_id !== null) {
+    const amounts = [...new Set(c.amounts)];
+    const amountStatements = chunk(amounts, PARAM_LIMIT).map((as) =>
+      env.DB.prepare(
+        `SELECT id, occurred_at, posted_at, merchant, merchant_raw, status, amount_cents
+           FROM transactions
+          WHERE card_id = ? AND amount_cents IN (${as.map(() => '?').join(',')})
+          ORDER BY id`
+      ).bind(c.card_id, ...as)
+    );
+    if (amountStatements.length) {
+      const rows = await env.DB.batch<any>(amountStatements);
+      for (const r of rows) {
+        for (const row of r.results ?? []) {
+          const key = `${c.card_id}|${row.amount_cents}`;
+          index.byCardAmount.set(key, [...(index.byCardAmount.get(key) ?? []), row]);
+        }
+      }
+    }
+  }
+
+  return index;
+}
+
+export async function findDuplicate(
+  env: Env,
+  c: Candidate,
+  index?: DedupeIndex
+): Promise<DuplicateMatch | null> {
   // --- level 1: the source's own identifier ------------------------------
   if (c.external_id) {
-    const hit = await env.DB.prepare(
-      `SELECT transaction_id FROM transaction_sources WHERE source = ? AND external_id = ?`
-    )
-      .bind(c.source, c.external_id)
-      .first<{ transaction_id: number }>();
+    const hit = index
+      ? (() => {
+          const id = index.byExternal.get(c.external_id!);
+          return id === undefined ? null : { transaction_id: id };
+        })()
+      : await env.DB.prepare(
+          `SELECT transaction_id FROM transaction_sources WHERE source = ? AND external_id = ?`
+        )
+          .bind(c.source, c.external_id)
+          .first<{ transaction_id: number }>();
     if (hit) {
       return {
         transaction_id: hit.transaction_id,
@@ -71,11 +189,16 @@ export async function findDuplicate(env: Env, c: Candidate): Promise<DuplicateMa
   }
 
   if (c.raw_hash) {
-    const hit = await env.DB.prepare(
-      `SELECT transaction_id FROM transaction_sources WHERE source = ? AND raw_hash = ?`
-    )
-      .bind(c.source, c.raw_hash)
-      .first<{ transaction_id: number }>();
+    const hit = index
+      ? (() => {
+          const id = index.byHash.get(c.raw_hash!);
+          return id === undefined ? null : { transaction_id: id };
+        })()
+      : await env.DB.prepare(
+          `SELECT transaction_id FROM transaction_sources WHERE source = ? AND raw_hash = ?`
+        )
+          .bind(c.source, c.raw_hash)
+          .first<{ transaction_id: number }>();
     if (hit) {
       return {
         transaction_id: hit.transaction_id,
@@ -90,22 +213,25 @@ export async function findDuplicate(env: Env, c: Candidate): Promise<DuplicateMa
 
   // --- level 2: same card, amount, merchant, near enough in time ---------
   const key = normalizeKey(c.merchant);
-  const { results } = await env.DB.prepare(
-    `SELECT id, occurred_at, posted_at, merchant, merchant_raw, status
-       FROM transactions
-      WHERE card_id = ? AND amount_cents = ?
-        AND ABS(julianday(COALESCE(posted_at, occurred_at)) - julianday(?)) <= ?
-      ORDER BY id`
-  )
-    .bind(c.card_id, c.amount_cents, c.posted_at ?? c.occurred_at, Math.max(DETERMINISTIC_DAYS, PROBABLE_DAYS))
-    .all<{
-      id: number;
-      occurred_at: string;
-      posted_at: string | null;
-      merchant: string | null;
-      merchant_raw: string | null;
-      status: string;
-    }>();
+  const window = Math.max(DETERMINISTIC_DAYS, PROBABLE_DAYS);
+
+  // The index holds every row for this card at this amount; the date window is
+  // applied here so the filtering is identical either way.
+  const results = index
+    ? (index.byCardAmount.get(`${c.card_id}|${c.amount_cents}`) ?? []).filter(
+        (r) => dayGap(r.posted_at ?? r.occurred_at, c.posted_at ?? c.occurred_at) <= window
+      )
+    : (
+        await env.DB.prepare(
+          `SELECT id, occurred_at, posted_at, merchant, merchant_raw, status
+             FROM transactions
+            WHERE card_id = ? AND amount_cents = ?
+              AND ABS(julianday(COALESCE(posted_at, occurred_at)) - julianday(?)) <= ?
+            ORDER BY id`
+        )
+          .bind(c.card_id, c.amount_cents, c.posted_at ?? c.occurred_at, window)
+          .all<NearRow>()
+      ).results;
 
   for (const r of results ?? []) {
     const theirs = normalizeKey(r.merchant ?? r.merchant_raw);

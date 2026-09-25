@@ -14,7 +14,7 @@ const wrap = (sql: string, args: unknown[] = []): any => ({
   },
 });
 const env = {
-  DB: { prepare: (sql: string) => wrap(sql) },
+  DB: { prepare: (sql: string) => wrap(sql), batch: async (ss: any[]) => Promise.all(ss.map((x: any) => x.all())) },
   TZ_OFFSET_MINUTES: '480',
   MILE_VALUE_CENTS: '1.5',
 } as unknown as Env;

@@ -33,7 +33,15 @@ import { balances, categoryForMerchant, planRoutes, rankCards, ratesReview, reme
 import { buildAnalytics } from './analytics';
 import { EDITABLE, readSettings, readUsage, withSettings, writeSetting } from './settings';
 import { platformReport } from './platform';
-import { evaluate, lookupMerchant, recommend, type Channel, type Objective } from './rules';
+import {
+  categoriesForMerchants,
+  evaluate,
+  lookupMerchant,
+  lookupMerchantBulk,
+  recommend,
+  type Channel,
+  type Objective,
+} from './rules';
 import { actionCentre } from './actions';
 import { actualTotals, entriesIn, recordActual, recordManualTotal } from './rewards/ledger';
 import { expectedTotals } from './rewards/expected';
@@ -92,7 +100,7 @@ import {
   unknownMerchants,
 } from './mccscan';
 import { scanCardPage } from './cardscan';
-import { markDuplicates, parseStatement, type ParsedRow } from './statement';
+import { parseStatement, type ParsedRow } from './statement';
 import { merchantGroups, renameMerchant } from './tidy';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import { executeTransfer, tranchesByExpiry } from './points';
@@ -998,19 +1006,29 @@ export default {
                 .first<any>()
             : null;
           if (b.nickname && !card) return json({ error: 'no such card' }, 404);
-          if (card) rows = await markDuplicates(env, card.id, rows);
+          // Only without a card: with one, `previewStatement` below decides
+          // duplicates properly, and running both meant a second query per row
+          // to reach a weaker answer.
 
           // What the app already knows about each merchant, so the preview
           // shows what would be recorded rather than only what was pasted.
-          const enriched: ParsedRow[] = [];
-          for (const r of rows) {
-            const guess = await lookupMerchant(env, r.merchant);
-            enriched.push({
+          //
+          // Fetched for every row at once. One query per row was three
+          // subrequests a line against a ceiling of fifty, so a statement of
+          // any real length failed with an error about API requests that said
+          // nothing whatsoever about statements.
+          const names = rows.map((r) => r.merchant ?? '');
+          const guesses = await lookupMerchantBulk(env, names);
+          const learned = await categoriesForMerchants(env, names);
+          const enriched: ParsedRow[] = rows.map((r) => {
+            const key = (r.merchant ?? '').trim().toLowerCase();
+            const guess = guesses.get(key);
+            return {
               ...r,
-              mcc: guess?.confidence === 'unknown' ? null : guess?.mcc ?? null,
-              category: (await categoryForMerchant(env, r.merchant)) ?? guess?.category ?? null,
-            });
-          }
+              mcc: guess?.confidence === 'unknown' ? null : (guess?.mcc ?? null),
+              category: learned.get(key) ?? guess?.category ?? null,
+            };
+          });
 
           // With a card named, the preview is a reconciliation: each row is
           // classified against what the app already believes, so the summary

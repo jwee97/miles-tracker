@@ -14,7 +14,12 @@ function makeEnv() {
       return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
     },
   });
-  return { db, env: { DB: { prepare: (sql: string) => wrap(sql) } } as unknown as Env };
+  return {
+    db,
+    env: {
+      DB: { prepare: (sql: string) => wrap(sql), batch: async (ss: any[]) => Promise.all(ss.map((x: any) => x.all())) },
+    } as unknown as Env,
+  };
 }
 
 let fails = 0;
