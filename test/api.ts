@@ -931,8 +931,18 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('and the line it could not read is reported', body.skipped.length === 1, JSON.stringify(body.skipped));
   check('nothing is written by parsing', (db.prepare(`SELECT COUNT(*) c FROM transactions WHERE source = 'statement'`).get() as any).c === 0, '');
 
-  const imported = (await (await authed('/api/statement/import', { nickname: 'crw', rows: body.rows })).json()) as any;
-  check('and then imported', imported.imported === 2, JSON.stringify(imported));
+  // A slice at a time, which is what the app does: importing a row costs
+  // about twenty database calls and a Worker invocation is allowed fifty.
+  const tooMany = await authed('/api/statement/import', { nickname: 'crw', rows: body.rows });
+  check('sending a whole statement at once is refused, with the size to use', tooMany.status === 413, String(tooMany.status));
+  check('and the refusal says why', (await tooMany.json()).slice_size === 1, '');
+
+  let importedCount = 0;
+  for (const row of body.rows) {
+    const one = (await (await authed('/api/statement/import', { nickname: 'crw', rows: [row] })).json()) as any;
+    importedCount += one.imported ?? 0;
+  }
+  check('and then imported a slice at a time', importedCount === 2, String(importedCount));
   const rows = db.prepare(`SELECT * FROM transactions WHERE source = 'statement' ORDER BY id`).all() as any[];
   check('with both dates kept', rows[0].occurred_at === '2026-09-14' && rows[0].posted_at === '2026-09-15', JSON.stringify(rows[0]));
   check('and marked as coming from a statement', rows.every((r) => r.source === 'statement'), '');
@@ -940,7 +950,11 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   const again = (await (await authed('/api/statement/parse', { text, nickname: 'crw' })).json()) as any;
   check('importing the same statement twice is flagged', again.duplicates === 2, String(again.duplicates));
   check('an empty paste is refused', (await authed('/api/statement/parse', { text: '   ' })).status === 400, '');
-  check('an import for an unknown card is a 404', (await authed('/api/statement/import', { nickname: 'zz', rows: body.rows })).status === 404, '');
+  check(
+    'an import for an unknown card is a 404',
+    (await authed('/api/statement/import', { nickname: 'zz', rows: [body.rows[0]] })).status === 404,
+    ''
+  );
 }
 
 // --- merchants with no code ---------------------------------------------------

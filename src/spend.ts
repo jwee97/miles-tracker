@@ -1,3 +1,4 @@
+import { cached } from './cache';
 import type { Card, Env, Requirement, RequirementTier } from './types';
 
 export const money = (cents: number) =>
@@ -828,12 +829,16 @@ export async function activeCards(env: Env): Promise<Card[]> {
 }
 
 export async function requirementsFor(env: Env, cardId: number): Promise<Requirement[]> {
-  const { results } = await env.DB.prepare(
-    `SELECT * FROM requirements WHERE card_id = ? AND active = 1`
-  )
-    .bind(cardId)
-    .all<Requirement>();
-  return results ?? [];
+  // Asked once a line during a statement import, for the same card, and
+  // nothing in an import changes a requirement.
+  return cached(env, `requirements:${cardId}`, async () => {
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM requirements WHERE card_id = ? AND active = 1`
+    )
+      .bind(cardId)
+      .all<Requirement>();
+    return results ?? [];
+  });
 }
 
 /** Fires an alert at most once per key; returns false if already sent. */

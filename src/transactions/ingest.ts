@@ -1,3 +1,4 @@
+import { cached } from '../cache';
 import { deriveMcc, recordEvidence } from '../merchants/evidence';
 import { resolveMerchant, similarMerchants } from '../merchants/lookup';
 import { categoryForMerchant } from '../points';
@@ -93,7 +94,11 @@ const reject = (reason: ReviewReason, detail: string): IngestResult => ({
 
 /** The card a candidate means, by id or by nickname. */
 async function matchCard(env: Env, c: TransactionCandidate) {
-  if (c.card_id) return await env.DB.prepare(`SELECT * FROM cards WHERE id = ?`).bind(c.card_id).first<any>();
+  if (c.card_id) {
+    return await cached(env, `card:${c.card_id}`, async () =>
+      env.DB.prepare(`SELECT * FROM cards WHERE id = ?`).bind(c.card_id).first<any>()
+    );
+  }
   const hint = (c.card_hint ?? '').trim();
   if (!hint) return null;
   return await env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`).bind(hint).first<any>();

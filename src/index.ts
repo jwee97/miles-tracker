@@ -1,3 +1,20 @@
+/**
+ * Rows written per request.
+ *
+ * Measured, not guessed. Importing a row costs about twenty-one D1 calls —
+ * merchant resolution, dedupe, evidence, pricing, review items — and a Worker
+ * invocation gets fifty subrequests on the free plan. Two rows measured
+ * forty-two, which passes and is the wrong answer: a row that raises two
+ * review questions instead of one would tip it over, and the failure would
+ * look random.
+ *
+ * One row, with better than half the budget spare. Forty requests for a
+ * statement is fine — requests are the cheap resource here, a hundred thousand
+ * a day against fifty subrequests per invocation.
+ */
+const IMPORT_SLICE = 1;
+
+import { withReadCache } from './cache';
 import { safeEqual, verifyToken } from './auth';
 import { resolveMerchantIntelligence } from './intelligence/merchants/resolve';
 import { exportTrainingData, harvestDiagnostics, harvestLabels, trainingReadiness } from './intelligence/merchants/labels';
@@ -1033,7 +1050,7 @@ export default {
           // With a card named, the preview is a reconciliation: each row is
           // classified against what the app already believes, so the summary
           // says what would change rather than only what was pasted.
-          const preview = card ? await previewStatement(env, card, enriched, stmtDate) : null;
+          const preview = card ? await previewStatement(withReadCache(env), card, enriched, stmtDate) : null;
 
           // A statement carries a rewards summary as well as transactions, and
           // that summary is what a reconciliation is checked against. Read as
@@ -1071,17 +1088,44 @@ export default {
           if (!card) return json({ error: 'no such card' }, 404);
           const rows = (b.rows ?? []).filter((r) => r && r.occurred_at && Number.isFinite(r.amount_cents));
           if (!rows.length) return json({ error: 'nothing to import' }, 400);
-          if (rows.length > 500) return json({ error: 'at most 500 rows at a time' }, 400);
+
+          // Importing one row costs roughly twenty D1 calls — merchant
+          // resolution, dedupe, evidence, pricing, review items — and a Worker
+          // invocation may make fifty subrequests on the free plan. So a
+          // statement cannot be written in one request, however much one would
+          // like it to be, and the honest thing is to say so in the response
+          // rather than fail at whatever row the budget runs out on.
+          //
+          // The caller sends a slice, gets told how many are left, and comes
+          // back. Requests are the cheap resource here: a hundred thousand a
+          // day against fifty subrequests per invocation.
+          if (rows.length > IMPORT_SLICE) {
+            return json(
+              {
+                error: `send at most ${IMPORT_SLICE} row(s) per request`,
+                slice_size: IMPORT_SLICE,
+                reason:
+                  'a Worker invocation has a fixed budget of database calls, and importing a row uses about twenty of them',
+              },
+              413
+            );
+          }
 
           // A caller that has not previewed still gets classified rows, so the
           // endpoint cannot be used to bypass the duplicate check.
+          // Scoped caching: the card, its rules, its exclusions and its
+          // requirements are read once for this import rather than once per
+          // row, and the cache dies with the request. Safe here specifically
+          // because an import writes none of those tables.
+          const scoped = withReadCache(env);
           const classified = rows.every((r) => r.kind && r.external_id)
             ? rows
-            : (await previewStatement(env, card, rows as any, null)).rows;
+            : (await previewStatement(scoped, card, rows as any, null)).rows;
 
-          const report = await commitStatement(env, card, classified);
+          const report = await commitStatement(scoped, card, classified);
           return json({
             ok: true,
+            slice_size: IMPORT_SLICE,
             imported: report.created,
             already_known: report.already_known,
             reconciled: report.reconciled,

@@ -1,7 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/migrate';
 import { markDuplicates, parseStatement } from '../src/statement';
-import { previewStatement } from '../src/transactions/reconcile';
+import { commitStatement, previewStatement } from '../src/transactions/reconcile';
+import { runSeed } from '../src/migrate';
 import { lookupMerchantOnline, parseMerchantPage, slugCandidates } from '../src/mccscan';
 import type { Env } from '../src/types';
 
@@ -251,6 +252,33 @@ db.prepare(
 const withDup = await previewStatement(env, card, manyRows, null);
 const matched = withDup.rows.filter((r) => r.kind === 'matched' || r.kind === 'possible_duplicate');
 check('a row already logged is still recognised through the index', matched.length === 1, JSON.stringify(matched.map((m) => m.merchant)));
+
+// --- and the same ceiling on the way in --------------------------------------
+//
+// Writing costs far more than reading: merchant resolution, dedupe, evidence,
+// pricing and review items are all per row and genuinely cannot be shared. So
+// the import endpoint takes a slice rather than a statement, and this is the
+// measurement that decides how big a slice may be. If it climbs, the endpoint
+// has to take fewer rows — not quietly start failing again.
+await runSeed(env);
+const perRow = 1;
+resetSubrequests();
+await commitStatement(env, card, (await previewStatement(env, card, manyRows.slice(0, perRow), null)).rows as any);
+const forSlice = subrequests;
+check(
+  `importing ${perRow} rows fits in one Worker invocation`,
+  forSlice <= FREE_PLAN_SUBREQUESTS,
+  `${forSlice} subrequests for ${perRow} rows — the ceiling is ${FREE_PLAN_SUBREQUESTS}`
+);
+// Half the budget spare, deliberately. Two rows measured 42 of 50, which
+// passes and is the wrong answer: a row raising two review questions rather
+// than one would tip it, and the failure would look random rather than like a
+// limit.
+check(
+  'with room for a row that asks more questions than usual',
+  forSlice <= FREE_PLAN_SUBREQUESTS / 2,
+  `${forSlice} of ${FREE_PLAN_SUBREQUESTS} — halve the slice if this climbs`
+);
 
 console.log(fails ? `\n${fails} check(s) failed` : '\nAll checks passed');
 process.exit(fails ? 1 : 0);

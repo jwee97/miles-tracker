@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
 import { PROFILES, normalise, type Normalised } from './banks';
-import { importStatement, money, parseStatement, type CardSummary, type ParsedRow, type StatementParse } from './api';
+import {
+  importStatementInSlices,
+  money,
+  parseStatement,
+  type CardSummary,
+  type ParsedRow,
+  type StatementParse,
+} from './api';
 
 /** Signed money: a statement full of refunds should not read "$-9.25". */
 const signed = (cents: number) => `${cents < 0 ? '−' : ''}$${money(Math.abs(cents))}`;
@@ -27,6 +34,7 @@ export default function Statement({ cards, onImported }: { cards: CardSummary[];
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
   const [pdf, setPdf] = useState<(Normalised & { rows: number; file: string }) | null>(null);
   const [bank, setBank] = useState('');
@@ -86,7 +94,14 @@ export default function Statement({ cards, onImported }: { cards: CardSummary[];
     setErr(null);
     try {
       const rows = parsed.rows.filter((_, i) => keep.has(i));
-      const r = await importStatement(nickname, rows);
+      // A few rows per request, because that is what a Worker invocation can
+      // do. Progress is shown rather than hidden: twenty small requests with a
+      // count moving is a wait someone can sit through, and a spinner that
+      // says nothing for the same duration is one they reload out of.
+      const r = await importStatementInSlices(nickname, rows, (done, total) =>
+        setProgress(`Importing ${done} of ${total}…`)
+      );
+      setProgress(null);
       // What changed, not what was sent: most of a statement is usually
       // already known, and "52 imported" when 48 were already there is the
       // sentence that makes people stop trusting the number.
@@ -104,7 +119,11 @@ export default function Statement({ cards, onImported }: { cards: CardSummary[];
       setText('');
       onImported();
     } catch (e) {
-      setErr((e as Error).message);
+      // Partial progress is real: the slices that landed are imported, and
+      // re-running the same statement will recognise them rather than
+      // duplicating them.
+      setErr(`${(e as Error).message}${progress ? ` — stopped at ${progress.replace(/…$/, '')}` : ''}`);
+      setProgress(null);
     } finally {
       setBusy(false);
     }
@@ -278,7 +297,7 @@ export default function Statement({ cards, onImported }: { cards: CardSummary[];
 
           <div className="entry-foot">
             <button onClick={save} disabled={busy || !kept.length}>
-              Import {kept.length} row{kept.length === 1 ? '' : 's'} · {signed(keptTotal)}
+              {progress ?? `Import ${kept.length} row${kept.length === 1 ? '' : 's'} · ${signed(keptTotal)}`}
             </button>
             <button className="secondary" onClick={() => setParsed(null)}>
               Discard

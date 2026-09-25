@@ -1,3 +1,4 @@
+import { cached } from './cache';
 import {
   calendarMonth,
   calendarMonthOf,
@@ -221,20 +222,25 @@ export async function rulesForCard(
   card: Card,
   on: string
 ): Promise<{ rules: EarnRule[]; rule_set_id: number | null }> {
-  const productId = (card as unknown as { product_id?: number | null }).product_id ?? null;
-  if (productId) {
-    const set = await ruleSetOn(env, productId, on);
-    if (set) return { rules: await rulesIn(env, set.id), rule_set_id: set.id };
-    // A product with no version covering that day earns nothing extra — the
-    // honest answer, rather than quietly reaching for a version that had not
-    // started or had already ended.
-    return { rules: [], rule_set_id: null };
-  }
+  // Memoised per request and keyed by the date, because which rules apply is a
+  // question about a date. Importing a statement asks this once a line for the
+  // same card, and the rules cannot change while the import runs.
+  return cached(env, `rules:${card.id}:${on}`, async () => {
+    const productId = (card as unknown as { product_id?: number | null }).product_id ?? null;
+    if (productId) {
+      const set = await ruleSetOn(env, productId, on);
+      if (set) return { rules: await rulesIn(env, set.id), rule_set_id: set.id };
+      // A product with no version covering that day earns nothing extra — the
+      // honest answer, rather than quietly reaching for a version that had not
+      // started or had already ended.
+      return { rules: [], rule_set_id: null };
+    }
 
-  const { results } = await env.DB.prepare(`SELECT * FROM earn_rules WHERE card_id = ? AND active = 1`)
-    .bind(card.id)
-    .all<EarnRule>();
-  return { rules: results ?? [], rule_set_id: null };
+    const { results } = await env.DB.prepare(`SELECT * FROM earn_rules WHERE card_id = ? AND active = 1`)
+      .bind(card.id)
+      .all<EarnRule>();
+    return { rules: results ?? [], rule_set_id: null };
+  });
 }
 
 export interface Purchase {
@@ -442,7 +448,9 @@ export async function evaluate(
 
   const exclusions =
     opts.exclusions ??
-    ((await env.DB.prepare(`SELECT card_id, mcc, reason FROM exclusions WHERE active = 1`).all<any>()).results ?? []);
+    (await cached<{ card_id: number | null; mcc: string; reason: string }[]>(env, 'exclusions:active', async () =>
+      (await env.DB.prepare(`SELECT card_id, mcc, reason FROM exclusions WHERE active = 1`).all<any>()).results ?? []
+    ));
 
   const amount = p.amount_cents ?? 0;
   const blank: Omit<Evaluation, 'trace' | 'score'> = {

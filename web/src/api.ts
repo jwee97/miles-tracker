@@ -1662,8 +1662,70 @@ export interface ImportReport {
 export const parseStatement = (text: string, nickname?: string, statement_date?: string | null) =>
   post<StatementParse>('/api/statement/parse', { text, nickname, statement_date });
 
-export const importStatement = (nickname: string, rows: ParsedRow[]) =>
+/**
+ * One slice of a statement.
+ *
+ * The Worker takes a couple of rows per request, because importing a row costs
+ * about twenty database calls and an invocation is allowed fifty. See
+ * `importStatementInSlices`, which is what screens should call.
+ */
+export const importStatementSlice = (nickname: string, rows: ParsedRow[]) =>
   post<ImportReport>('/api/statement/import', { nickname, rows });
+
+/** Default slice, overridden by whatever the server reports it will take. */
+export const IMPORT_SLICE = 1;
+
+/**
+ * Import a whole statement, a slice at a time.
+ *
+ * Sequential rather than parallel on purpose: the rows are checked against
+ * each other for duplicates as they go, and two slices in flight at once could
+ * each decide the other's row was new.
+ *
+ * Totals are summed across slices so the person sees one result, not twenty.
+ */
+export async function importStatementInSlices(
+  nickname: string,
+  rows: ParsedRow[],
+  onProgress?: (done: number, total: number) => void
+): Promise<ImportReport> {
+  const total: ImportReport = {
+    ok: true,
+    imported: 0,
+    already_known: 0,
+    reconciled: 0,
+    queued_for_review: 0,
+    skipped: [],
+    processed: 0,
+    expected_miles: 0,
+  } as ImportReport;
+
+  let size = IMPORT_SLICE;
+  for (let i = 0; i < rows.length; ) {
+    const slice = rows.slice(i, i + size);
+    const r = await importStatementSlice(nickname, slice);
+
+    // The server is the authority on how much it will take.
+    if (typeof (r as any).slice_size === 'number') size = Math.max(1, (r as any).slice_size);
+
+    total.imported += r.imported ?? 0;
+    total.already_known += r.already_known ?? 0;
+    total.reconciled += r.reconciled ?? 0;
+    total.queued_for_review += r.queued_for_review ?? 0;
+    total.processed += r.processed ?? 0;
+    total.expected_miles += r.expected_miles ?? 0;
+    for (const s of r.skipped ?? []) {
+      const seen = total.skipped.find((x) => x.kind === s.kind);
+      if (seen) seen.count += s.count;
+      else total.skipped.push({ ...s });
+    }
+
+    i += slice.length;
+    onProgress?.(Math.min(i, rows.length), rows.length);
+  }
+
+  return total;
+}
 
 /* --- re-pricing what the app believed ------------------------------------ */
 
