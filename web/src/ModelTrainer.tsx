@@ -39,6 +39,21 @@ type Phase = 'idle' | 'loading' | 'training' | 'trained' | 'uploading' | 'done';
 
 const pct = (n: unknown) => (typeof n === 'number' ? `${Math.round(n * 100)}%` : '—');
 
+/**
+ * The first thing that goes wrong after a deploy, every time.
+ *
+ * The model's tables arrive with the code but not with the database, and the
+ * raw SQL error that follows says "no such table" — which reads like a bug
+ * rather than a step nobody has taken yet.
+ */
+function explain(e: unknown): string {
+  const m = (e as Error).message ?? String(e);
+  if (/no such table|no such column|has no column/i.test(m)) {
+    return `The database is behind the code — press “Bring the database up to date” in Maintenance below, then try again. (${m})`;
+  }
+  return m;
+}
+
 export default function ModelTrainer() {
   const [readiness, setReadiness] = useState<TrainingReadiness | null>(null);
   const [models, setModels] = useState<ModelRow[] | null>(null);
@@ -66,7 +81,7 @@ export default function ModelTrainer() {
         `${r.scanned} coded transaction${r.scanned === 1 ? '' : 's'} read · ${r.added} new label${r.added === 1 ? '' : 's'}.`
       );
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(explain(e));
     }
   }
 
@@ -107,7 +122,7 @@ export default function ModelTrainer() {
       setPhase('trained');
     } catch (e) {
       setPhase('idle');
-      setErr((e as Error).message);
+      setErr(explain(e));
     } finally {
       setProgress(null);
     }
@@ -174,7 +189,7 @@ export default function ModelTrainer() {
       refresh();
     } catch (e) {
       setPhase('trained');
-      setErr((e as Error).message);
+      setErr(explain(e));
     } finally {
       setProgress(null);
     }
@@ -186,7 +201,7 @@ export default function ModelTrainer() {
       setMsg(`Version ${m.version} retired. Codes go back to being read from evidence alone.`);
       refresh();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(explain(e));
     }
   }
 

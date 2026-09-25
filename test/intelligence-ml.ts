@@ -160,6 +160,55 @@ check('and returns a distribution, not a verdict', (one?.distribution.length ?? 
 check('whose probabilities are ordered', (one?.distribution[0].probability ?? 0) >= (one?.distribution[1].probability ?? 1), '');
 check('and reports how much of the line it recognised', (one?.matched_features ?? 0) > 0, '');
 
+// --- retraining does not accumulate for ever -------------------------------
+
+const v2 = await registerModel(env, {
+  model_key: 'merchant_mcc',
+  architecture: trained.architecture,
+  training_examples: trained.metrics.training_examples,
+  validation_metrics: trained.metrics as unknown as Record<string, unknown>,
+  classes: trained.classes,
+  intercept: trained.intercept,
+  high_confidence: trained.high_confidence,
+});
+await storeFeatures(env, { model_key: 'merchant_mcc', version: v2.version!, features: trained.features });
+const v2row = db.prepare(`SELECT id FROM ml_models WHERE version = 2`).get() as any;
+sql(`UPDATE ml_models SET feature_count = ? WHERE id = ?`, await featureCount(env, v2row.id), v2row.id);
+const second = await promoteModel(env, 'merchant_mcc', 2);
+check('a second model promotes over the first', second.ok, JSON.stringify(second));
+check('and v1 keeps its weights, so one step back is possible', (await featureCount(env, modelRow.id)) > 0, '');
+
+const v3 = await registerModel(env, {
+  model_key: 'merchant_mcc',
+  architecture: trained.architecture,
+  training_examples: trained.metrics.training_examples,
+  validation_metrics: trained.metrics as unknown as Record<string, unknown>,
+  classes: trained.classes,
+  intercept: trained.intercept,
+  high_confidence: trained.high_confidence,
+});
+await storeFeatures(env, { model_key: 'merchant_mcc', version: v3.version!, features: trained.features });
+const v3row = db.prepare(`SELECT id FROM ml_models WHERE version = 3`).get() as any;
+sql(`UPDATE ml_models SET feature_count = ? WHERE id = ?`, await featureCount(env, v3row.id), v3row.id);
+const third = await promoteModel(env, 'merchant_mcc', 3);
+check('a third promotes too', third.ok, JSON.stringify(third));
+check('and now v1 is pruned', (await featureCount(env, modelRow.id)) === 0, 'weights nobody can roll back to should not be kept');
+check('freeing rows rather than silently growing', (third.features_freed ?? 0) > 0, String(third.features_freed));
+check(
+  'but its record survives',
+  (db.prepare(`SELECT COUNT(*) AS n FROM ml_models WHERE version = 1`).get() as any).n === 1,
+  'what was trained and what it scored is the audit trail'
+);
+check(
+  'and a pruned model cannot be promoted on a count it no longer has',
+  !meetsBar((await listModels(env, 'merchant_mcc')).find((m) => m.version === 1)!).ok,
+  ''
+);
+
+// The live model is v3 now; the rest of the file checks it still behaves.
+const afterPrune = await classify(env, 'din tai fung jem restaurant');
+check('the live model still answers after pruning', afterPrune?.model_version === 3, JSON.stringify(afterPrune)?.slice(0, 80));
+
 // --- refusing to answer ----------------------------------------------------
 
 const alien = await classify(env, 'zzzz qqqq xxxx vvvv');
@@ -198,7 +247,7 @@ check(
 const modelled = await resolveMerchantIntelligence(env, { descriptor: 'NTUC FAIRPRICE SUPERMARKET BEDOK' });
 check('an unknown merchant reaches the model', modelled.provenance.prediction_source === 'self_trained_ml', modelled.provenance.prediction_source);
 check('which answers with a code', modelled.mcc_candidates[0]?.mcc === '5411', JSON.stringify(modelled.mcc_candidates[0]));
-check('attributed to the model version', modelled.provenance.model_version === 1, String(modelled.provenance.model_version));
+check('attributed to the model version', modelled.provenance.model_version === 3, String(modelled.provenance.model_version));
 check('and the evidence line says it was predicted', /predicted by/.test(modelled.mcc_candidates[0]?.evidence ?? ''), modelled.mcc_candidates[0]?.evidence ?? '');
 
 const unknowable = await resolveMerchantIntelligence(env, { descriptor: 'QQQQ ZZZZ WWWW' });

@@ -208,7 +208,7 @@ export async function promoteModel(
   key: string,
   version: number,
   opts: { force?: boolean; note?: string | null } = {}
-): Promise<{ ok: boolean; error?: string; retired?: number | null; missing?: string[] }> {
+): Promise<{ ok: boolean; error?: string; retired?: number | null; missing?: string[]; features_freed?: number }> {
   const cand = await env.DB.prepare(`SELECT * FROM ml_models WHERE model_key = ? AND version = ?`)
     .bind(key, version)
     .first<any>();
@@ -232,7 +232,44 @@ export async function promoteModel(
     )
     .run();
 
-  return { ok: true, retired: incumbent?.version ?? null };
+  const freed = await pruneOldFeatures(env, key, [cand.id, incumbent?.id ?? -1]);
+
+  return { ok: true, retired: incumbent?.version ?? null, features_freed: freed };
+}
+
+/**
+ * Drop the feature rows of models nobody can roll back to.
+ *
+ * A model is thousands of rows, and retraining is meant to be cheap enough to
+ * do whenever the corpus grows — so without this, every training run leaves
+ * another model's worth of rows behind for ever. D1's free plan allows five
+ * gigabytes and a hundred thousand row writes a day; neither is infinite.
+ *
+ * The live model and the one it replaced are kept, which is what a rollback
+ * needs. Everything older keeps its `ml_models` row — the record of what was
+ * trained, what it scored and what it decided stays intact — and loses only
+ * the weights, which are reproducible from the corpus in any case.
+ */
+export async function pruneOldFeatures(env: Env, key: string, keep: number[]): Promise<number> {
+  const placeholders = keep.map(() => '?').join(',');
+  const { results } = await env.DB.prepare(
+    `SELECT id FROM ml_models WHERE model_key = ? AND id NOT IN (${placeholders})`
+  )
+    .bind(key, ...keep)
+    .all<{ id: number }>();
+
+  let freed = 0;
+  for (const m of results ?? []) {
+    const r = await env.DB.prepare(`DELETE FROM ml_model_features WHERE model_id = ?`).bind(m.id).run();
+    const n = r.meta?.changes ?? 0;
+    if (n > 0) {
+      freed += n;
+      // Zeroed rather than left stale, so the model cannot later be promoted
+      // on a feature count it no longer has.
+      await env.DB.prepare(`UPDATE ml_models SET feature_count = 0 WHERE id = ?`).bind(m.id).run();
+    }
+  }
+  return freed;
 }
 
 /** Take a model out of service. The deterministic path resumes immediately. */
