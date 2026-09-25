@@ -330,6 +330,24 @@ tr.row-review td:first-child { box-shadow: inset 2px 0 0 var(--mid); }
 .chip.soon { background: rgba(251,191,36,.16); color: var(--mid); }
 .chip.ok { color: var(--ok); }
 .chip.never, .chip.far { color: var(--dim); }
+
+/* Filters on the ledger. Visible rather than behind a button: a filter you
+   cannot see is one you forget is on, and "where did my transactions go" is
+   the bug that follows. */
+button.chip { border: 1px solid var(--line); cursor: pointer; padding: 5px 12px; font-size: 12px; }
+button.chip:hover { color: var(--text); }
+button.chip.on { background: rgba(74,222,128,.14); border-color: var(--ok); color: var(--ok); font-weight: 600; }
+
+.filter-row {
+  display: grid; gap: 8px; margin-top: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.filter-row .f-note { grid-column: 1 / -1; }
+.filter-foot { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
+
+@media (max-width: 560px) {
+  .filter-row { grid-template-columns: 1fr 1fr; }
+}
 .chip.gone { background: rgba(248,113,113,.25); color: var(--bad); }
 
 /* ---------- settings ---------- */

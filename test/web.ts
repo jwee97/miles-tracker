@@ -338,6 +338,7 @@ const REVIEW = {
   ],
 };
 
+let lastTxQuery: Record<string, string> = {};
 let resolved: { id: number; body: any } | null = null;
 let published = 0;
 let slowActions = false;
@@ -1116,7 +1117,34 @@ async function stub(page: Page) {
           transactions: [{ ...TRANSACTIONS.transactions[0], merchant: { boom: true } }],
         });
       }
-      return send(TRANSACTIONS);
+
+      // Filtering happens on the server, so the stub has to do it too —
+      // otherwise the test proves only that a dropdown changes colour.
+      lastTxQuery = Object.fromEntries(u.searchParams.entries());
+      const category = u.searchParams.get('category');
+      const card = u.searchParams.get('card');
+      const q = u.searchParams.get('q');
+      let rows = TRANSACTIONS.transactions;
+      if (category === 'none') rows = rows.filter((t: any) => !t.category);
+      else if (category) rows = rows.filter((t: any) => t.category === category);
+      if (card) rows = rows.filter((t: any) => t.nickname === card);
+      if (q) rows = rows.filter((t: any) => (t.merchant ?? '').toLowerCase().includes(q.toLowerCase()));
+
+      return send({
+        ...TRANSACTIONS,
+        transactions: rows,
+        total_count: rows.length,
+        total_cents: rows.reduce((n: number, t: any) => n + Math.max(0, t.amount_cents), 0),
+        facets: {
+          categories: [
+            { value: 'dining', count: 3 },
+            { value: 'groceries', count: 2 },
+            { value: 'none', count: 1 },
+          ],
+          statuses: [{ value: 'posted', count: 5 }],
+          sources: [{ value: 'statement', count: 4 }, { value: 'manual', count: 2 }],
+        },
+      });
     }
     if (u.pathname === '/api/tx/used') {
       usedCalls++;
@@ -1782,6 +1810,49 @@ async function main() {
     check('and how much moved', rep.includes('2') && rep.includes('40 already right'), rep);
     check('a reward that went down is not dressed up as good news', rep.includes('-2,400 miles'), rep);
     check('with the rows that changed', rep.includes('2,400 miles → 1,200 miles'), rep);
+
+    // --- narrowing the ledger by something other than time ---------------
+    //
+    // The filters are visible rather than behind a button on purpose, so the
+    // first thing checked is that they are on the page at all: a filter you
+    // cannot see is one you forget is on, and "where did my transactions go"
+    // is the bug that follows.
+    const filters = page.locator('.filter-row');
+    await filters.waitFor();
+    check('the ledger offers filters without hunting for them', await filters.isVisible());
+
+    const rowsIn = () => page.locator('table.sheet tbody tr').count();
+    check('both transactions are listed to begin with', (await rowsIn()) === 2, String(await rowsIn()));
+
+    await filters.getByLabel('Category').selectOption('groceries');
+    await page.waitForFunction(() => document.querySelectorAll('table.sheet tbody tr').length === 1);
+    check('choosing a category narrows the table', (await rowsIn()) === 1);
+    check('and the request carried it to the server', lastTxQuery.category === 'groceries', JSON.stringify(lastTxQuery));
+    check(
+      'rather than being filtered in the browser',
+      lastTxQuery.limit !== undefined && lastTxQuery.page === '1',
+      JSON.stringify(lastTxQuery)
+    );
+
+    const summary = await page.locator('.range-summary').innerText();
+    check('the count describes the rows on screen, not the whole ledger', summary.includes('1 transaction'), summary);
+    check('and says a filter is responsible', summary.includes('matching your filters'), summary);
+
+    // Counts come from the whole ledger, so a category you have not filtered
+    // to is still offered with how much is in it.
+    const options = await filters.getByLabel('Category').innerText();
+    check('the choices carry counts', options.includes('dining (3)'), options);
+    check('and uncategorised is offered as its own answer', options.includes('Uncategorised'), options);
+
+    await filters.getByLabel('Card').selectOption('crw');
+    await page.waitForFunction(() => document.querySelectorAll('table.sheet tbody tr').length === 0);
+    check('filters combine rather than replace each other', (await rowsIn()) === 0);
+    check('with both on the request', lastTxQuery.card === 'crw' && lastTxQuery.category === 'groceries', JSON.stringify(lastTxQuery));
+
+    await page.getByRole('button', { name: /^Clear 2 filters$/ }).click();
+    await page.waitForFunction(() => document.querySelectorAll('table.sheet tbody tr').length === 2);
+    check('and clearing says how many it is clearing, then does', (await rowsIn()) === 2);
+    check('leaving nothing behind on the request', !lastTxQuery.category && !lastTxQuery.card, JSON.stringify(lastTxQuery));
 
     // --- the catalogue --------------------------------------------------
     await page.getByRole('button', { name: /^More/ }).click();

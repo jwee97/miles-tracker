@@ -242,6 +242,26 @@ async function del<T>(path: string): Promise<T> {
   return data as T;
 }
 
+/** What can narrow the ledger. Everything is optional and they combine. */
+export interface TxnFilters {
+  range?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  /** Card nickname. */
+  card?: string;
+  /** A category, or 'none' for rows filed under nothing. */
+  category?: string;
+  status?: string;
+  source?: string;
+  /** A four-digit code, or 'none'. */
+  mcc?: string;
+  /** Rows that are unfinished: flagged, or missing a category or a code. */
+  review?: boolean;
+  /** Merchant search, over the tidied name and what the bank printed. */
+  q?: string;
+}
+
 export interface TxnPage {
   transactions: Txn[];
   range: { from: string | null; to: string | null; label: string };
@@ -250,18 +270,29 @@ export interface TxnPage {
   page: number;
   pages: number;
   per_page: number;
+  /** Echoed back, so a screen can show what it is actually filtered by. */
+  filters?: Record<string, unknown>;
+  /** Values present in the ledger, with counts. Only these are worth offering. */
+  facets?: {
+    categories: { value: string; count: number }[];
+    statuses: { value: string; count: number }[];
+    sources: { value: string; count: number }[];
+  };
 }
 
-export const fetchTransactions = (
-  limit = 25,
-  opts: { range?: string; from?: string; to?: string; page?: number; card?: string } = {}
-) => {
+export const fetchTransactions = (limit = 25, opts: TxnFilters = {}) => {
   const p = new URLSearchParams({ limit: String(limit) });
   if (opts.range) p.set('range', opts.range);
   if (opts.from) p.set('from', opts.from);
   if (opts.to) p.set('to', opts.to);
   if (opts.page) p.set('page', String(opts.page));
   if (opts.card) p.set('card', opts.card);
+  if (opts.category) p.set('category', opts.category);
+  if (opts.status) p.set('status', opts.status);
+  if (opts.source) p.set('source', opts.source);
+  if (opts.mcc) p.set('mcc', opts.mcc);
+  if (opts.review) p.set('review', '1');
+  if (opts.q) p.set('q', opts.q);
   return get<TxnPage>(`/api/transactions?${p}`);
 };
 

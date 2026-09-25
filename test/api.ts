@@ -332,6 +332,49 @@ db.prepare(`INSERT INTO programs (key,name,kind,unit) VALUES ('citi_ty','Citi Th
   check('the limit caps the rows returned', t9.transactions.length === 2, String(t9.transactions.length));
   check('while the count covers the whole range', t9.total_count > 2, String(t9.total_count));
   check('and so does the total', t9.total_cents > 0, String(t9.total_cents));
+
+  // --- narrowing by something other than time -------------------------------
+  //
+  // The rule that matters here is that the total describes the same rows as
+  // the table. A filter that narrowed the list but not the count would report
+  // a figure for a set nobody is looking at, which is the kind of wrong number
+  // that never gets questioned.
+  db.prepare(`UPDATE transactions SET category = 'dining' WHERE merchant = 'Today'`).run();
+  db.prepare(`UPDATE transactions SET category = 'groceries' WHERE merchant = 'Yesterday'`).run();
+  db.prepare(`UPDATE transactions SET category = NULL WHERE merchant = 'Five days ago'`).run();
+
+  const byCat = await page('range=all&limit=100&category=dining');
+  check('a category filter narrows the rows', has(byCat, 'Today') && !has(byCat, 'Yesterday'), '');
+  check('and the total counts the same rows', byCat.total_count === byCat.transactions.length, `${byCat.total_count} vs ${byCat.transactions.length}`);
+  check('and it echoes what it filtered by', byCat.filters?.category === 'dining', JSON.stringify(byCat.filters));
+
+  const uncategorised = await page('range=all&limit=100&category=none');
+  check('uncategorised is its own filter', has(uncategorised, 'Five days ago'), '');
+  check('and excludes rows that have one', !has(uncategorised, 'Today'), '');
+
+  const byCard = await page('range=all&limit=100&card=crw');
+  check('a card filter works', byCard.total_count > 0, String(byCard.total_count));
+  const byMissingCard = await page('range=all&limit=100&card=nosuchcard');
+  check('an unknown card matches nothing rather than everything', byMissingCard.total_count === 0, String(byMissingCard.total_count));
+
+  const search = await page('range=all&limit=100&q=yester');
+  check('a partial merchant name searches', has(search, 'Yesterday'), JSON.stringify(search.transactions.map((t: any) => t.merchant)));
+  check('and excludes the rest', !has(search, 'Today'), '');
+
+  const needs = await page('range=all&limit=100&review=1');
+  check('needs-attention finds the uncategorised', has(needs, 'Five days ago'), '');
+
+  const both = await page('range=all&limit=100&category=dining&q=today');
+  check('filters combine rather than replace each other', both.total_count === 1, String(both.total_count));
+  const contradictory = await page('range=all&limit=100&category=dining&q=yesterday');
+  check('and a contradiction returns nothing, not everything', contradictory.total_count === 0, String(contradictory.total_count));
+
+  check('the values worth offering come back with counts', (byCat.facets?.categories ?? []).length > 0, JSON.stringify(byCat.facets));
+  check(
+    'and they describe the whole ledger, not the filtered view',
+    (byCat.facets?.categories ?? []).some((c: any) => c.value === 'groceries'),
+    JSON.stringify(byCat.facets?.categories)
+  );
 }
 
 // --- settings, overlaid on the deployed config ------------------------------

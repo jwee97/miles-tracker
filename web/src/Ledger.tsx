@@ -14,6 +14,7 @@ import {
   type CardSummary,
   type ReviewRow,
   type Txn,
+  type TxnPage,
   fetchMerchantGroups,
   renameMerchant,
   type MerchantGroup,
@@ -298,6 +299,18 @@ export default function Ledger() {
     pages: number;
   } | null>(null);
 
+  // Filters, held apart from the time range because they answer a different
+  // question: the range is "when", these are "which".
+  const [fCard, setFCard] = useState('');
+  const [fCat, setFCat] = useState('');
+  const [fStatus, setFStatus] = useState('');
+  const [fSource, setFSource] = useState('');
+  const [fReview, setFReview] = useState(false);
+  const [q, setQ] = useState('');
+  /** What the search box holds, before it has been applied. */
+  const [qDraft, setQDraft] = useState('');
+  const [facets, setFacets] = useState<TxnPage['facets'] | null>(null);
+
   // New-row draft
   const todayIso = new Date().toISOString().slice(0, 10);
   const [nAmount, setNAmount] = useState('');
@@ -310,9 +323,19 @@ export default function Ledger() {
     // A custom range only applies once both ends are set; until then keep the
     // named range so the table never silently empties mid-edit.
     const custom = range === 'custom' && from && to;
-    fetchTransactions(limit, { ...(custom ? { from, to } : { range }), page })
+    fetchTransactions(limit, {
+      ...(custom ? { from, to } : { range }),
+      page,
+      card: fCard || undefined,
+      category: fCat || undefined,
+      status: fStatus || undefined,
+      source: fSource || undefined,
+      review: fReview || undefined,
+      q: q || undefined,
+    })
       .then((d) => {
         setRows(d.transactions);
+        if (d.facets) setFacets(d.facets);
         setMeta({
           total_count: d.total_count,
           total_cents: d.total_cents,
@@ -342,7 +365,25 @@ export default function Ledger() {
     fetchCategories().then((d) => setCats(d.categories ?? [])).catch(() => void 0);
   }, []);
 
-  useEffect(load, [limit, page, range, from, to]);
+  useEffect(load, [limit, page, range, from, to, fCard, fCat, fStatus, fSource, fReview, q]);
+
+  // Narrowing while on page 7 should start at the top of the new, shorter
+  // list rather than land on an empty one and have the server bounce it back.
+  useEffect(() => {
+    setPage(1);
+  }, [fCard, fCat, fStatus, fSource, fReview, q]);
+
+  const activeFilters =
+    [fCard, fCat, fStatus, fSource, q].filter(Boolean).length + (fReview ? 1 : 0);
+  const clearFilters = () => {
+    setFCard('');
+    setFCat('');
+    setFStatus('');
+    setFSource('');
+    setFReview(false);
+    setQ('');
+    setQDraft('');
+  };
   // A new range or page size renumbers everything, so start from the top.
   useEffect(() => setPage(1), [limit, range, from, to]);
 
@@ -470,6 +511,100 @@ export default function Ledger() {
           ))}
         </div>
 
+        {/*
+          Which, as opposed to when. Kept as one row of selects rather than a
+          panel behind a button: a filter you cannot see is a filter you forget
+          is on, and "where did my transactions go" is the bug that follows.
+        */}
+        <div className="filter-row">
+          <label className="f">
+            <span>Card</span>
+            <select value={fCard} onChange={(e) => setFCard(e.target.value)}>
+              <option value="">Any card</option>
+              {cards.map((c) => (
+                <option key={c.id} value={c.nickname}>
+                  {c.nickname} — {c.product}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="f">
+            <span>Category</span>
+            <select value={fCat} onChange={(e) => setFCat(e.target.value)}>
+              <option value="">Any category</option>
+              <option value="none">Uncategorised</option>
+              {(facets?.categories ?? [])
+                .filter((c) => c.value !== 'none')
+                .map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.value} ({c.count})
+                  </option>
+                ))}
+              {/* Categories with nothing filed under them yet, so a filter can
+                  be set before the first transaction arrives in one. */}
+              {cats
+                .filter((c) => !(facets?.categories ?? []).some((f) => f.value === c))
+                .map((c) => (
+                  <option key={c} value={c}>
+                    {c} (0)
+                  </option>
+                ))}
+            </select>
+          </label>
+
+          <label className="f">
+            <span>Status</span>
+            <select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+              <option value="">Any status</option>
+              {(facets?.statuses ?? []).map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.value} ({s.count})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="f">
+            <span>Came from</span>
+            <select value={fSource} onChange={(e) => setFSource(e.target.value)}>
+              <option value="">Anywhere</option>
+              {(facets?.sources ?? []).map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.value} ({s.count})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="f f-note">
+            <span>Merchant</span>
+            <input
+              value={qDraft}
+              onChange={(e) => setQDraft(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && setQ(qDraft.trim())}
+              onBlur={() => setQ(qDraft.trim())}
+              placeholder="part of a name"
+            />
+          </label>
+        </div>
+
+        <div className="filter-foot">
+          <button
+            type="button"
+            className={`chip ${fReview ? 'on' : ''}`}
+            aria-pressed={fReview}
+            onClick={() => setFReview((v) => !v)}
+          >
+            Needs attention
+          </button>
+          {activeFilters > 0 && (
+            <button type="button" className="chip" onClick={clearFilters}>
+              Clear {activeFilters} filter{activeFilters === 1 ? '' : 's'}
+            </button>
+          )}
+        </div>
+
         {range === 'custom' && (
           <div className="entry-grid" style={{ marginTop: 10 }}>
             <label className="f">
@@ -494,6 +629,7 @@ export default function Ledger() {
             )}
             {' · '}
             <b>{meta.total_count.toLocaleString()}</b> transaction{meta.total_count === 1 ? '' : 's'}
+            {activeFilters > 0 && <> matching your filters</>}
             {' · '}
             <b>${money(meta.total_cents)}</b>
             {meta.pages > 1 && (

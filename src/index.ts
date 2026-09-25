@@ -3189,6 +3189,55 @@ export default {
             where.push(`t.card_id = (SELECT id FROM cards WHERE nickname = ? COLLATE NOCASE)`);
             binds.push(nick);
           }
+
+          // Everything below narrows on a column of `transactions` alone, so
+          // the same clause can serve the row query and the totals query. A
+          // filter that needed the cards join would quietly give a total for a
+          // different set of rows than the one on screen, which is the kind of
+          // wrong number nobody checks.
+          const category = (url.searchParams.get('category') ?? '').trim().toLowerCase();
+          if (category === 'none') {
+            where.push(`t.category IS NULL`);
+          } else if (category) {
+            where.push(`LOWER(t.category) = ?`);
+            binds.push(category);
+          }
+
+          const status = (url.searchParams.get('status') ?? '').trim().toLowerCase();
+          if (status) {
+            where.push(`LOWER(t.status) = ?`);
+            binds.push(status);
+          }
+
+          const mcc = (url.searchParams.get('mcc') ?? '').trim();
+          if (mcc === 'none') {
+            where.push(`t.mcc IS NULL`);
+          } else if (/^\d{4}$/.test(mcc)) {
+            where.push(`t.mcc = ?`);
+            binds.push(mcc);
+          }
+
+          const source = (url.searchParams.get('source') ?? '').trim().toLowerCase();
+          if (source) {
+            where.push(`LOWER(t.source) = ?`);
+            binds.push(source);
+          }
+
+          // "Needs attention" is not one column: a row flagged for review and
+          // a row with no category are both unfinished, and separating them
+          // would make the filter answer a question nobody asked.
+          if (url.searchParams.get('review') === '1') {
+            where.push(`(t.needs_review = 1 OR t.category IS NULL OR t.mcc IS NULL)`);
+          }
+
+          // Merchant search, over both the tidied name and what the bank
+          // printed — the line you remember seeing is often the raw one.
+          const q = (url.searchParams.get('q') ?? '').trim();
+          if (q) {
+            where.push(`(t.merchant LIKE ? COLLATE NOCASE OR t.merchant_raw LIKE ? COLLATE NOCASE)`);
+            binds.push(`%${q}%`, `%${q}%`);
+          }
+
           const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
           // The ledger edits these in place, so every editable column has to
@@ -3219,6 +3268,25 @@ export default {
           const page = Math.min(wanted, pages);
           const { results } = await rows.bind(...binds, limit, (page - 1) * limit).all<any>();
 
+          // What is worth offering as a filter, taken from the rows that
+          // exist rather than from a fixed list — a category nothing is filed
+          // under is a dead option, and a category present only in this ledger
+          // would otherwise be unreachable.
+          const { results: facets } = await env.DB.prepare(
+            `SELECT 'category' AS kind, COALESCE(category, 'none') AS value, COUNT(*) AS n
+               FROM transactions GROUP BY COALESCE(category, 'none')
+             UNION ALL
+             SELECT 'status', COALESCE(status, 'unknown'), COUNT(*) FROM transactions GROUP BY COALESCE(status, 'unknown')
+             UNION ALL
+             SELECT 'source', COALESCE(source, 'unknown'), COUNT(*) FROM transactions GROUP BY COALESCE(source, 'unknown')
+             ORDER BY kind, n DESC`
+          ).all<{ kind: string; value: string; n: number }>();
+
+          const grouped: Record<string, { value: string; count: number }[]> = {};
+          for (const f of facets ?? []) {
+            (grouped[f.kind] ??= []).push({ value: f.value, count: f.n });
+          }
+
           return json({
             transactions: results ?? [],
             range: { from, to, label: rangeLabel },
@@ -3227,6 +3295,20 @@ export default {
             page,
             pages,
             per_page: limit,
+            filters: {
+              card: nick || null,
+              category: category || null,
+              status: status || null,
+              source: source || null,
+              mcc: mcc || null,
+              review: url.searchParams.get('review') === '1',
+              q: q || null,
+            },
+            facets: {
+              categories: grouped.category ?? [],
+              statuses: grouped.status ?? [],
+              sources: grouped.source ?? [],
+            },
           });
         }
 
