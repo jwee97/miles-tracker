@@ -1152,7 +1152,50 @@ export interface PromotionReviewItem {
     official_verified: boolean;
     search_query: string | null;
   };
+  /** What the article was read as, before asking what offer was in it. */
+  document_type: string | null;
+  classification_confidence: string | null;
+  classification_signals: string[];
+  /** False when nothing here pays anything, so there is no offer to confirm. */
+  has_promotion: boolean;
+  /** Named in the article, absent from the catalogue. */
+  unmatched_product: { name: string; issuer: string | null } | null;
 }
+
+/** What a reviewer can say a candidate really is. */
+export const CORRECTABLE_TYPES = [
+  'welcome_offer',
+  'spend_bonus',
+  'merchant_offer',
+  'transfer_bonus',
+  'category_bonus',
+  'cardholder_offer',
+  'bank_campaign',
+  'not_a_promotion',
+] as const;
+export type CorrectableType = (typeof CORRECTABLE_TYPES)[number];
+
+export const TYPE_LABELS: Record<CorrectableType, string> = {
+  welcome_offer: 'Welcome offer',
+  spend_bonus: 'Spend bonus',
+  merchant_offer: 'Merchant offer',
+  transfer_bonus: 'Transfer bonus',
+  category_bonus: 'Category bonus',
+  cardholder_offer: 'Cardholder offer',
+  bank_campaign: 'Bank campaign',
+  not_a_promotion: 'Card review / product information',
+};
+
+export const DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  promotion: 'Promotion',
+  promotion_roundup: 'Roundup of promotions',
+  card_review: 'Card review',
+  card_product_page: 'Card product page',
+  card_rule_change: 'Change to a card\u2019s rules',
+  transfer_article: 'Transfer article',
+  general_article: 'General article',
+  irrelevant: 'Not about cards',
+};
 
 export const fetchDiscoveryStatus = () => get<DiscoveryStatus>('/api/admin/discovery/status');
 
@@ -1221,6 +1264,22 @@ export const publishCandidateEdit = (id: number, terms?: Record<string, unknown>
 
 export const rejectCandidate = (id: number, reason?: string) =>
   post<{ ok: boolean; error?: string }>(`/api/admin/promotions/review/${id}/reject`, { reason });
+
+/** "This was never a promotion" — stronger than rejecting it as uninteresting. */
+export const markNotAPromotion = (id: number, document_type = 'card_review') =>
+  post<{ ok: boolean; error?: string; applied?: string }>(
+    `/api/admin/promotions/review/${id}/not-a-promotion`,
+    { document_type }
+  );
+
+export const retypeCandidate = (id: number, type: CorrectableType) =>
+  post<{ ok: boolean; error?: string; applied?: string }>(`/api/admin/promotions/review/${id}/retype`, { type });
+
+export const fetchUnmatchedProducts = () =>
+  get<{
+    products: { candidate_id: number; name: string; issuer: string | null; article_url: string | null; seen: number }[];
+    as_of: string;
+  }>('/api/admin/promotions/unmatched-products');
 
 /* --- is a card missing from my setup? ------------------------------------- */
 

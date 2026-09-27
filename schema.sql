@@ -1066,6 +1066,15 @@ CREATE TABLE IF NOT EXISTS discovery_items (
   -- has an answer that is not a re-run.
   classification_score REAL,
   classification_signals_json TEXT,
+  -- What the document IS, decided before asking what offer is in it:
+  -- promotion | promotion_roundup | card_review | card_product_page
+  --   | card_rule_change | transfer_article | general_article | irrelevant
+  --
+  -- Kept apart from item_type, which answers "is this worth reading". This
+  -- answers "what am I reading", and it is what stops a card review's
+  -- permanent earn rate being published as a promotion.
+  document_type TEXT,
+  classification_confidence TEXT,
   -- Why extraction produced nothing, for the articles that were read fine and
   -- still yielded no offer. Silence here used to be indistinguishable from
   -- the article never being read.

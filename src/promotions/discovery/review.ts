@@ -87,6 +87,26 @@ export interface ReviewItem {
   article: { url: string | null; title: string | null } | null;
   /** How this was found, and by whom — which is not the same as what it says. */
   provenance: CandidateProvenance;
+  /**
+   * What the article was read as.
+   *
+   * On the screen because the commonest wrong candidate is a card review, and
+   * a reviewer who can see "this was read as a card review" corrects it in one
+   * tap instead of puzzling over why a promotion pays 1.3 miles.
+   */
+  document_type: string | null;
+  classification_confidence: string | null;
+  classification_signals: string[];
+  /**
+   * False when nothing about this reads as an actual offer.
+   *
+   * The screen hides the reward fields entirely in that case: asking somebody
+   * to confirm a minimum spend that was never in the article invites them to
+   * invent one.
+   */
+  has_promotion: boolean;
+  /** Set when the article names a card the catalogue does not have. */
+  unmatched_product: { name: string; issuer: string | null } | null;
 }
 
 /**
@@ -141,7 +161,8 @@ export function diffTerms(
 
 export async function reviewQueue(env: Env, limit = 50): Promise<ReviewItem[]> {
   const { results } = await env.DB.prepare(
-    `SELECT c.*, d.url AS article_url, d.title AS article_title
+    `SELECT c.*, d.url AS article_url, d.title AS article_title,
+            d.document_type, d.classification_confidence, d.classification_signals_json
        FROM promotion_candidates c LEFT JOIN discovery_items d ON d.id = c.discovery_id
       WHERE c.status = 'review' ORDER BY c.id DESC LIMIT ?`
   )
@@ -184,6 +205,29 @@ export async function reviewQueue(env: Env, limit = 50): Promise<ReviewItem[]> {
       existing,
       diff: existing ? diffTerms(existing.terms, { ...terms, ...evidence.terms }) : [],
       article: row.article_url ? { url: row.article_url, title: row.article_title } : null,
+      document_type: row.document_type ?? null,
+      classification_confidence: row.classification_confidence ?? null,
+      classification_signals: (() => {
+        try {
+          const parsed = JSON.parse(row.classification_signals_json ?? '[]');
+          return Array.isArray(parsed) ? parsed.map(String).slice(0, 10) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      // An offer has to pay something. Without that there is nothing to
+      // confirm, and every field on the form would be a prompt to make one up.
+      has_promotion: (() => {
+        const t = { ...terms, ...evidence.terms } as Record<string, unknown>;
+        return !!(t.reward_miles || t.reward_points || t.reward_cashback_cents || t.bonus_pct || t.reward_gift);
+      })(),
+      // Named in the article, absent from the catalogue. Surfaced rather than
+      // invented: a product created without review is a product the rules
+      // engine will price purchases against.
+      unmatched_product:
+        row.raw_product_name && !row.resolved_product_id
+          ? { name: row.raw_product_name, issuer: row.issuer ?? null }
+          : null,
       audience: (() => {
         // Shown to the reviewer explicitly, with the sentence it came from:
         // an audience read wrongly is the most consequential extraction error
@@ -296,4 +340,154 @@ export async function approveCandidate(
     existingEnd: existing?.end_at ?? null,
     auto: false,
   });
+}
+
+/** What a reviewer can say a candidate really is, when discovery got it wrong. */
+export const CORRECTABLE_TYPES = [
+  'welcome_offer',
+  'spend_bonus',
+  'merchant_offer',
+  'transfer_bonus',
+  'category_bonus',
+  'cardholder_offer',
+  'bank_campaign',
+  'not_a_promotion',
+] as const;
+export type CorrectableType = (typeof CORRECTABLE_TYPES)[number];
+
+/** The reason kept when a reviewer says an article was never an offer. */
+export const NOT_A_PROMOTION_REASON = 'card_review_not_promotion';
+
+export interface RejectResult {
+  ok: boolean;
+  error?: string;
+  /** What the article is now recorded as, so the note can say it back. */
+  document_type?: string | null;
+  applied?: string;
+}
+
+/**
+ * "This is not a promotion."
+ *
+ * The reviewer has read the article and the system has not. Their verdict is
+ * the strongest evidence available about what a document is, so it does three
+ * things rather than one: the candidate is rejected, the article is marked as
+ * what it actually was, and the reason is kept.
+ *
+ * The third part is what stops it coming back. Rejecting the candidate alone
+ * leaves the article looking unprocessed to anything that re-reads it, and the
+ * same wrong candidate is manufactured again next week — which teaches people
+ * that the review queue does not listen.
+ */
+export async function rejectCandidate(
+  env: Env,
+  candidateId: number,
+  opts: { document_type?: string; note?: string } = {}
+): Promise<RejectResult> {
+  const c = await env.DB.prepare(`SELECT id, discovery_id, raw_product_name FROM promotion_candidates WHERE id = ?`)
+    .bind(candidateId)
+    .first<{ id: number; discovery_id: number | null; raw_product_name: string | null }>();
+  if (!c) return { ok: false, error: 'no such candidate' };
+
+  const documentType = opts.document_type ?? 'card_review';
+
+  await env.DB.prepare(
+    `UPDATE promotion_candidates SET status = 'rejected', review_reason = ? WHERE id = ?`
+  )
+    .bind(opts.note ?? NOT_A_PROMOTION_REASON, candidateId)
+    .run();
+
+  if (c.discovery_id) {
+    // `irrelevant` rather than `processed`: the article was read correctly and
+    // is genuinely not about an offer, and the next pass should not spend a
+    // fetch on it. The document type and note say which of those it was.
+    await env.DB.prepare(
+      `UPDATE discovery_items
+          SET status = 'irrelevant', document_type = ?, classification_confidence = 'high',
+              extraction_note = ?
+        WHERE id = ?`
+    )
+      .bind(
+        documentType,
+        opts.note ?? 'A reviewer read this and said it is not a promotion.',
+        c.discovery_id
+      )
+      .run();
+  }
+
+  return { ok: true, document_type: documentType, applied: 'recorded as not a promotion' };
+}
+
+/**
+ * Change what kind of offer this is.
+ *
+ * `not_a_promotion` is one of the choices rather than a separate control,
+ * because from the reviewer's side it is the same act: they are saying what
+ * the thing is. It routes to the rejection above.
+ */
+export async function retypeCandidate(
+  env: Env,
+  candidateId: number,
+  type: CorrectableType
+): Promise<RejectResult> {
+  if (!CORRECTABLE_TYPES.includes(type)) return { ok: false, error: 'unknown promotion type' };
+  if (type === 'not_a_promotion') {
+    return rejectCandidate(env, candidateId, {
+      document_type: 'card_review',
+      note: NOT_A_PROMOTION_REASON,
+    });
+  }
+
+  const c = await env.DB.prepare(`SELECT id FROM promotion_candidates WHERE id = ?`).bind(candidateId).first<{ id: number }>();
+  if (!c) return { ok: false, error: 'no such candidate' };
+
+  await env.DB.prepare(`UPDATE promotion_candidates SET promotion_type = ? WHERE id = ?`)
+    .bind(type, candidateId)
+    .run();
+
+  // Recorded as a claim at the tier a person's reading earns, so the next
+  // corroboration pass cannot quietly change it back.
+  await env.DB.prepare(
+    `INSERT INTO promotion_claims
+       (candidate_id, field_name, value_json, source_url, source_type, source_tier, extracted_at, confidence, supporting_excerpt)
+     VALUES (?, 'promotion_type', ?, 'app://review', 'manual_verified', 1, ?, 'high', 'corrected during review')`
+  )
+    .bind(candidateId, JSON.stringify(type), today(env))
+    .run();
+
+  return { ok: true, applied: `recorded as ${type.replace(/_/g, ' ')}` };
+}
+
+export interface UnmatchedProduct {
+  candidate_id: number;
+  name: string;
+  issuer: string | null;
+  article_url: string | null;
+  seen: number;
+}
+
+/**
+ * Cards an article named that the catalogue does not have.
+ *
+ * Surfaced, never created. A card product is what the rules engine prices
+ * purchases against, and one invented from an article's phrasing would earn
+ * whatever nobody had checked — so this is a list of questions, and answering
+ * them is a separate, deliberate act in the catalogue.
+ */
+export async function unmatchedProducts(env: Env, limit = 20): Promise<UnmatchedProduct[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT MIN(c.id) AS candidate_id, c.raw_product_name AS name, c.issuer,
+            MIN(d.url) AS article_url, COUNT(*) AS seen
+       FROM promotion_candidates c
+       LEFT JOIN discovery_items d ON d.id = c.discovery_id
+      WHERE c.resolved_product_id IS NULL
+        AND c.raw_product_name IS NOT NULL
+        AND c.status NOT IN ('rejected')
+      GROUP BY LOWER(c.raw_product_name), c.issuer
+      ORDER BY seen DESC, candidate_id DESC
+      LIMIT ?`
+  )
+    .bind(limit)
+    .all<UnmatchedProduct>();
+  return results ?? [];
 }

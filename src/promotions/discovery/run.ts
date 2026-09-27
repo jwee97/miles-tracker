@@ -355,7 +355,13 @@ export async function extractPending(
     }
 
     const verdict = classify(item.title ?? fetched.title ?? '', fetched.text.slice(0, 2000));
-    const { candidates, roundup } = extractDocument(
+    const {
+      candidates,
+      roundup,
+      document_type: documentType,
+      classification,
+      rejected,
+    } = extractDocument(
       {
         title: item.title ?? fetched.title ?? '',
         url: item.canonical_url ?? item.url,
@@ -382,18 +388,27 @@ export async function extractPending(
     // An article read correctly that named no offer is a real outcome and used
     // to be indistinguishable from one nobody read. Saying why is what makes an
     // extractor miss debuggable instead of invisible.
+    // An article read correctly that named no offer is a real outcome and used
+    // to be indistinguishable from one nobody read. Saying why is what makes an
+    // extractor miss debuggable instead of invisible — and now the commonest
+    // reason is a real answer rather than a shrug: it was a card review, and
+    // a card's permanent rates are not an offer.
+    const setAside = rejected.flatMap((c) => c.rejected_because ?? []).filter(Boolean);
     const extractionNote = candidates.length
       ? null
-      : roundup
-        ? 'Read as a roundup, but no card headings were found to split it on.'
-        : verdict.type === 'irrelevant'
-          ? 'The full text did not look like it was about an offer.'
-          : 'No reward or spending figure was found in the text.';
+      : setAside.length
+        ? setAside.slice(0, 2).join('; ')
+        : roundup
+          ? 'Read as a roundup, but no card headings were found to split it on.'
+          : verdict.type === 'irrelevant'
+            ? 'The full text did not look like it was about an offer.'
+            : 'No reward or spending figure was found in the text.';
 
     await env.DB.prepare(
       `UPDATE discovery_items
           SET status = 'processed', content_hash = ?, item_type = ?, fetch_note = NULL,
-              extraction_note = ?, classification_score = ?, classification_signals_json = ?
+              extraction_note = ?, classification_score = ?, classification_signals_json = ?,
+              document_type = ?, classification_confidence = ?
         WHERE id = ?`
     )
       .bind(
@@ -401,7 +416,9 @@ export async function extractPending(
         roundup ? 'roundup' : verdict.type,
         extractionNote,
         verdict.score,
-        JSON.stringify(verdict.signals),
+        JSON.stringify([...new Set([...verdict.signals, ...classification.signals])].slice(0, 16)),
+        documentType,
+        classification.confidence,
         item.id
       )
       .run();

@@ -925,12 +925,50 @@ async function stub(page: Page) {
               official_verified: false,
               search_query: 'Citi credit card promotion Singapore September 2026',
             },
+            document_type: 'promotion',
+            classification_confidence: 'high',
+            classification_signals: ['bonus miles', 'minimum spend'],
+            has_promotion: true,
+            unmatched_product: null,
+          },
+          {
+            // The article that started this work: a card review whose
+            // permanent earn rate was published as a transfer bonus.
+            candidate_id: 12,
+            status: 'review',
+            review_reason: 'no offer could be confirmed',
+            issuer: 'DBS',
+            product: 'DBS Chromo Card',
+            resolved_product_id: null,
+            promotion_type: 'transfer_bonus',
+            application_channel: 'unknown',
+            terms: {},
+            evidence: [],
+            verification_state: 'needs_review',
+            confidence: 'low',
+            conflicts: [],
+            sources: [{ url: 'https://milelion.test/chromo', tier: 2, type: 'article' }],
+            existing: null,
+            diff: [],
+            audience: { type: 'unknown', raw_text: null, confidence: 'low' },
+            article: { url: 'https://milelion.test/chromo', title: 'DBS Chromo Card Review' },
+            provenance: {
+              discovery_channels: ['rss'],
+              article_sources: [{ name: 'The MileLion', url: 'https://milelion.test/chromo', trust_tier: 2 }],
+              official_verified: false,
+              search_query: null,
+            },
+            document_type: 'card_review',
+            classification_confidence: 'high',
+            classification_signals: ['Review', 'miles per dollar'],
+            has_promotion: false,
+            unmatched_product: { name: 'DBS Chromo Card', issuer: 'DBS' },
           },
         ],
       });
-    if (u.pathname.match(/^\/api\/admin\/promotions\/review\/\d+\/(publish|reject|merge)$/)) {
+    if (u.pathname.match(/^\/api\/admin\/promotions\/review\/\d+\/(publish|reject|merge|not-a-promotion|retype)$/)) {
       reviewAction = u.pathname.split('/').slice(5).join(':');
-      return send({ ok: true, change: 'reward_changed' });
+      return send({ ok: true, change: 'reward_changed', applied: 'recorded as not a promotion' });
     }
     if (u.pathname === '/api/rewards/programmes')
       return send({
@@ -1642,16 +1680,51 @@ async function main() {
     check('including the query that surfaced it', says(q, 'found by searching'), q.slice(0, 1000));
     check('the conflict is named', says(q, '16000 against 20000'), q.slice(0, 600));
     check('the change against what is published is already worked out', says(q, '12,000') && says(q, '16,000'), q.slice(0, 800));
-    check('and the terms are editable rather than take-it-or-leave-it', (await queue.locator('input').count()) >= 4);
+    // Two items now: a real offer and the card review that used to be
+    // published as a transfer bonus. Scoped per item, or every locator here
+    // matches twice.
+    const realOffer = queue.locator('li.offer2').first();
+    const falsePositive = queue.locator('li.offer2').last();
 
-    await queue.locator('summary').filter({ hasText: 'What the evidence says' }).click();
-    const claimed = await queue.innerText();
+    check('and the terms are editable rather than take-it-or-leave-it', (await realOffer.locator('input').count()) >= 4);
+
+    await realOffer.locator('summary').filter({ hasText: 'What the evidence says' }).click();
+    const claimed = await realOffer.innerText();
     check('what each source said is one tap away', says(claimed, 'get 16,000 bonus miles'), claimed.slice(0, 1400));
     check('with the disagreement kept', says(claimed, 'Nothing has picked between them'), claimed.slice(0, 1600));
 
-    await queue.locator('input').first().fill('20000');
-    await queue.getByRole('button', { name: 'Publish it' }).click();
-    await queue.locator('.ok-text').waitFor();
+    // --- a card review that was read as a promotion -----------------------
+    //
+    // The whole point of the change: a reviewer should be able to see what
+    // went wrong and say so, rather than being asked to confirm a minimum
+    // spend the article never mentioned.
+    const wrong = await falsePositive.innerText();
+    check('the screen says what the article was read as', says(wrong, 'Read as Card review'), wrong.slice(0, 600));
+    check('with the confidence behind that reading', says(wrong, 'high confidence'), wrong.slice(0, 600));
+    check('and the words that decided it', says(wrong, 'miles per dollar'), wrong.slice(0, 600));
+    check(
+      'it says plainly that no offer was found',
+      says(wrong, 'No offer was confidently identified'),
+      wrong.slice(0, 900)
+    );
+    check(
+      'rather than asking for terms that were never in the article',
+      (await falsePositive.locator('input').count()) === 0,
+      'a blank minimum-spend field is an invitation to invent one'
+    );
+    check(
+      'a card the catalogue does not have is surfaced, not created',
+      says(wrong, 'Product not found in catalogue'),
+      wrong.slice(0, 900)
+    );
+    check('publishing is not offered', await falsePositive.getByRole('button', { name: 'Publish it' }).isDisabled());
+
+    await falsePositive.getByRole('button', { name: 'Not a promotion' }).click();
+    check('and saying so is one tap', reviewAction === '12:not-a-promotion', String(reviewAction));
+
+    await realOffer.locator('input').first().fill('20000');
+    await realOffer.getByRole('button', { name: 'Publish it' }).click();
+    await realOffer.locator('.ok-text').waitFor();
     check('a corrected offer can be published from here', reviewAction === '11:publish', String(reviewAction));
 
     const sourcesCard = page.locator('.card', { hasText: 'Where the app reads' });

@@ -7,6 +7,12 @@ import {
   money,
   publishCandidateEdit,
   rejectCandidate,
+  markNotAPromotion,
+  retypeCandidate,
+  CORRECTABLE_TYPES,
+  TYPE_LABELS,
+  DOCUMENT_TYPE_LABELS,
+  type CorrectableType,
   runDiscovery,
   runDiscoveryAll,
   testDiscoverySource,
@@ -191,6 +197,11 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [audience, setAudience] = useState(item.audience.type);
+  const [retype, setRetype] = useState<CorrectableType>(
+    (CORRECTABLE_TYPES as readonly string[]).includes(item.promotion_type ?? '')
+      ? (item.promotion_type as CorrectableType)
+      : 'welcome_offer'
+  );
 
   async function publish() {
     setBusy(true);
@@ -228,6 +239,43 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
           {item.verification_state.replace(/_/g, ' ')}
         </span>
       </div>
+
+      {/*
+        What the article was read as, stated before anything else.
+        The commonest wrong candidate here is a card review whose permanent
+        earn rate was read as an offer — and a reviewer who can see "read as a
+        card review" fixes it in one tap instead of puzzling over why a
+        promotion pays 1.3 miles.
+      */}
+      {item.document_type && (
+        <p className="sub doc-type">
+          Read as <b>{DOCUMENT_TYPE_LABELS[item.document_type] ?? item.document_type}</b>
+          {item.classification_confidence ? ` (${item.classification_confidence} confidence)` : ''}
+          {item.classification_signals.length > 0 && (
+            <span className="sub"> — from “{item.classification_signals.slice(0, 3).join('”, “')}”</span>
+          )}
+        </p>
+      )}
+
+      {!item.has_promotion && (
+        <div className="impact impact-real">
+          <p className="impact-note">
+            No offer was confidently identified here. Nothing in the article pays anything on top of what the card
+            already pays, so there are no terms to confirm.
+          </p>
+          <p className="sub">
+            If this is a card review or a product page, say so — that keeps it from being discovered again next week.
+          </p>
+        </div>
+      )}
+
+      {item.unmatched_product && (
+        <p className="warn-num">
+          Product not found in catalogue: <b>{item.unmatched_product.name}</b>
+          {item.unmatched_product.issuer ? ` (${item.unmatched_product.issuer})` : ''}. Nothing has been created —
+          add it under Catalogue if it is real.
+        </p>
+      )}
 
       <p className="sub">
         {item.promotion_type?.replace(/_/g, ' ') ?? 'promotion'} · via {item.application_channel.replace(/_/g, ' ')}
@@ -302,11 +350,20 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
         </div>
       )}
 
-      <TermFields terms={item.terms} edits={edits} onChange={setEdits} />
-      <p className="sub">
-        Leave a field alone to accept what was read. Anything you type is recorded as coming from you, which outranks
-        every article.
-      </p>
+      {/*
+        Hidden rather than blank when nothing was extracted. A form asking for
+        a minimum spend that was never in the article is an invitation to
+        invent one, and an invented number here reaches the rules engine.
+      */}
+      {item.has_promotion && (
+        <>
+          <TermFields terms={item.terms} edits={edits} onChange={setEdits} />
+          <p className="sub">
+            Leave a field alone to accept what was read. Anything you type is recorded as coming from you, which
+            outranks every article.
+          </p>
+        </>
+      )}
 
       <details className="batches" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
         <summary>What the evidence says ({item.sources.length} source{item.sources.length === 1 ? '' : 's'})</summary>
@@ -346,9 +403,57 @@ function Item({ item, onDone }: { item: PromotionReviewItem; onDone: () => void 
         </ul>
       </details>
 
+      <label className="f f-note">
+        <span>What this actually is</span>
+        <select
+          value={retype}
+          disabled={busy}
+          onChange={async (e) => {
+            const next = e.target.value as CorrectableType;
+            setRetype(next);
+            setBusy(true);
+            setErr(null);
+            try {
+              const r = await retypeCandidate(item.candidate_id, next);
+              if (!r.ok) setErr(r.error ?? 'that did not work');
+              else onDone();
+            } catch (er) {
+              setErr((er as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {CORRECTABLE_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {TYPE_LABELS[t]}
+            </option>
+          ))}
+        </select>
+      </label>
+
       <div className="entry-foot rule-actions">
-        <button disabled={busy} onClick={publish}>
+        <button disabled={busy || !item.has_promotion} onClick={publish}>
           Publish it
+        </button>
+        <button
+          className="secondary"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            setErr(null);
+            try {
+              const r = await markNotAPromotion(item.candidate_id, item.document_type ?? 'card_review');
+              if (!r.ok) setErr(r.error ?? 'that did not work');
+              else onDone();
+            } catch (e) {
+              setErr((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Not a promotion
         </button>
         <button
           className="danger"

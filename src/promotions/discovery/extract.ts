@@ -1,3 +1,6 @@
+import { classifyDocument, NEEDS_EXPLICIT_OFFER, type DocumentType } from './document-type';
+import { promotionEvidence, validateTransferBonus, type PromotionEvidence } from './evidence';
+import { implausibleReward, maskCardFeatures } from './features';
 import { classifyAudience, type PromotionAudience } from '../audience';
 import type { PromotionType } from '../model';
 import { excerptAround } from './fetch';
@@ -34,6 +37,14 @@ export interface PromotionClaim {
 
 export interface PromotionCandidate {
   promotion_type: PromotionType | null;
+  /** What the document was read as, which decides how much proof an offer needs. */
+  document_type?: DocumentType;
+  /** What made this look like an offer, or the absence of it. */
+  evidence?: PromotionEvidence;
+  /** Non-empty when this is not a promotion, saying why. */
+  rejected_because?: string[];
+  /** The permanent card features blanked out before reading rewards. */
+  masked_features?: string[];
   issuer: string | null;
   product_names: string[];
   reward: {
@@ -201,44 +212,67 @@ const claim = (
  * Every number carries the sentence it came from. That is what makes a wrong
  * reading arguable later rather than a fact nobody can question.
  */
-export function extractOne(text: string, url: string, title = ''): PromotionCandidate {
+export function extractOne(
+  text: string,
+  url: string,
+  title = '',
+  opts: { documentType?: DocumentType } = {}
+): PromotionCandidate {
   const flat = text.replace(/[ \t]+/g, ' ');
+
+  // Rewards are read from the text with the card's permanent features blanked
+  // out, so an earn rate cannot be mistaken for a payout. Everything else —
+  // dates, eligibility, registration — is read from the original: a review's
+  // welcome offer and its earn rate share a page, and only the second is being
+  // ignored.
+  const masked = maskCardFeatures(flat);
+  const rewardText = masked.text;
+
   const claims: PromotionClaim[] = [];
   const reward: PromotionCandidate['reward'] = {};
 
-  const miles = flat.match(new RegExp(String.raw`${COMPACT}\s*(?:bonus\s+)?(?:air\s*)?miles`, 'i'));
+  const miles = rewardText.match(new RegExp(String.raw`${COMPACT}\s*(?:bonus\s+)?(?:air\s*)?miles`, 'i'));
   if (miles) {
-    reward.miles = amount(miles[1], miles[2]);
-    claims.push(claim('reward_miles', reward.miles, 'high', flat, miles[0]));
+    const value = amount(miles[1], miles[2]);
+    // A belt to the masking's braces: nobody advertises a bonus of 1.3 miles,
+    // so a figure that small is a rate that slipped through a phrasing the
+    // masker has not met yet.
+    if (!implausibleReward('miles', value)) {
+      reward.miles = value;
+      claims.push(claim('reward_miles', reward.miles, 'high', flat, miles[0]));
+    }
   }
 
-  const points = flat.match(new RegExp(String.raw`${COMPACT}\s*(?:bonus\s+)?points`, 'i'));
-  if (points && !miles) {
-    reward.points = amount(points[1], points[2]);
-    claims.push(claim('reward_points', reward.points, 'high', flat, points[0]));
+  const points = rewardText.match(new RegExp(String.raw`${COMPACT}\s*(?:bonus\s+)?points`, 'i'));
+  if (points && !reward.miles) {
+    const value = amount(points[1], points[2]);
+    if (!implausibleReward('points', value)) {
+      reward.points = value;
+      claims.push(claim('reward_points', reward.points, 'high', flat, points[0]));
+    }
   }
 
   // No compact suffix on money: "$16k cashback" is not something anyone writes
   // about a card, and reading it that way would turn $16 into $16,000.
-  const cash = flat.match(new RegExp(String.raw`${MONEY}${NUM}\s*(?:cash\s?back|cashback|cash)`, 'i'));
+  const cash = rewardText.match(new RegExp(String.raw`${MONEY}${NUM}\s*(?:cash\s?back|cashback|cash)`, 'i'));
   if (cash) {
     reward.cashback_cents = Math.round(n(cash[1]) * 100);
     claims.push(claim('reward_cashback_cents', reward.cashback_cents, 'high', flat, cash[0]));
   }
 
-  const bonusPct = flat.match(/([0-9]{1,3})\s?%\s*(?:transfer\s*)?bonus/i);
+  const bonusPct = rewardText.match(/([0-9]{1,3})\s?%\s*(?:transfer\s*)?bonus/i);
   if (bonusPct) {
     reward.bonus_pct = Number(bonusPct[1]);
     claims.push(claim('bonus_pct', reward.bonus_pct, 'high', flat, bonusPct[0]));
   }
 
-  const gift = flat.match(/\b(Apple|Samsung|Dyson|Nintendo)\s+[A-Za-z0-9 ]{2,30}/);
+  const gift = rewardText.match(/\b(Apple|Samsung|Dyson|Nintendo)\s+[A-Za-z0-9 ]{2,30}/);
   if (gift && !miles && !points && !cash) {
     reward.gift = gift[0].trim();
     claims.push(claim('reward_gift', reward.gift, 'medium', flat, gift[0]));
   }
 
-  const spend = flat.match(
+  const spend = rewardText.match(
     new RegExp(String.raw`(?:min(?:imum)?\.?\s*spend(?:ing)?|spend)\s*(?:of\s*)?${MONEY}${NUM}`, 'i')
   );
   let minimum: number | undefined;
@@ -295,13 +329,35 @@ export function extractOne(text: string, url: string, title = ''): PromotionCand
     claims.push(claim('audience_type', fallbackAudience.type, fallbackAudience.confidence ?? 'low', flat, fallbackAudience.raw_text ?? ''));
   }
 
-  const type: PromotionType | null = reward.bonus_pct
-    ? 'transfer_bonus'
-    : /welcome|sign[- ]?up|new cardholder|new cardmember/i.test(flat)
-      ? 'welcome_offer'
-      : minimum
-        ? 'spend_bonus'
-        : null;
+  // --- what kind of offer, if any -----------------------------------------
+  //
+  // Order matters and the transfer case is the one that used to be wrong. A
+  // percentage anywhere in the text set `transfer_bonus`, which is how a card
+  // earning 1.3 miles per dollar became a transfer promotion. Now a transfer
+  // bonus has to be about moving points between programmes, and say so.
+  const evidence = promotionEvidence(flat);
+  const transfer = validateTransferBonus(flat);
+
+  let type: PromotionType | null = null;
+  const typeNotes: string[] = [];
+
+  if (reward.bonus_pct || /\btransfer\b|\bconvert\b/i.test(flat)) {
+    if (transfer.ok) type = 'transfer_bonus';
+    else if (reward.bonus_pct) typeNotes.push(`not a transfer bonus: ${transfer.missing.join('; ')}`);
+  }
+  // An application deadline plus a spend window counted from approval is a
+  // welcome offer even when nobody used the word: you cannot be approved for a
+  // card you already hold, so the offer is for taking one out.
+  const applicationDeadline = /\bapply\s+(?:by|before)\b|\bapplications?\s+(?:close|must be submitted)\b/i.test(flat);
+  const fromApproval = window?.type === 'days_from_approval' || window?.type === 'months_from_approval';
+  if (
+    !type &&
+    (/welcome|sign[- ]?up|new cardholder|new cardmember|new[- ]to[- ]bank/i.test(flat) ||
+      (applicationDeadline && (fromApproval || !!minimum)))
+  ) {
+    type = 'welcome_offer';
+  }
+  if (!type && minimum && evidence.incremental) type = 'spend_bonus';
 
   const paysSomething = reward.miles || reward.points || reward.cashback_cents || reward.bonus_pct || reward.gift;
   // Confidence is about how much had to be inferred. Never high while something
@@ -310,8 +366,33 @@ export function extractOne(text: string, url: string, title = ''): PromotionCand
   const confidence: 'high' | 'medium' | 'low' =
     paysSomething && minimum && end ? 'high' : paysSomething && (minimum || end) ? 'medium' : 'low';
 
+  // --- is this an offer at all --------------------------------------------
+  //
+  // A card review's every number is a permanent rate until something says
+  // otherwise, so it has to clear the higher bar. An article that announces a
+  // promotion is itself evidence and clears the lower one.
+  const documentType = opts.documentType ?? classifyDocument(title, flat).document_type;
+  const strict = NEEDS_EXPLICIT_OFFER.includes(documentType);
+  const enough = strict ? evidence.sufficient_for_review : evidence.sufficient;
+
+  const rejected: string[] = [];
+  if (!enough) {
+    rejected.push(
+      strict
+        ? `read as a ${documentType.replace(/_/g, ' ')}: ${evidence.reasons[0] ?? 'nothing temporary or conditional in it'}`
+        : (evidence.reasons[0] ?? 'no offer evidence')
+    );
+  }
+  if (!paysSomething) rejected.push('nothing on offer once the card\u2019s own rates are set aside');
+  rejected.push(...typeNotes);
+
   return {
     promotion_type: type,
+    document_type: documentType,
+    evidence,
+    /** Empty when this is a real candidate; otherwise why it is not one. */
+    rejected_because: rejected,
+    masked_features: masked.removed,
     issuer: findIssuer(`${title} ${flat.slice(0, 600)}`),
     product_names: productNames(`${title}\n${flat}`),
     reward,
@@ -424,6 +505,16 @@ export interface ExtractionResult {
   candidates: PromotionCandidate[];
   /** True when one document produced several offers. */
   roundup: boolean;
+  /** What the document was read as. */
+  document_type: DocumentType;
+  classification: ReturnType<typeof classifyDocument>;
+  /**
+   * What was read and then set aside, with the reason.
+   *
+   * Kept rather than dropped because "we read your article and found nothing"
+   * is only useful if it can say what it found and why that was not an offer.
+   */
+  rejected: PromotionCandidate[];
 }
 
 /**
@@ -433,15 +524,36 @@ export interface ExtractionResult {
  * Segments with no reward in them are dropped — a roundup's introduction is not
  * an offer, and a candidate with nothing to check wastes the review it costs.
  */
-export function extractDocument(doc: PromotionDocument, opts: { roundup?: boolean } = {}): ExtractionResult {
-  if (opts.roundup) {
+export function extractDocument(
+  doc: PromotionDocument,
+  opts: { roundup?: boolean; documentType?: DocumentType } = {}
+): ExtractionResult {
+  const classification = classifyDocument(doc.title ?? '', doc.text);
+  const documentType = opts.documentType ?? classification.document_type;
+
+  // A candidate that says why it is not a candidate is still worth returning:
+  // the caller records the reason against the article, so "read fine, produced
+  // nothing" stops being indistinguishable from "never read".
+  const keep = (c: PromotionCandidate) => !c.rejected_because?.length;
+
+  if (opts.roundup || documentType === 'promotion_roundup') {
     const parts = segments(doc.text);
     if (parts.length >= 2) {
-      const candidates = parts
-        .map((p) => extractOne(p.body, doc.url, p.title))
-        .filter((c) => c.reward.miles || c.reward.points || c.reward.cashback_cents || c.reward.bonus_pct);
-      if (candidates.length) return { candidates, roundup: true };
+      const all = parts.map((p) => extractOne(p.body, doc.url, p.title, { documentType }));
+      const candidates = all.filter(keep);
+      if (candidates.length) {
+        return { candidates, roundup: true, document_type: documentType, classification, rejected: all.filter((c) => !keep(c)) };
+      }
+      return { candidates: [], roundup: true, document_type: documentType, classification, rejected: all };
     }
   }
-  return { candidates: [extractOne(doc.text, doc.url, doc.title)], roundup: false };
+
+  const one = extractOne(doc.text, doc.url, doc.title, { documentType });
+  return {
+    candidates: keep(one) ? [one] : [],
+    roundup: false,
+    document_type: documentType,
+    classification,
+    rejected: keep(one) ? [] : [one],
+  };
 }

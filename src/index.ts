@@ -81,7 +81,15 @@ import { recentSearches } from './promotions/discovery/search-runner';
 import { sourceHealth, sourcesConfigured } from './promotions/discovery/sources';
 import { searchConfigured } from './promotions/discovery/search-provider';
 import { expireFinished } from './promotions/discovery/diff';
-import { approveCandidate, reviewQueue as promotionReviewQueue } from './promotions/discovery/review';
+import {
+  approveCandidate,
+  rejectCandidate,
+  retypeCandidate,
+  unmatchedProducts,
+  CORRECTABLE_TYPES,
+  reviewQueue as promotionReviewQueue,
+  type CorrectableType,
+} from './promotions/discovery/review';
 import { promotionEvidence } from './promotions/evidence';
 import { correctPromotion } from './promotions/correct';
 import { contributeTargeted, removeVariant, variantsFor } from './promotions/variants';
@@ -1739,6 +1747,35 @@ export default {
         // --- the review queue ------------------------------------------------
         if (url.pathname === '/api/admin/promotions/review') {
           return json({ items: await promotionReviewQueue(env), as_of: today(env) });
+        }
+
+        // Cards an article named that the catalogue does not have. A list of
+        // questions, never an import: a product invented from an article's
+        // phrasing is one the rules engine would price purchases against.
+        if (url.pathname === '/api/admin/promotions/unmatched-products') {
+          return json({ products: await unmatchedProducts(env), as_of: today(env) });
+        }
+
+        // "This was never a promotion", and "it is a different kind of one".
+        // Separate from reject-as-uninteresting above: that one says "not
+        // worth publishing", these say what the thing actually is, and only
+        // the latter stops it being rediscovered next week.
+        if (url.pathname.match(/^\/api\/admin\/promotions\/review\/\d+\/(not-a-promotion|retype)$/) && req.method === 'POST') {
+          const parts = url.pathname.split('/');
+          const id = Number(parts[5]);
+          const b = (await req.json().catch(() => ({}))) as { document_type?: string; type?: string };
+
+          if (parts[6] === 'not-a-promotion') {
+            const r = await rejectCandidate(env, id, { document_type: b.document_type });
+            return json(r, r.ok ? 200 : 400);
+          }
+
+          const type = String(b.type ?? '') as CorrectableType;
+          if (!CORRECTABLE_TYPES.includes(type)) {
+            return json({ error: 'unknown type', allowed: CORRECTABLE_TYPES }, 400);
+          }
+          const r = await retypeCandidate(env, id, type);
+          return json(r, r.ok ? 200 : 400);
         }
 
         if (url.pathname.match(/^\/api\/admin\/promotions\/review\/\d+\/(publish|reject|merge)$/) && req.method === 'POST') {
