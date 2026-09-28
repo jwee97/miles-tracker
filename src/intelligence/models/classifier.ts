@@ -32,6 +32,34 @@ export interface Prediction {
   /** How many of this descriptor's n-grams the model had ever seen. */
   matched_features: number;
   total_features: number;
+  cost: InferenceCost;
+}
+
+/**
+ * What one inference actually cost, measured rather than estimated.
+ *
+ * The benchmarks behind the architecture decision timed arithmetic and model
+ * loading in Node. Neither is what a deployed Worker does: the real cost here
+ * is a round trip to D1 for the descriptor's n-grams, and the only honest
+ * place to measure that is in the request that made it. Recorded on every
+ * prediction so the numbers come from production traffic, not from a harness.
+ */
+export interface InferenceCost {
+  /** Distinct n-grams the descriptor produced. */
+  ngrams: number;
+  /** Feature rows D1 returned. */
+  rows: number;
+  /** Statements sent — bounded by D1's hundred-parameter ceiling. */
+  statements: number;
+  /** Round trips. One, unless something is badly wrong. */
+  batches: number;
+  /** Wall time around the D1 call. */
+  db_ms: number;
+  /** Wall time for the whole inference, including the arithmetic. */
+  total_ms: number;
+  /** True when the model declined to answer, and why. */
+  abstained: boolean;
+  abstain_reason: string | null;
 }
 
 /** How much of a descriptor a model must recognise before it may answer. */
@@ -86,19 +114,38 @@ export function packWeights(weights: number[]): string {
 export async function classify(
   env: Env,
   descriptor: string,
-  opts: { model?: ModelRecord | null; modelKey?: string } = {}
+  opts: { model?: ModelRecord | null; modelKey?: string; onCost?: (c: InferenceCost) => void } = {}
 ): Promise<Prediction | null> {
+  const started = Date.now();
+  const cost: InferenceCost = {
+    ngrams: 0,
+    rows: 0,
+    statements: 0,
+    batches: 0,
+    db_ms: 0,
+    total_ms: 0,
+    abstained: true,
+    abstain_reason: null,
+  };
+  const give = (reason: string | null): null => {
+    cost.abstain_reason = reason;
+    cost.total_ms = Date.now() - started;
+    opts.onCost?.(cost);
+    return null;
+  };
+
   const model = opts.model !== undefined ? opts.model : await activeModel(env, opts.modelKey ?? 'merchant_mcc');
-  if (!model) return null;
+  if (!model) return give('no model deployed');
 
   const classes: string[] = safeJson(model.classes_json) ?? [];
   const intercept: number[] = safeJson(model.intercept_json) ?? [];
-  if (classes.length < 2 || intercept.length !== classes.length) return null;
+  if (classes.length < 2 || intercept.length !== classes.length) return give('model has no usable classes');
 
   const counts = ngrams(descriptor);
-  if (!counts.size) return null;
+  if (!counts.size) return give('descriptor produced no features');
 
   const grams = [...counts.keys()];
+  cost.ngrams = grams.length;
   // One query, however long the descriptor. Chunked only because SQLite has a
   // ceiling on bound parameters, not because the model is large.
   // One subrequest whatever the descriptor's length: the chunking is D1's
@@ -113,13 +160,21 @@ export async function classify(
       ).bind(model.id, ...slice)
     );
   }
+  cost.statements = lookups.length;
+  const dbStarted = Date.now();
   const rows: { ngram: string; idf: number; weights_b64: string }[] = [];
   for (const part of await env.DB.batch<{ ngram: string; idf: number; weights_b64: string }>(lookups)) {
     for (const r of part.results ?? []) rows.push(r);
   }
+  cost.db_ms = Date.now() - dbStarted;
+  cost.batches = lookups.length ? 1 : 0;
+  cost.rows = rows.length;
 
-  if (!rows.length) return null;
-  if (rows.length / grams.length < MIN_FEATURE_OVERLAP) return null;
+  if (!rows.length) return give('none of this descriptor is known to the model');
+  const overlap = rows.length / grams.length;
+  if (overlap < MIN_FEATURE_OVERLAP) {
+    return give(`only ${Math.round(overlap * 100)}% of the descriptor is known, below the ${Math.round(MIN_FEATURE_OVERLAP * 100)}% floor`);
+  }
 
   // tf-idf, then L2 normalise over the features that matched — exactly what
   // the trainer did, including dropping unknown n-grams.
@@ -127,7 +182,7 @@ export async function classify(
   let norm = 0;
   for (const v of values) norm += v * v;
   norm = Math.sqrt(norm);
-  if (norm === 0) return null;
+  if (norm === 0) return give('features carried no weight');
 
   const scores = intercept.slice();
   for (let i = 0; i < rows.length; i++) {
@@ -141,6 +196,10 @@ export async function classify(
     .map((label, c) => ({ label, probability: Math.round(probabilities[c] * 1000) / 1000 }))
     .sort((a, b) => b.probability - a.probability);
 
+  cost.abstained = false;
+  cost.total_ms = Date.now() - started;
+  opts.onCost?.(cost);
+
   return {
     label: distribution[0].label,
     probability: distribution[0].probability,
@@ -149,6 +208,7 @@ export async function classify(
     model_version: model.version,
     matched_features: rows.length,
     total_features: grams.length,
+    cost,
   };
 }
 

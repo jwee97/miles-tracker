@@ -17,6 +17,7 @@ import {
   type Usage,
 } from './api';
 import { CountBars } from './charts';
+import ModelHealth from './ModelHealth';
 import ModelTrainer from './ModelTrainer';
 
 const bytes = (n: number) => {
@@ -175,6 +176,8 @@ export default function Settings() {
           <Maintenance />
 
           <Intelligence />
+
+          <ModelHealth />
 
           <ModelTrainer />
 

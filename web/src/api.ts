@@ -2668,6 +2668,49 @@ export const promoteModel = (body: { model_key: string; version: number; force?:
 export const retireModelApi = (body: { model_key: string; version: number }) =>
   post<{ ok: boolean }>('/api/intelligence/models/retire', body);
 
+export interface ModelHealth {
+  model: { key: string; version: number; architecture: string; deployed_at: string | null } | null;
+  training: {
+    examples: number;
+    classes: number;
+    min_class_support: number | null;
+    macro_f1: number | null;
+    accuracy: number | null;
+    high_confidence_precision: number | null;
+    ece: number | null;
+    brier: number | null;
+  };
+  live: {
+    consulted: number;
+    abstained: number;
+    abstention_rate: number;
+    auto_resolved: number;
+    asked: number;
+    corrected: number;
+    correction_rate: number;
+    useful_coverage: number;
+    why_it_declined: { reason: string; n: number }[];
+  };
+  latency: {
+    samples: number;
+    p50_ms: number;
+    p95_ms: number;
+    max_ms: number;
+    p50_db_ms: number;
+    p95_db_ms: number;
+    p50_rows: number;
+    p95_rows: number;
+    max_rows: number;
+    max_ngrams: number;
+  };
+  status: 'healthy' | 'watch' | 'degraded' | 'unproven' | 'none';
+  notes: string[];
+  as_of: string;
+}
+
+export const fetchModelHealth = (key = 'merchant_mcc') =>
+  get<{ health: ModelHealth; history: ModelRow[] }>(`/api/intelligence/model-health?key=${key}`);
+
 export const fetchForecast = () => get<PeriodOutlook>('/api/intelligence/forecast');
 export const fetchSpendPlan = () => get<SpendPlan>('/api/intelligence/plan');
 export const fetchReadiness = () => get<TrainingReadiness>('/api/intelligence/readiness');

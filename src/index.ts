@@ -21,6 +21,7 @@ import { exportTrainingData, harvestDiagnostics, harvestLabels, trainingReadines
 import { classify, featureCount, storeFeatures } from './intelligence/models/classifier';
 import { merchantMetrics } from './intelligence/merchants/metrics';
 import { listModels, promoteModel, registerModel, retireModel, predictionsFromRetiredModels } from './intelligence/models/registry';
+import { modelHealth, modelHistory, retireIfDegraded } from './intelligence/models/health';
 import { evaluateFinishedForecasts, periodOutlook, storeForecast } from './intelligence/forecasting/forecast';
 import { recurringDue, scanRecurring } from './intelligence/forecasting/recurring';
 import { capOutlook, minimumSpendOutlook, spendPlan } from './intelligence/forecasting/plan';
@@ -703,6 +704,18 @@ export default {
               occurred_at: b.occurred_at ?? null,
             })
           );
+        }
+
+        // How the live model is doing, as opposed to how it tested. The
+        // correction rate is the number that matters: coverage can always be
+        // bought by abstaining less, and corrections are what that costs.
+        if (url.pathname === '/api/intelligence/model-health' && req.method === 'GET') {
+          const key = url.searchParams.get('key') ?? 'merchant_mcc';
+          const days = Math.min(730, parseInt(url.searchParams.get('days') ?? '90', 10) || 90);
+          return json({
+            health: await modelHealth(env, key, days),
+            history: await modelHistory(env, key),
+          });
         }
 
         if (url.pathname === '/api/intelligence/readiness' && req.method === 'GET') {
@@ -3502,6 +3515,21 @@ export default {
             await harvestLabels(env);
           } catch (e) {
             console.error('label harvest failed', (e as Error).message);
+          }
+          // A model that quietly degrades produces wrong card recommendations,
+          // and nothing about a wrong recommendation looks unusual afterwards.
+          // So the check is automatic, and retirement is too — the
+          // deterministic path resumes the moment it fires. Promoting a
+          // replacement stays a decision with a person in it.
+          try {
+            for (const key of ['merchant_mcc', 'merchant_category']) {
+              const r = await retireIfDegraded(env, key);
+              if (r.retired) {
+                await send(env, env.OWNER_CHAT_ID, `*${key}* ${r.reason}. Codes are read from evidence alone again.`);
+              }
+            }
+          } catch (e) {
+            console.error('model health check failed', (e as Error).message);
           }
           try {
             await evaluateFinishedForecasts(env);

@@ -2,7 +2,7 @@ import { candidates as mccCandidates, deriveMcc } from '../../merchants/evidence
 import { merchantByKey, resolveMerchant, similarMerchants } from '../../merchants/lookup';
 import { today } from '../../spend';
 import type { Env } from '../../types';
-import { classify } from '../models/classifier';
+import { classify, type InferenceCost } from '../models/classifier';
 import { activeModel } from '../models/registry';
 import { parseDescriptor, type NormalizedDescriptor } from './normalize';
 import {
@@ -27,14 +27,24 @@ import {
  *   4. accumulated merchant evidence
  *   5. deterministic normalisation
  *   6. fuzzy match
- *   7. a trained model            — interface present, no model yet
+ *   7. a trained model            — live when one is deployed
  *   8. external evidence          — not configured
  *   9. ask
  *
- * Steps 7 and 8 are stubs on purpose. `docs/intelligence-architecture.md`
- * records why: there are zero labelled descriptors to train on, and the
- * Workers AI catalogue contains no merchant or MCC classifier. The slots exist
- * so adding one later is a function body rather than a redesign.
+ * Step 7 is real now. A classifier trained on this person's own confirmed and
+ * bank-supplied codes is consulted **only where the six steps above found
+ * nothing**, which is the property that makes it safe: by the time it is
+ * asked, there is no evidence for it to contradict, so the worst it can do is
+ * answer where the alternative was no answer at all. It is also allowed to
+ * decline, and usually does.
+ *
+ * `docs/intelligence-model-decision.md` is the canonical record of why it is
+ * a self-trained model rather than a hosted one, and what it must clear before
+ * it is allowed to speak. `docs/intelligence-architecture.md` keeps the
+ * earlier decision it superseded, for audit rather than for reference.
+ *
+ * Step 8 remains a stub: no external merchant-code service is configured, and
+ * the trail says so rather than staying silent about it.
  */
 
 export type PredictionSource =
@@ -72,6 +82,8 @@ export interface MerchantResolution {
     predicted_at: string;
     /** Every step that was tried, in order, and what it produced. */
     trail: { step: string; outcome: string }[];
+    /** What the model's inference cost, when one ran. Null when none did. */
+    inference?: InferenceCost | null;
   };
 }
 
@@ -196,13 +208,14 @@ export async function resolveMerchantIntelligence(env: Env, input: ResolveInput)
   // string it has never seen anything like.
   let modelKey: string | null = null;
   let modelVersion: number | null = null;
+  let cost: InferenceCost | null = null;
 
   if (!mccOut.length) {
     const model = await activeModel(env, 'merchant_mcc');
     if (!model) {
       trail.push({ step: 'self_trained_ml', outcome: 'no model deployed — see docs/intelligence-model-decision.md' });
     } else {
-      const guess = await classify(env, input.descriptor, { model });
+      const guess = await classify(env, input.descriptor, { model, onCost: (c) => (cost = c) });
       if (!guess) {
         trail.push({
           step: 'self_trained_ml',
@@ -252,7 +265,7 @@ export async function resolveMerchantIntelligence(env: Env, input: ResolveInput)
     if (!category.value) {
       const catModel = await activeModel(env, 'merchant_category');
       if (catModel) {
-        const guess = await classify(env, input.descriptor, { model: catModel });
+        const guess = await classify(env, input.descriptor, { model: catModel, onCost: (c) => (cost ??= c) });
         if (guess && guess.probability >= catModel.high_confidence) {
           category = { value: guess.label, confidence: guess.probability };
           if (source === 'none') source = 'self_trained_ml';
@@ -314,6 +327,7 @@ export async function resolveMerchantIntelligence(env: Env, input: ResolveInput)
       prediction_source: source,
       model_key: modelKey,
       model_version: modelVersion,
+      inference: cost,
       predicted_at: now,
       trail,
     },
@@ -330,8 +344,10 @@ export async function recordPrediction(
     `INSERT INTO merchant_predictions
        (transaction_id, raw_descriptor, normalized_descriptor, merchant_id, predicted_mcc, predicted_category,
         confidence, prediction_source, model_key, model_version, candidate_distribution_json,
-        needs_review, review_reason, reward_spread_cents, predicted_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        needs_review, review_reason, reward_spread_cents,
+        inference_ngrams, inference_rows, inference_db_ms, inference_total_ms, abstained, abstain_reason,
+        predicted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       transactionId ?? null,
@@ -348,6 +364,12 @@ export async function recordPrediction(
       r.needs_review ? 1 : 0,
       r.review_reason,
       r.reward_impact?.spread_cents ?? null,
+      r.provenance.inference?.ngrams ?? null,
+      r.provenance.inference?.rows ?? null,
+      r.provenance.inference?.db_ms ?? null,
+      r.provenance.inference?.total_ms ?? null,
+      r.provenance.inference?.abstained ? 1 : 0,
+      r.provenance.inference?.abstain_reason ?? null,
       r.provenance.predicted_at
     )
     .run();

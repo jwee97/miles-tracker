@@ -213,6 +213,20 @@ export async function resolveReview(env: Env, id: number, r: Resolution): Promis
         note: 'answered in review',
       });
     }
+    // If the app resolved this on its own and a person has just said
+    // otherwise, that is the one measurement that decides whether the model is
+    // earning its place. Recorded against the prediction rather than counted
+    // later, because "what did it get wrong" is not recoverable from the
+    // transaction alone once the code has been overwritten.
+    await env.DB.prepare(
+      `UPDATE merchant_predictions
+          SET corrected = 1, corrected_to = ?, corrected_at = ?
+        WHERE transaction_id = ? AND abstained = 0
+          AND predicted_mcc IS NOT NULL AND predicted_mcc <> ?`
+    )
+      .bind(mcc, today(env), item.transaction_id, mcc)
+      .run();
+
     // A confirmation is also the only kind of training data this app will ever
     // have. Written here rather than inferred later, because this is the exact
     // moment a person asserted something — see intelligence/merchants/labels.

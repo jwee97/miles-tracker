@@ -89,7 +89,45 @@ folds see which n-grams the held-out descriptors contain — a small leak that
 flatters every number afterwards.
 
 Reported and stored with the model: macro F1, accuracy, high-confidence
-precision, high-confidence share, and per-code precision/recall/F1 with support.
+precision, high-confidence share, per-code precision/recall/F1 with support,
+and **calibration** — reliability bins, expected calibration error and the
+Brier score.
+
+Calibration was added after review pointed out that high-confidence precision
+describes only the top of the range. It answers a different question: not "is
+it right when it is sure" but "does 80% mean eighty per cent". That matters
+because the confidence threshold is a decision about when to interrupt
+somebody, and moving it is only sensible if the numbers underneath are honest.
+Over-confidence specifically in the bands that get acted on is called out
+separately from the average, since one bad band is invisible in a good mean.
+
+### Measured in production, not only in validation
+
+Validation says what a model did on data drawn from the weeks it trained
+beside. It routinely disagrees with what happens next, and only the second
+costs anybody anything. Every inference therefore records what it cost and
+what it decided:
+
+| Recorded | Why |
+|---|---|
+| n-grams, feature rows read, database ms, total ms | The real cost is a round trip to D1 for this descriptor's fragments. The benchmarks behind this decision timed arithmetic in Node, which is not what a deployed Worker does. |
+| abstained, and the reason | Abstention is the main safety property; an abstention rate nobody measures is a safety property nobody has. |
+| corrected, and to what | The one measurement that decides whether the model earns its place. |
+
+`GET /api/intelligence/model-health` reports these as percentiles rather than
+averages, with the database share separated from the arithmetic.
+
+### Retirement
+
+A model whose **live correction rate exceeds 10%** over at least 40
+auto-resolutions is retired automatically on the nightly job, and the
+deterministic path resumes immediately. Far below the bar it had to clear to
+be promoted, deliberately: validation measured it against its own weeks, and
+corrections measure it against whatever arrives next.
+
+It only ever retires. Promoting a replacement stays a decision with a person
+in it — a system that trained and deployed its own successor unattended would
+be the exact thing this design is arranged against.
 
 ### The promotion bar
 

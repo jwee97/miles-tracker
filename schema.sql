@@ -615,6 +615,23 @@ CREATE TABLE IF NOT EXISTS merchant_predictions (
   needs_review           INTEGER NOT NULL DEFAULT 0,
   review_reason          TEXT,
   reward_spread_cents    INTEGER,
+  -- What the inference cost, measured in the request that made it.
+  --
+  -- The benchmarks behind the architecture decision timed arithmetic in Node;
+  -- neither that nor model loading is what a deployed Worker actually does.
+  -- The real cost is a round trip to D1 for this descriptor's n-grams, and the
+  -- only honest place to measure it is here.
+  inference_ngrams       INTEGER,
+  inference_rows         INTEGER,
+  inference_db_ms        INTEGER,
+  inference_total_ms     INTEGER,
+  abstained              INTEGER NOT NULL DEFAULT 0,
+  abstain_reason         TEXT,
+  -- Set when a person later changed what this resolved to. The number that
+  -- matters most: a model that is confidently wrong is worse than no model.
+  corrected              INTEGER NOT NULL DEFAULT 0,
+  corrected_to           TEXT,
+  corrected_at           TEXT,
   predicted_at           TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS prediction_txn ON merchant_predictions(transaction_id);

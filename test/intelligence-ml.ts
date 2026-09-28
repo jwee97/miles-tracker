@@ -5,6 +5,8 @@ import { train, type Example } from '../shared/ml/train';
 import { classify, featureCount, packWeights, storeFeatures, MIN_FEATURE_OVERLAP } from '../src/intelligence/models/classifier';
 import { activeModel, meetsBar, listModels, promoteModel, registerModel, PROMOTION_BAR } from '../src/intelligence/models/registry';
 import { harvestDiagnostics, harvestLabels, trainingReadiness, exportTrainingData } from '../src/intelligence/merchants/labels';
+import { calibration } from '../shared/ml/calibration';
+import { modelHealth, retireIfDegraded, MAX_CORRECTION_RATE, MIN_SAMPLES_TO_JUDGE } from '../src/intelligence/models/health';
 import { resolveMerchantIntelligence } from '../src/intelligence/merchants/resolve';
 import type { Env } from '../src/types';
 
@@ -462,6 +464,96 @@ check(
   worstBind.count <= D1_MAX_BOUND_PARAMS,
   `${worstBind.count} parameters in: ${worstBind.sql}`
 );
+
+// --- does a probability mean what it says ----------------------------------
+//
+// High-confidence precision describes the top of the range only, and the
+// threshold that defines "top" is only worth moving if the numbers underneath
+// are honest.
+
+const honest = calibration(
+  // 100 samples where stated confidence matches reality closely.
+  Array.from({ length: 100 }, (_, i) => ({ confidence: 0.9, correct: i < 90 }))
+);
+check('a model that means what it says has near-zero error', honest.ece < 0.02, String(honest.ece));
+check('and is called well calibrated', /[Ww]ell calibrated/.test(honest.verdict), honest.verdict);
+
+const boastful = calibration(Array.from({ length: 100 }, (_, i) => ({ confidence: 0.95, correct: i < 60 })));
+check('an over-confident model is caught', boastful.ece > 0.3, String(boastful.ece));
+check(
+  'and called out where it matters, not on average',
+  /[Oo]ver-confident where it matters/.test(boastful.verdict),
+  boastful.verdict
+);
+check('the Brier score punishes it too', boastful.brier > honest.brier, `${boastful.brier} vs ${honest.brier}`);
+
+const timid = calibration(Array.from({ length: 100 }, (_, i) => ({ confidence: 0.6, correct: i < 95 })));
+check('under-confidence is measured but not alarmed about', timid.ece > 0.3 && !/matters/.test(timid.verdict), timid.verdict);
+
+check('too few samples concludes nothing', /too few/.test(calibration([{ confidence: 0.9, correct: true }]).verdict), '');
+const bins = honest.bins.filter((b) => b.count > 0);
+check('reliability bins say what was predicted and what happened', bins[0].predicted > 0 && bins[0].actual > 0, JSON.stringify(bins[0]));
+check('and the gap is signed, so over-confidence is distinguishable', boastful.bins.some((b) => b.gap < -0.2), '');
+
+check('training carries calibration through', typeof trained.metrics.calibration.ece === 'number', JSON.stringify(trained.metrics.calibration).slice(0, 80));
+
+// --- how the live model is doing -------------------------------------------
+
+const health0 = await modelHealth(env, 'merchant_mcc');
+check('health reports the live model', health0.model?.key === 'merchant_mcc', JSON.stringify(health0.model));
+check('and refuses to judge on too little', health0.status === 'unproven' || health0.status === 'healthy', health0.status);
+
+// Inference cost is recorded from the request that ran it.
+const costed = await classify(env, 'din tai fung jem restaurant');
+check('an inference reports what it cost', (costed?.cost.total_ms ?? -1) >= 0, JSON.stringify(costed?.cost));
+check('including the rows it read', (costed?.cost.rows ?? 0) > 0, String(costed?.cost.rows));
+check('and that it did not abstain', costed?.cost.abstained === false, '');
+
+let abstainCost: any = null;
+await classify(env, 'zzzz qqqq xxxx vvvv', { onCost: (c) => (abstainCost = c) });
+check('an abstention reports itself as one', abstainCost?.abstained === true, JSON.stringify(abstainCost));
+check('with the reason in words', typeof abstainCost?.abstain_reason === 'string' && abstainCost.abstain_reason.length > 0, String(abstainCost?.abstain_reason));
+
+// A model that is wrong too often retires itself.
+const modelIdNow = (db.prepare(`SELECT id FROM ml_models WHERE status = 'active' AND model_key='merchant_mcc'`).get() as any)?.id;
+check('a model is active to begin with', !!modelIdNow, '');
+
+for (let i = 0; i < MIN_SAMPLES_TO_JUDGE + 10; i++) {
+  const wrong = i < 20 ? 1 : 0;
+  sql(
+    `INSERT INTO merchant_predictions
+       (raw_descriptor, predicted_mcc, confidence, prediction_source, model_key, model_version,
+        needs_review, abstained, corrected, inference_total_ms, inference_db_ms, inference_rows, inference_ngrams, predicted_at)
+     VALUES (?, '5812', 0.9, 'self_trained_ml', 'merchant_mcc', 3, 0, 0, ?, ?, ?, 40, 60, '2026-09-20')`,
+    `descriptor ${i}`, wrong, 5 + (i % 7), 2 + (i % 3)
+  );
+}
+
+const sick = await modelHealth(env, 'merchant_mcc');
+check('live corrections are counted', sick.live.corrected === 20, String(sick.live.corrected));
+check('as a rate against what it resolved alone', sick.live.correction_rate > MAX_CORRECTION_RATE, String(sick.live.correction_rate));
+check('and the model is called degraded', sick.status === 'degraded', sick.status);
+check('in words that say what to do', sick.notes.some((n) => /doing more harm/.test(n)), JSON.stringify(sick.notes));
+check('latency is reported as percentiles, not an average', sick.latency.p95_ms >= sick.latency.p50_ms, JSON.stringify(sick.latency));
+check('with the database share separated out', sick.latency.p50_db_ms > 0, String(sick.latency.p50_db_ms));
+
+const retired = await retireIfDegraded(env, 'merchant_mcc');
+check('a degraded model retires itself', retired.retired, JSON.stringify(retired.reason));
+check('with the reason recorded', /corrected/.test(retired.reason ?? ''), String(retired.reason));
+check(
+  'and it is no longer active',
+  (await activeModel(env, 'merchant_mcc')) === null,
+  'the deterministic path resumes the moment it fires'
+);
+check(
+  'but its record survives for the audit',
+  (db.prepare(`SELECT COUNT(*) AS n FROM ml_models WHERE model_key='merchant_mcc'`).get() as any).n >= 3,
+  ''
+);
+check('and nothing was promoted in its place', (await activeModel(env, 'merchant_mcc')) === null, 'that is a decision with a person in it');
+
+const healthy = await retireIfDegraded(env, 'merchant_category');
+check('a key with no live model retires nothing', !healthy.retired, '');
 
 console.log(fails ? `\n${fails} check(s) failed` : '\nAll checks passed');
 process.exit(fails ? 1 : 0);

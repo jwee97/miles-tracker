@@ -1,3 +1,4 @@
+import { calibration, type Calibration } from './calibration';
 import { ngrams, softmax, tf } from './text';
 
 /**
@@ -83,6 +84,14 @@ export interface Metrics {
   /** Examples whose class was dropped for having too few instances. */
   excluded_examples: number;
   excluded_classes: string[];
+  /**
+   * Whether the probabilities mean what they say, across the whole range.
+   *
+   * High-confidence precision only describes the top of it, and the threshold
+   * that defines "top" is only worth moving if the numbers underneath are
+   * honest. Measured out of fold like everything else here.
+   */
+  calibration: Calibration;
 }
 
 export interface TrainedModel {
@@ -291,6 +300,10 @@ function scoreOutOfFold(
     }
   }
 
+  const reliability = calibration(
+    Array.from({ length: n }, (_, i) => ({ confidence: confidence[i], correct: truth[i] === predicted[i] }))
+  );
+
   const round = (x: number) => Math.round(x * 1000) / 1000;
   return {
     macro_f1: round(perClass.reduce((s, c) => s + c.f1, 0) / (perClass.length || 1)),
@@ -298,6 +311,7 @@ function scoreOutOfFold(
     high_confidence_share: n ? round(highN / n) : 0,
     accuracy: n ? round(correct / n) : 0,
     per_class: perClass,
+    calibration: reliability,
   };
 }
 
@@ -342,6 +356,7 @@ export function train(examples: Example[], options: TrainOptions = {}): TrainedM
           high_confidence_share: 0,
           accuracy: 0,
           per_class: classes.map((label, i) => ({ label, support: support[i], precision: 0, recall: 0, f1: 0 })),
+          calibration: calibration([]),
         };
 
   // --- the model that actually ships ---------------------------------------

@@ -17,6 +17,24 @@ import type { Env } from './types';
  * EXISTS, so each is checked against PRAGMA table_info first.
  */
 const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
+  // --- what an inference cost, and whether it turned out to be right ---
+  { table: 'merchant_predictions', column: 'inference_ngrams', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN inference_ngrams INTEGER' },
+  { table: 'merchant_predictions', column: 'inference_rows', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN inference_rows INTEGER' },
+  { table: 'merchant_predictions', column: 'inference_db_ms', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN inference_db_ms INTEGER' },
+  { table: 'merchant_predictions', column: 'inference_total_ms', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN inference_total_ms INTEGER' },
+  {
+    table: 'merchant_predictions',
+    column: 'abstained',
+    ddl: 'ALTER TABLE merchant_predictions ADD COLUMN abstained INTEGER NOT NULL DEFAULT 0',
+  },
+  { table: 'merchant_predictions', column: 'abstain_reason', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN abstain_reason TEXT' },
+  {
+    table: 'merchant_predictions',
+    column: 'corrected',
+    ddl: 'ALTER TABLE merchant_predictions ADD COLUMN corrected INTEGER NOT NULL DEFAULT 0',
+  },
+  { table: 'merchant_predictions', column: 'corrected_to', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN corrected_to TEXT' },
+  { table: 'merchant_predictions', column: 'corrected_at', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN corrected_at TEXT' },
   // --- what a discovered article actually is (promotion discovery) ---
   {
     table: 'discovery_items',
