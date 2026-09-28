@@ -252,10 +252,14 @@ function Intelligence() {
     by_model: { model: string; mae_cents: number; coverage: number; n: number }[];
   } | null>(null);
 
+  // Each of these is accepted only if it has the shape this panel reads. One
+  // panel throwing unmounts every panel beside it — the whole Settings tab
+  // becomes a boundary message — so a malformed answer has to be a missing
+  // section rather than a missing screen.
   useEffect(() => {
-    fetchReadiness().then(setReadiness).catch(() => {});
-    fetchIntelligenceMetrics().then(setMetrics).catch(() => {});
-    fetchForecastAccuracy().then(setAccuracy).catch(() => {});
+    fetchReadiness().then((r) => setReadiness(r?.thresholds ? r : null)).catch(() => {});
+    fetchIntelligenceMetrics().then((m) => setMetrics(Array.isArray(m?.by_source) ? m : null)).catch(() => {});
+    fetchForecastAccuracy().then((a) => setAccuracy(Array.isArray(a?.by_model) ? a : null)).catch(() => {});
   }, []);
 
   const pct = (n: number | null) => (n === null ? '—' : `${Math.round(n * 100)}%`);
@@ -378,7 +382,11 @@ function Platform() {
     setBusy(true);
     setErr(null);
     fetchPlatform(d)
-      .then(setData)
+      // Shape-checked like the panels above it. Settings is one boundary over
+      // many panels, so a single malformed payload takes the whole tab down —
+      // which is how a missing Cloudflare token could hide the model health
+      // screen entirely.
+      .then((r) => setData(r?.missing && r?.attempts ? r : null))
       .catch((e) => setErr((e as Error).message))
       .finally(() => setBusy(false));
   }

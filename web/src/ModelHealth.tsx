@@ -29,7 +29,8 @@ const STATUS: Record<Health['status'], { label: string; cls: string }> = {
 export default function ModelHealth() {
   const [health, setHealth] = useState<Health | null>(null);
   const [history, setHistory] = useState<ModelRow[]>([]);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchModelHealth()
@@ -37,10 +38,35 @@ export default function ModelHealth() {
         setHealth(d.health);
         setHistory(d.history ?? []);
       })
-      .catch(() => setFailed(true));
+      .catch((e) => setFailed((e as Error).message))
+      .finally(() => setLoading(false));
   }, []);
 
-  if (failed || !health) return null;
+  // A panel that vanishes on error is the least diagnosable failure there is,
+  // and the likeliest error here is the one that happens after every deploy:
+  // the columns arrived with the code and not with the database.
+  if (failed) {
+    return (
+      <section className="card">
+        <h2>Merchant intelligence</h2>
+        <p className="err-text">
+          {/no such (table|column)|has no column/i.test(failed)
+            ? 'The database is behind the code — press “Bring the database up to date” in Maintenance above, then reload.'
+            : `Could not read model health: ${failed}`}
+        </p>
+      </section>
+    );
+  }
+
+  if (loading || !health) {
+    return (
+      <section className="card">
+        <h2>Merchant intelligence</h2>
+        <p className="sub">Loading…</p>
+      </section>
+    );
+  }
+
   const s = STATUS[health.status];
 
   return (
@@ -61,7 +87,13 @@ export default function ModelHealth() {
           · {health.model.architecture} · live since {health.model.deployed_at ?? 'unknown'}
         </p>
       ) : (
-        <p className="sub">Nothing is deployed. Codes come from evidence alone, and unknown merchants go to Review.</p>
+        <>
+          <p className="sub">Nothing is deployed. Codes come from evidence alone, and unknown merchants go to Review.</p>
+          <p className="sub dim">
+            Once a model is live this shows what it costs to run and how often a person had to correct it — measured
+            from the requests that actually ran, not from a benchmark. Until then there is nothing to measure.
+          </p>
+        </>
       )}
 
       {health.notes.map((n, i) => (

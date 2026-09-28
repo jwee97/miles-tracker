@@ -473,6 +473,57 @@ const FORECAST = {
   as_of: '2026-09-18',
 };
 
+/**
+ * A live model with a measured cost and a correction rate.
+ *
+ * The figures are the point of the panel: validation says what a model did on
+ * data drawn from its own weeks, and this says what it has done since.
+ */
+const MODEL_HEALTH = {
+  health: {
+    model: { key: 'merchant_mcc', version: 3, architecture: 'tfidf_char_3_5 + multinomial_logistic_regression', deployed_at: '2026-09-20' },
+    training: {
+      examples: 842,
+      classes: 12,
+      min_class_support: 26,
+      macro_f1: 0.71,
+      accuracy: 0.87,
+      high_confidence_precision: 0.96,
+      ece: 0.041,
+      brier: 0.09,
+    },
+    live: {
+      consulted: 184,
+      abstained: 73,
+      abstention_rate: 0.397,
+      auto_resolved: 91,
+      asked: 20,
+      corrected: 2,
+      correction_rate: 0.022,
+      useful_coverage: 0.495,
+      why_it_declined: [{ reason: 'only n% of the descriptor is known, below the 15% floor', n: 61 }],
+    },
+    latency: {
+      samples: 111,
+      p50_ms: 9,
+      p95_ms: 24,
+      max_ms: 61,
+      p50_db_ms: 7,
+      p95_db_ms: 21,
+      p50_rows: 148,
+      p95_rows: 372,
+      max_rows: 511,
+      max_ngrams: 640,
+    },
+    status: 'healthy',
+    notes: [],
+    as_of: '2026-09-18',
+  },
+  history: [
+    { id: 3, model_key: 'merchant_mcc', version: 3, architecture: 'tfidf', trained_at: '2026-09-20', training_examples: 842, validation_metrics: null, status: 'active', deployed_at: '2026-09-20', note: null, feature_count: 9000, high_confidence: 0.85 },
+  ],
+};
+
 const PLAN = {
   as_of: '2026-09-18',
   caps: [],
@@ -1188,6 +1239,53 @@ async function stub(page: Page) {
       usedCalls++;
       return send(USED);
     }
+    // Settings needs both of these before it renders anything; without them
+    // the screen is a boundary message rather than the panels under test.
+    if (u.pathname === '/api/settings') return send({ settings: [], editable: [] });
+    if (u.pathname === '/api/usage')
+      return send({
+        storage: {
+          feed_items: { rows: 12, text_bytes: 4096, reclaimable_bytes: 0, compactable: 0, retention_days: 60 },
+          transactions: { rows: 340, text_bytes: 81920, bytes_per_row: 240, oldest: '2025-06-01' },
+          transactions_years_to_1pct: 42,
+        },
+        db: { size_bytes: 512000, size_source: 'reported', limit_bytes: 5368709120, percent: 0.01, rows: [], total_rows: 352 },
+        free_tier: [],
+        worker: { available: false, note: 'no token configured' },
+      });
+    if (u.pathname === '/api/intelligence/metrics')
+      return send({
+        window_days: 90,
+        resolutions: 184,
+        auto_resolved: 111,
+        coverage: 0.603,
+        abstained: 73,
+        abstention_rate: 0.397,
+        corrections: 2,
+        correction_rate: 0.018,
+        high_confidence: 91,
+        high_confidence_precision: 0.978,
+        spared_by_reward_impact: 14,
+        by_source: [{ source: 'self_trained_ml', n: 91, corrections: 2 }],
+        as_of: '2026-09-18',
+        note: 'Correction rate is the number that matters.',
+      });
+    if (u.pathname === '/api/intelligence/forecast/accuracy')
+      return send({ evaluated: 0, mae_cents: 0, bias_cents: 0, coverage: 0, by_model: [], as_of: '2026-09-18' });
+    if (u.pathname === '/api/intelligence/readiness')
+      return send({
+        labels: 842,
+        distinct_merchants: 94,
+        categories_meeting_bar: 12,
+        per_category: [{ category: '5814', labels: 96 }],
+        per_spend_category: [{ category: 'dining', labels: 180 }],
+        thresholds: { min_labels: 300, min_per_category: 25, min_categories: 4, min_merchants: 40 },
+        ready: true,
+        blocking: [],
+        verdict: 'There is enough here to train and measure a classifier.',
+        as_of: '2026-09-18',
+      });
+    if (u.pathname === '/api/intelligence/model-health') return send(MODEL_HEALTH);
     if (u.pathname === '/api/intelligence/forecast') return send(FORECAST);
     if (u.pathname === '/api/intelligence/plan') return send(PLAN);
     if (u.pathname === '/api/catalog/cards') return send(CATALOG);
@@ -1741,6 +1839,41 @@ async function main() {
     const tested = await sourcesCard.innerText();
     check('and the reason comes back in words', says(tested, 'The site has said no'), tested.slice(0, 1600));
     check('with a code behind it', says(tested, 'SOURCE_FETCH_BLOCKED'), tested.slice(0, 1600));
+
+    // --- is the model any good, and what does it cost ---------------------
+    //
+    // Settings rather than Home on purpose: this is the app grading itself.
+    // What is checked is that the measurements are actually reachable — an
+    // instrument nobody can read is not an instrument.
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.locator('h2', { hasText: 'Merchant intelligence' }).first().waitFor();
+    // Read through the DOM rather than a locator: the Cloudflare panel below
+    // re-renders while it polls, and `innerText` waits for stability that a
+    // polling panel never reaches.
+    const healthText: string = await page.evaluate(
+      () => (document.querySelector('main') as HTMLElement | null)?.innerText ?? ''
+    );
+
+    check('the live model is named with its version', says(healthText, 'merchant_mcc v3'), healthText.slice(0, 400));
+    check('validation is shown', says(healthText, '96%'), healthText.slice(0, 900));
+    check(
+      'including whether the probabilities mean anything',
+      says(healthText, 'Calibration error') && says(healthText, '0.041'),
+      healthText.slice(0, 900)
+    );
+    check('what it has done since is separate from what it scored', says(healthText, 'What it has done since'), healthText.slice(0, 900));
+    check('the correction rate is stated as the deciding number', says(healthText, 'Correction rate 2%'), healthText.slice(0, 1200));
+    check('abstentions are counted, not hidden', says(healthText, '73'), healthText.slice(0, 1200));
+
+    check('cost is reported as percentiles', says(healthText, '95th'), healthText.slice(0, 1600));
+    check('with the database share separated from the arithmetic', says(healthText, 'database, 95th'), healthText.slice(0, 1600));
+    check('and the worst descriptor seen', says(healthText, 'fragments'), healthText.slice(0, 1600));
+    check(
+      'said to come from real requests rather than a benchmark',
+      says(healthText, 'not in a benchmark'),
+      healthText.slice(0, 1800)
+    );
 
     // --- what to do with the points --------------------------------------
     await page.getByRole('button', { name: /^More/ }).click();

@@ -90,7 +90,13 @@ export default function ModelTrainer() {
   const [target, setTarget] = useState<TrainTarget>('mcc');
 
   function refresh() {
-    fetchReadiness().then(setReadiness).catch(() => {});
+    // Only accept a payload with the shape this panel reads. An endpoint that
+    // answers with something unexpected — an older deployment, a proxy, a
+    // half-applied migration — used to take the whole Settings tab down with
+    // it, because one panel throwing unmounts every panel beside it.
+    fetchReadiness()
+      .then((r) => setReadiness(r?.thresholds ? r : null))
+      .catch(() => {});
     fetchHarvestDiagnostics()
       .then((d) => setDiag(d.diagnostics))
       .catch(() => {});
@@ -245,6 +251,7 @@ export default function ModelTrainer() {
   // How many codes clear the threshold currently chosen, rather than the fixed
   // one the readiness gate reports against.
   const counts = (target === 'mcc' ? readiness?.per_category : readiness?.per_spend_category) ?? [];
+  const blocking = readiness?.blocking ?? [];
   const eligible = counts.filter((c) => c.labels >= minPerClass).length;
   // Two classes is the floor below which there is literally nothing to tell
   // apart. Everything above that is a question for the measurement.
@@ -332,10 +339,10 @@ export default function ModelTrainer() {
         <span>What the model should predict</span>
         <select value={target} onChange={(e) => setTarget(e.target.value as TrainTarget)} disabled={busy}>
           <option value="mcc">
-            Merchant code — precise, {readiness?.per_category.length ?? 0} in your ledger
+            Merchant code — precise, {readiness?.per_category?.length ?? 0} in your ledger
           </option>
           <option value="category">
-            Spending category — coarser, {readiness?.per_spend_category.length ?? 0} in your ledger
+            Spending category — coarser, {readiness?.per_spend_category?.length ?? 0} in your ledger
           </option>
         </select>
       </label>
@@ -387,7 +394,7 @@ export default function ModelTrainer() {
 
       {readiness && !canTrain && (
         <p className="sub dim">
-          Nothing to train on yet — {readiness.blocking.join(', ')}. Importing statements that carry codes is the
+          Nothing to train on yet — {blocking.join(', ')}. Importing statements that carry codes is the
           fastest way to move this; answering reviews is the other.
         </p>
       )}
