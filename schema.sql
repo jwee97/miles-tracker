@@ -79,6 +79,39 @@ CREATE TABLE IF NOT EXISTS product_sources (
 );
 CREATE INDEX IF NOT EXISTS product_source ON product_sources(product_id, active);
 
+-- A card's own page said something different from what we have on file.
+--
+-- The same shape as promotion discovery, for the same reason: an article — or
+-- here a bank's own page — is a CLAIM, and a claim becomes a rule only when a
+-- person has agreed. Rates are the numbers every recommendation is built on,
+-- so nothing here writes a rule set; it writes a question.
+CREATE TABLE IF NOT EXISTS rule_change_candidates (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id      INTEGER NOT NULL REFERENCES card_products(id) ON DELETE CASCADE,
+  source_id       INTEGER REFERENCES product_sources(id) ON DELETE SET NULL,
+  source_url      TEXT    NOT NULL,
+  detected_at     TEXT    NOT NULL,
+  -- The hash that changed, so a page edited twice is one question, not two.
+  content_hash    TEXT,
+  -- What the page appears to say now, as extracted rules.
+  proposed_json   TEXT,
+  -- Field-by-field against the rule set in force, worked out at detection so
+  -- the reviewer reads a diff rather than two rule sets.
+  diff_json       TEXT,
+  -- Whether anything that decides money moved. A reworded page is not a change.
+  material        INTEGER NOT NULL DEFAULT 0,
+  -- When the page says the new rates start, if it says.
+  effective_from  TEXT,
+  -- pending | applied | dismissed | superseded
+  status          TEXT    NOT NULL DEFAULT 'pending',
+  review_note     TEXT,
+  applied_rule_set_id INTEGER REFERENCES rule_sets(id) ON DELETE SET NULL,
+  resolved_at     TEXT,
+  created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(product_id, content_hash)
+);
+CREATE INDEX IF NOT EXISTS rule_change_status ON rule_change_candidates(status, detected_at);
+
 -- ---------------------------------------------------------------------------
 -- Rule sets: what a product paid, and WHEN.
 --

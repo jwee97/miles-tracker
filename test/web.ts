@@ -355,9 +355,128 @@ let analysed: any = null;
 let confirmed: any = null;
 let simulated: any = null;
 let added: any[] = [];
+let appliedChange: any = null;
+let ruleChanges: any[] = [];
 
 /** innerText reflects CSS casing, so every text assertion compares lowercased. */
 const says = (haystack: string, needle: string) => haystack.toLowerCase().includes(needle.toLowerCase());
+
+const LEAKAGE = {
+  from: '2026-08-01',
+  to: '2026-08-31',
+  label: 'August 2026',
+  transactions_examined: 42,
+  priced: 40,
+  unpriced: [{ reason: 'the engine could not price it: no rules for that card', count: 2 }],
+  actual_value_cents: 18_400,
+  best_value_cents: 24_900,
+  leakage_cents: 6_500,
+  capture_rate: 0.739,
+  by_category: [
+    { category: 'dining', lost_cents: 4_200, occurrences: 9 },
+    { category: 'groceries', lost_cents: 2_300, occurrences: 5 },
+  ],
+  patterns: [
+    {
+      used_card: 'One Card',
+      better_card: 'Woman’s World',
+      category: 'dining',
+      occurrences: 9,
+      lost_cents: 4_200,
+      summary: 'Nine dining purchases went on One Card when Woman’s World would have paid more',
+    },
+  ],
+  worst: [
+    {
+      transaction_id: 11,
+      occurred_at: '2026-08-14',
+      merchant: 'Tiong Bahru Bakery',
+      category: 'dining',
+      amount_cents: 4_500,
+      used_card: 'One Card',
+      best_card: 'Woman’s World',
+      lost_cents: 900,
+      reason: 'the online bonus applied to the other card',
+    },
+  ],
+  caveats: [
+    'This is measured with perfect hindsight — the best card is chosen knowing exactly what the purchase turned out to be.',
+  ],
+  as_of: '2026-09-18',
+};
+
+const MONTHLY_PLAN = {
+  period: { start: '2026-09-01', end: '2026-09-30', days_left: 12 },
+  categories: [
+    {
+      category: 'dining',
+      expected_cents: 60_000,
+      lower_cents: 45_000,
+      upper_cents: 75_000,
+      confidence: 'medium',
+      allocations: [
+        {
+          card: 'Woman’s World',
+          product: 'DBS Woman’s World',
+          amount_cents: 33_700,
+          value_per_dollar: 6,
+          rate_text: '4 mpd',
+          cap_remaining_cents: 33_700,
+          why: 'pays 4 mpd until its cap fills',
+        },
+        {
+          card: 'One Card',
+          product: 'DBS One Card',
+          amount_cents: 26_300,
+          value_per_dollar: 2,
+          rate_text: '1.3 mpd',
+          cap_remaining_cents: null,
+          why: 'no cap left anywhere better',
+        },
+      ],
+      unallocated_cents: 0,
+      note: null,
+    },
+  ],
+  unplanned: [{ category: 'travel', reason: 'nothing spent on it in the last six months' }],
+  minimums: [],
+  exhausted: [],
+  headlines: ['Put the next $337 of dining on Woman’s World — after that it pays the same as anything else.'],
+  caveats: ['Amounts are what you are forecast to spend, not what you should spend.'],
+  as_of: '2026-09-18',
+};
+
+const RULE_CHANGE = {
+  id: 5,
+  product_id: 7,
+  product_name: 'Woman’s World Card',
+  issuer: 'DBS',
+  source_url: 'https://www.dbs.com.sg/personal/cards/womans-world',
+  detected_at: '2026-09-17T02:00:00Z',
+  effective_from: '2026-10-01',
+  material: true,
+  proposed: [
+    {
+      category: 'online',
+      mpd: 3,
+      reward_type: 'miles',
+      cap_cents: 150_000,
+      cap_window: 'monthly',
+      quote: '3 miles per dollar on online spend, capped at S$1,500 a month',
+    },
+  ],
+  diff: [
+    {
+      field: 'mpd',
+      category: 'online',
+      before: 4,
+      after: 3,
+      material: true,
+      summary: 'online drops from 4 mpd to 3 mpd',
+    },
+  ],
+  status: 'pending',
+};
 
 const DRAFT = {
   id: 5,
@@ -1288,6 +1407,21 @@ async function stub(page: Page) {
     if (u.pathname === '/api/intelligence/model-health') return send(MODEL_HEALTH);
     if (u.pathname === '/api/intelligence/forecast') return send(FORECAST);
     if (u.pathname === '/api/intelligence/plan') return send(PLAN);
+    if (u.pathname === '/api/intelligence/leakage') return send(LEAKAGE);
+    if (u.pathname === '/api/intelligence/monthly-plan') return send(MONTHLY_PLAN);
+    if (u.pathname === '/api/catalog/rule-changes' && route.request().method() === 'GET')
+      return send({ changes: ruleChanges, as_of: '2026-09-18' });
+    if (u.pathname === '/api/catalog/rule-changes/check')
+      return send({ checked: 3, changed: 1, material: 1, failed: [] });
+    if (u.pathname.match(/^\/api\/catalog\/rule-changes\/\d+\/apply$/)) {
+      appliedChange = (await route.request().postDataJSON()) as any;
+      ruleChanges = [];
+      return send({ ok: true, version: 2, applied: '2026-10-01' });
+    }
+    if (u.pathname.match(/^\/api\/catalog\/rule-changes\/\d+\/dismiss$/)) {
+      ruleChanges = [];
+      return send({ ok: true });
+    }
     if (u.pathname === '/api/catalog/cards') return send(CATALOG);
     if (u.pathname === '/api/catalog/stale')
       return send({
@@ -1848,6 +1982,10 @@ async function main() {
     await page.getByRole('button', { name: /^More/ }).click();
     await page.getByRole('button', { name: 'Settings' }).click();
     await page.locator('h2', { hasText: 'Merchant intelligence' }).first().waitFor();
+    // The health panel arrives on its own fetch. Waiting for the heading above
+    // it only proves the tab rendered, which is why this read the screen before
+    // the numbers were on it about one run in eight.
+    await page.locator('.card', { hasText: 'How the code detector is doing' }).locator('.stmt-summary li').first().waitFor();
     // Read through the DOM rather than a locator: the Cloudflare panel below
     // re-renders while it polls, and `innerText` waits for stability that a
     // polling panel never reaches.
@@ -2130,6 +2268,66 @@ async function main() {
 
     await admin.getByRole('button', { name: /^Publish version 2/ }).click();
     check('publishing goes through', published === 1, String(published));
+
+    // --- planning the month, and what the wrong card cost -----------------
+    await open();
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Plan the month' }).click();
+
+    // Wait for the deepest element that carries what is being checked, not for
+    // the card that contains it: the card exists while it is still loading, and
+    // reading its text then is how this test failed one run in three.
+    const planCard = page.locator('.card', { hasText: 'The rest of the month' }).first();
+    await planCard.locator('.addrule .rules li').first().waitFor();
+    const plan = await planCard.innerText();
+    check('the plan names the card to put the next dining spend on', says(plan, 'Woman’s World'), plan.slice(0, 600));
+    check('with how much of the cap is left', says(plan, '337'), plan.slice(0, 900));
+    check(
+      'and never reads as an instruction to spend',
+      says(plan, 'not what you should spend'),
+      plan.slice(0, 1200)
+    );
+    check('a category with no history is listed rather than silently dropped', says(plan, 'travel'), plan.slice(0, 1200));
+
+    const leakCard = page.locator('.card', { hasText: 'What the wrong card cost' });
+    await leakCard.locator('.stmt-summary li').first().waitFor();
+    await leakCard.locator('.notes li').first().waitFor();
+    const leak = await leakCard.innerText();
+    check('the leakage figure is shown in dollars', says(leak, '65.00'), leak.slice(0, 400));
+    check('with the repeated mistake named', says(leak, 'Nine dining purchases'), leak.slice(0, 600));
+    check('and how much was captured', says(leak, '74%') || says(leak, '73.9'), leak.slice(0, 600));
+    check(
+      'with hindsight admitted rather than implied',
+      says(leak, 'perfect hindsight'),
+      leak.slice(0, 900)
+    );
+    check(
+      'and purchases that could not be priced are counted, not hidden',
+      says(leak, 'could not price'),
+      leak.slice(0, 900)
+    );
+
+    // --- a bank changed its own card -------------------------------------
+    ruleChanges = [RULE_CHANGE];
+    await open();
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Catalogue' }).click();
+    const rateQueue = page.locator('.card', { hasText: 'Rate changes waiting for you' });
+    await rateQueue.locator('.rules > li .chip').first().waitFor();
+    const rateQueueText = await rateQueue.innerText();
+    check('a detected change names the card', says(rateQueueText, 'Woman’s World Card'), rateQueueText.slice(0, 400));
+    check('and reads as a sentence', says(rateQueueText, 'online drops from 4 mpd to 3 mpd'), rateQueueText.slice(0, 600));
+    check('and is marked as changing what it pays', says(rateQueueText, 'changes what it pays'), rateQueueText.slice(0, 400));
+    check(
+      'and says nothing is published without a person',
+      says(rateQueueText, 'nothing is published until you say so'),
+      rateQueueText.slice(0, 600)
+    );
+
+    await rateQueue.getByRole('button', { name: /^Publish as a new version/ }).click();
+    await page.locator('.card', { hasText: 'Nothing changed' }).waitFor();
+    check('applying sends the rules the reviewer saw', appliedChange?.rules?.[0]?.mpd === 3, JSON.stringify(appliedChange));
+    check('with the date the new rates start from', appliedChange?.effective_from === '2026-10-01', JSON.stringify(appliedChange));
 
     await page.close();
   } finally {

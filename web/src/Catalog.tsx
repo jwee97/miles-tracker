@@ -3,6 +3,7 @@ import {
   confirmProductRates, fetchCatalog, fetchCatalogCard, fetchStaleProducts, money, type CatalogDetail, type CatalogProduct, type StaleProduct
 } from './api';
 import CatalogAdmin from './CatalogAdmin';
+import RuleChanges from './RuleChanges';
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   verified: { label: 'verified', cls: 'ok' },
@@ -247,13 +248,30 @@ export default function Catalog() {
       .catch(() => void 0);
   }, []);
 
-  if (err) return <p className="pad error">{err}</p>;
-  if (!rows) return <p className="pad sub">Loading…</p>;
+  // The rate-change queue is not part of the catalogue listing and must not
+  // disappear with it: a catalogue that fails to load is exactly when a bank
+  // changing its rates matters most.
+  if (err)
+    return (
+      <>
+        <RuleChanges />
+        <p className="pad error">{err}</p>
+      </>
+    );
+  if (!rows)
+    return (
+      <>
+        <RuleChanges />
+        <p className="pad sub">Loading…</p>
+      </>
+    );
 
   const shown = onlyMine ? rows.filter((r) => r.held_by.length > 0) : rows;
   const withRules = rows.filter((r) => r.rules > 0).length;
 
   return (
+    <>
+    <RuleChanges />
     <section className="card">
       <div className="section-head" style={{ marginTop: 0 }}>
         <h2>Card catalogue</h2>
@@ -330,5 +348,6 @@ export default function Catalog() {
         {!shown.length && <li className="unknown">Nothing matches. Send /migrate to the bot to seed the catalogue.</li>}
       </ul>
     </section>
+    </>
   );
 }

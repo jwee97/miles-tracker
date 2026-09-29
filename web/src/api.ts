@@ -2724,3 +2724,99 @@ export const fetchForecastAccuracy = () =>
     by_model: { model: string; mae_cents: number; coverage: number; n: number }[];
     as_of: string;
   }>('/api/intelligence/forecast/accuracy');
+
+// --- planning, leakage, and rule changes -------------------------------------
+
+export interface LeakageReport {
+  from: string | null;
+  to: string | null;
+  label: string;
+  transactions_examined: number;
+  priced: number;
+  unpriced: { reason: string; count: number }[];
+  actual_value_cents: number;
+  best_value_cents: number;
+  leakage_cents: number;
+  capture_rate: number;
+  by_category: { category: string; lost_cents: number; occurrences: number }[];
+  patterns: { used_card: string; better_card: string; category: string; occurrences: number; lost_cents: number; summary: string }[];
+  worst: {
+    transaction_id: number;
+    occurred_at: string;
+    merchant: string | null;
+    category: string | null;
+    amount_cents: number;
+    used_card: string;
+    best_card: string;
+    lost_cents: number;
+    reason: string | null;
+  }[];
+  caveats: string[];
+  as_of: string;
+}
+
+export interface MonthlyPlan {
+  period: { start: string; end: string; days_left: number };
+  categories: {
+    category: string;
+    expected_cents: number;
+    lower_cents: number;
+    upper_cents: number;
+    confidence: string;
+    allocations: {
+      card: string;
+      product: string;
+      amount_cents: number;
+      value_per_dollar: number;
+      rate_text: string;
+      cap_remaining_cents: number | null;
+      why: string;
+    }[];
+    unallocated_cents: number;
+    note: string | null;
+  }[];
+  unplanned: { category: string; reason: string }[];
+  minimums: MinSpendOutlook[];
+  exhausted: CapOutlook[];
+  headlines: string[];
+  caveats: string[];
+  as_of: string;
+}
+
+/**
+ * A rule change spotted on an issuer's own page and waiting for a human.
+ *
+ * Named apart from `RuleChange` above — that one is a line in a diff between
+ * two rule set versions. These two merged silently into one interface when they
+ * shared a name, which is the kind of thing that type-checks and then hands the
+ * wrong shape to whoever reads it next.
+ */
+export interface PendingRuleChange {
+  id: number;
+  product_id: number;
+  product_name: string;
+  issuer: string;
+  source_url: string;
+  detected_at: string;
+  effective_from: string | null;
+  material: boolean;
+  proposed: { category: string; mpd: number | null; reward_type: string | null; cap_cents: number | null; cap_window: string | null; quote: string }[];
+  diff: { field: string; category: string | null; before: unknown; after: unknown; material: boolean; summary: string }[];
+  status: string;
+}
+
+export const fetchLeakage = (range = 'lastmonth') => get<LeakageReport>(`/api/intelligence/leakage?range=${range}`);
+export const fetchMonthlyPlan = () => get<MonthlyPlan>('/api/intelligence/monthly-plan');
+export const fetchRuleChanges = () => get<{ changes: PendingRuleChange[]; as_of: string }>('/api/catalog/rule-changes');
+export const checkRuleChanges = () =>
+  post<{ checked: number; changed: number; material: number; failed: { url: string; reason: string }[] }>(
+    '/api/catalog/rule-changes/check',
+    {}
+  );
+export const applyRuleChange = (id: number, rules: PendingRuleChange['proposed'], effective_from?: string) =>
+  post<{ ok: boolean; error?: string; version?: number; applied?: string }>(
+    `/api/catalog/rule-changes/${id}/apply`,
+    { rules, effective_from }
+  );
+export const dismissRuleChange = (id: number, note?: string) =>
+  post<{ ok: boolean; error?: string }>(`/api/catalog/rule-changes/${id}/dismiss`, { note });

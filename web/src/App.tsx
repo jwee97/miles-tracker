@@ -19,6 +19,7 @@ import Mcc from './Mcc';
 import Other from './Other';
 import Routes from './Routes';
 import Pager from './Pager';
+import Planner from './Planner';
 import Settings from './Settings';
 import {
   addProgram,
@@ -1875,6 +1876,7 @@ function PointsTab() {
  */
 const MORE: [string, string][] = [
   ['use', 'Advisor'],
+  ['planner', 'Plan the month'],
   ['improve', 'Improve my setup'],
   ['setup', 'Setup'],
   ['rewardcheck', 'Rewards check'],
@@ -1906,6 +1908,7 @@ export default function App() {
     | 'offers2'
     | 'discovery'
     | 'improve'
+    | 'planner'
     | 'ledger'
     | 'other'
     | 'trends'
@@ -2096,6 +2099,8 @@ export default function App() {
       {tab === 'discovery' && <Discovery />}
 
       {tab === 'improve' && <PortfolioGaps />}
+
+      {tab === 'planner' && <Planner />}
 
       {tab === 'review' && <Review />}
 

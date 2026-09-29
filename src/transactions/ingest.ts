@@ -1,4 +1,5 @@
 import { cached } from '../cache';
+import { decideReview, policyFrom, rewardImpactOfUncertainty } from '../intelligence/merchants/reward-impact';
 import { deriveMcc, recordEvidence } from '../merchants/evidence';
 import { resolveMerchant, similarMerchants } from '../merchants/lookup';
 import { categoryForMerchant } from '../points';
@@ -148,6 +149,12 @@ export async function ingestTransaction(env: Env, c: TransactionCandidate): Prom
   const resolvedName = merchant?.canonical_name ?? (c.merchant ?? '').trim() ?? null;
 
   let mcc = c.mcc ?? null;
+  /** Set when a code was uncertain, with what the uncertainty was worth. */
+  let ambiguity: {
+    derived: Awaited<ReturnType<typeof deriveMcc>>;
+    spread: Awaited<ReturnType<typeof rewardImpactOfUncertainty>>;
+    decision: ReturnType<typeof decideReview>;
+  } | null = null;
   // What the app would choose if made to, so a review is one tap rather than a
   // search through the code list.
   let suggestion: string | null = null;
@@ -155,14 +162,46 @@ export async function ingestTransaction(env: Env, c: TransactionCandidate): Prom
     const derived = await deriveMcc(env, merchant.id, c.channel ?? null);
     if (derived.mcc && !derived.ambiguous) mcc = derived.mcc;
     if (derived.ambiguous) {
-      warnings.push({
-        reason: 'ambiguous_mcc',
-        detail: `${resolvedName} has presented ${derived.candidates
-          .slice(0, 3)
-          .map((x) => x.mcc)
-          .join(' and ')} — which one decides the rate`,
-      });
       mcc = derived.mcc;
+
+      // Ambiguity is not the question. The question is whether it changes what
+      // this purchase earns — two codes the person's cards treat identically
+      // are not worth a tap however uncertain they are, and a code that moves
+      // the rate by 4 mpd is worth asking about even when one candidate leads
+      // comfortably.
+      //
+      // Only reached where the old code raised a warning unconditionally, so
+      // the extra engine runs cost nothing on the ordinary path. Priced with
+      // the real recommendation engine, because an estimate of the stakes
+      // would be a different answer from the one the app will actually give.
+      const total = derived.candidates.reduce((t, x) => t + x.weight, 0) || 1;
+      const spread = await rewardImpactOfUncertainty(
+        env,
+        { amount_cents: c.amount_cents, channel: c.channel, merchant: resolvedName, on: c.occurred_at },
+        derived.candidates.slice(0, 3).map((x) => ({ mcc: x.mcc, probability: x.weight / total }))
+      );
+      const decision = decideReview(
+        { mcc: derived.mcc!, probability: (derived.candidates[0]?.weight ?? 0) / total },
+        spread,
+        policyFrom(env)
+      );
+
+      ambiguity = { derived, spread, decision };
+
+      if (decision.verdict === 'needs_answer') {
+        warnings.push({
+          reason: 'ambiguous_mcc',
+          detail:
+            decision.explanation ??
+            `${resolvedName} has presented ${derived.candidates
+              .slice(0, 3)
+              .map((x) => x.mcc)
+              .join(' and ')} — ${decision.reason}`,
+        });
+      }
+      // Otherwise the code is taken and no question is asked. The reasoning is
+      // still written down below, so "why was I not asked about this" has an
+      // answer that is not a re-run.
     }
   }
   if (!mcc && merchant) {
@@ -273,6 +312,39 @@ export async function ingestTransaction(env: Env, c: TransactionCandidate): Prom
       },
       card
     );
+  }
+
+  // What the app decided about this merchant, and why.
+  //
+  // Written for every transaction, not only the interesting ones. It is what
+  // makes "why did it pick that code" answerable later, and it is the only
+  // source of the live measurements on the model health screen — without it
+  // the correction rate and the abstention rate have nothing to count, and a
+  // model could degrade indefinitely without anything noticing.
+  if (mcc || ambiguity) {
+    await env.DB.prepare(
+      `INSERT INTO merchant_predictions
+         (transaction_id, raw_descriptor, normalized_descriptor, merchant_id, predicted_mcc, predicted_category,
+          confidence, prediction_source, candidate_distribution_json, needs_review, review_reason,
+          reward_spread_cents, abstained, predicted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+    )
+      .bind(
+        id,
+        raw,
+        merchant?.normalized_key ?? null,
+        merchant?.id ?? null,
+        mcc,
+        category,
+        ambiguity ? (ambiguity.derived.candidates[0]?.weight ?? 0) / (ambiguity.derived.candidates.reduce((t, x) => t + x.weight, 0) || 1) : c.mcc ? 1 : 0.75,
+        c.mcc ? 'user_confirmed' : ambiguity ? 'merchant_evidence' : merchant ? 'merchant_evidence' : 'none',
+        ambiguity ? JSON.stringify(ambiguity.derived.candidates.slice(0, 5)) : null,
+        ambiguity?.decision.verdict === 'needs_answer' ? 1 : 0,
+        ambiguity?.decision.reason ?? null,
+        ambiguity?.spread.spread_cents ?? null,
+        c.occurred_at
+      )
+      .run();
   }
 
   // A code that came with the transaction is an observation of what the

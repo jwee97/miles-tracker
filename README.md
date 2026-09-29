@@ -157,6 +157,27 @@ used. The annual fee, the welcome bonus and the cost of having another card to
 manage are all kept separate, and the section listing cards that are *not* worth
 it is the half that prevents an unnecessary purchase.
 
+## Planning the month, and what the wrong card cost
+
+**More → Plan the month** answers the two questions the per-purchase advisor
+could not.
+
+*The rest of the month* takes the forecast for each category and pours it into
+the card that pays most for it until that card's bonus cap fills, then spills
+the remainder into the next best. The output is per category: how much on which
+card, at what rate, with how much of the cap is left and why. It says what it is
+in its own words — the amounts are what you are forecast to spend, not what you
+should spend — because a plan that reads as a budget is a plan that encourages
+spending to hit a bonus, which is worth less than the money.
+
+*What the wrong card cost* replays every posted purchase through the engine
+using **the rules that were in force on that purchase's own day**, and compares
+what the card used earned with the best card held at the time. It leads with the
+repeated mistake rather than the expensive one-off — a pattern is the only part
+of last month anyone can change about next month — and it states plainly that
+it is measured with perfect hindsight. Purchases the engine could not price are
+counted and their reason given, not quietly dropped from the denominator.
+
 ## Re-pricing the past
 
 Correct a rate, confirm a merchant code, fix a category — and every purchase
@@ -194,6 +215,24 @@ from them says it is uncertain.
 
 Adding a card means picking it, not describing it: the issuer, programme and
 every rate come with the product.
+
+### When the bank changes it without telling you
+
+Each night the cards you hold have their own product pages re-read and compared
+with the rules the app holds. A page that no longer says what it used to raises
+a candidate under **Catalogue → Rate changes waiting for you**, with the
+difference in sentences — *"online drops from 4 mpd to 3 mpd"* — and a link to
+the page it came from.
+
+Two things it deliberately does not do. It does not publish: what the page said
+arrives as an editable starting point, and what gets published is whatever is
+left in the boxes when a person presses the button. And a page that simply stops
+mentioning a cap does not remove that cap — silence is not a statement, and a
+cap quietly dropped is the most expensive thing a machine reader could invent.
+
+Applying one drafts a new version and publishes it from the date the new rates
+start, closing the current version the day before. Everything earned before that
+keeps the rates it was earned under.
 
 ## Which card to use
 

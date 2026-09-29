@@ -22,6 +22,9 @@ import { classify, featureCount, storeFeatures } from './intelligence/models/cla
 import { merchantMetrics } from './intelligence/merchants/metrics';
 import { listModels, promoteModel, registerModel, retireModel, predictionsFromRetiredModels } from './intelligence/models/registry';
 import { modelHealth, modelHistory, retireIfDegraded } from './intelligence/models/health';
+import { rewardLeakage } from './intelligence/planning/leakage';
+import { monthlyPlan } from './intelligence/planning/allocate';
+import { applyChange, dismissChange, pendingChanges, watchProductPages } from './catalog/watch/detect';
 import { evaluateFinishedForecasts, periodOutlook, storeForecast } from './intelligence/forecasting/forecast';
 import { recurringDue, scanRecurring } from './intelligence/forecasting/recurring';
 import { capOutlook, minimumSpendOutlook, spendPlan } from './intelligence/forecasting/plan';
@@ -835,6 +838,56 @@ export default {
 
         if (url.pathname === '/api/intelligence/forecast/accuracy' && req.method === 'GET') {
           return json(await evaluateFinishedForecasts(env));
+        }
+
+        // What using the wrong card cost, replayed against the rules that were
+        // in force on each purchase's own date.
+        if (url.pathname === '/api/intelligence/leakage' && req.method === 'GET') {
+          return json(
+            await rewardLeakage(env, {
+              range: url.searchParams.get('range'),
+              from: url.searchParams.get('from'),
+              to: url.searchParams.get('to'),
+            })
+          );
+        }
+
+        // How to use the cards for the rest of the period, rather than for one
+        // purchase. The difference is caps.
+        if (url.pathname === '/api/intelligence/monthly-plan' && req.method === 'GET') {
+          const month = calendarMonth(env);
+          return json(
+            await monthlyPlan(env, {
+              start: url.searchParams.get('from') ?? month.start,
+              end: url.searchParams.get('to') ?? month.end,
+            })
+          );
+        }
+
+        // --- a bank changed its own card ----------------------------------
+        if (url.pathname === '/api/catalog/rule-changes' && req.method === 'GET') {
+          return json({ changes: await pendingChanges(env), as_of: today(env) });
+        }
+
+        if (url.pathname === '/api/catalog/rule-changes/check' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as { limit?: number };
+          return json(await watchProductPages(env, { limit: b.limit }));
+        }
+
+        if (url.pathname.match(/^\/api\/catalog\/rule-changes\/\d+\/(apply|dismiss)$/) && req.method === 'POST') {
+          const parts = url.pathname.split('/');
+          const id = Number(parts[4]);
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+
+          if (parts[5] === 'dismiss') {
+            const r = await dismissChange(env, id, b.note);
+            return json(r, r.ok ? 200 : 400);
+          }
+          if (!Array.isArray(b.rules)) {
+            return json({ error: 'the rules to publish are required — what the page said is a starting point, not the answer' }, 400);
+          }
+          const r = await applyChange(env, id, b.rules, { effective_from: b.effective_from, note: b.note });
+          return json(r, r.ok ? 200 : 400);
         }
 
         if (url.pathname === '/api/intelligence/plan' && req.method === 'GET') {
@@ -3467,6 +3520,22 @@ export default {
           // search budget widens there too, in search.ts — this is about how
           // many sources and articles one invocation will handle, which is a
           // different limit from how much the searching costs.
+          // A bank quietly halving a cap is the most expensive thing this app
+          // can fail to notice, and it fails silently: every recommendation
+          // stays confidently wrong. Bounded per run like every other fetch.
+          try {
+            const watched = await watchProductPages(env, { limit: 4 });
+            if (watched.material > 0) {
+              await send(
+                env,
+                env.OWNER_CHAT_ID,
+                `*Card rules* — ${watched.material} page(s) now say something different. Check Catalogue.`
+              );
+            }
+          } catch (e) {
+            console.error('product page watch failed', (e as Error).message);
+          }
+
           const deep = isDeepScanWindow(env);
           for (const stage of [
             () => discover(env, { limit: deep ? 10 : 6 }),
