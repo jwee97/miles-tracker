@@ -56,6 +56,11 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   },
   {
     table: 'ml_models',
+    column: 'feature_version',
+    ddl: 'ALTER TABLE ml_models ADD COLUMN feature_version INTEGER NOT NULL DEFAULT 1',
+  },
+  {
+    table: 'ml_models',
     column: 'high_confidence',
     ddl: 'ALTER TABLE ml_models ADD COLUMN high_confidence REAL NOT NULL DEFAULT 0.85',
   },

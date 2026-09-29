@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations, runSeed } from '../src/migrate';
-import { ngrams, prepare, vectorize } from '../shared/ml/text';
+import { ngrams, prepare, vectorize, structureTokens, FEATURE_VERSION } from '../shared/ml/text';
+import { lexiconCategory, siblingCode, SIBLING_SIMILARITY } from '../src/intelligence/merchants/priors';
 import { train, type Example } from '../shared/ml/train';
 import { classify, featureCount, packWeights, storeFeatures, MIN_FEATURE_OVERLAP } from '../src/intelligence/models/classifier';
 import { activeModel, meetsBar, listModels, promoteModel, registerModel, PROMOTION_BAR } from '../src/intelligence/models/registry';
@@ -61,7 +62,8 @@ check('text is padded so the edges are features', prepare('SQ COFFEE').startsWit
 check('and punctuation becomes separation, not silence', prepare('A*B').includes('a b'), prepare('A*B'));
 
 const g = ngrams('kopi');
-check('n-grams span 3 to 5 characters', [...g.keys()].every((k) => k.length >= 3 && k.length <= 5), '');
+const charGrams = [...g.keys()].filter((k) => !k.startsWith('\u0001'));
+check('n-grams span 3 to 5 characters', charGrams.every((k) => k.length >= 3 && k.length <= 5), JSON.stringify(charGrams.slice(0, 5)));
 check('a repeated fragment is counted, not deduplicated', (ngrams('aaaaaa').get('aaa') ?? 0) > 1, '');
 check('an empty descriptor produces nothing', ngrams('   ').size === 0, String(ngrams('   ').size));
 
@@ -376,6 +378,104 @@ check('weights pack to base64', typeof packed === 'string' && packed.length > 0,
 check('at four bytes a class', atob(packed).length === 12, String(atob(packed).length));
 
 check('the promotion bar still guards precision above all', PROMOTION_BAR.min_high_confidence_precision >= 0.9, String(PROMOTION_BAR.min_high_confidence_precision));
+
+// --- structure the characters do not carry ---------------------------------
+//
+// The first version saw nothing but character n-grams, which threw away what
+// the parser had already worked out. `SQ *` means a small merchant on Square,
+// and that is a different distribution of codes from the same name arriving
+// through an airline's gateway.
+
+const sq = structureTokens('SQ *THE COFFEE ACADEMICS 8829 SG');
+check('the processor becomes a feature', sq.some((t) => t.includes('proc=sq')), JSON.stringify(sq));
+check('so does the country', sq.some((t) => t.includes('country=sg')), JSON.stringify(sq));
+check('and a terminal reference', sq.includes('\u0001ref'), JSON.stringify(sq));
+check('with length in buckets, not raw', sq.some((t) => t.includes('words=')), JSON.stringify(sq));
+
+const web = structureTokens('WWW.SHOPEE.SG');
+check('a web address is marked as one', web.includes('\u0001web'), JSON.stringify(web));
+
+const withStructure = ngrams('SQ *KOPITIAM 88');
+check('features include the structure tokens', [...withStructure.keys()].some((k) => k.startsWith('\u0001')), '');
+check(
+  'which cannot collide with a real fragment',
+  [...withStructure.keys()].filter((k) => k.startsWith('\u0001')).every((k) => /^\u0001[a-z]/.test(k)),
+  ''
+);
+const channelled = ngrams('KOPITIAM 88', undefined, undefined, { channel: 'online' });
+check('the channel is a feature when the caller has one', [...channelled.keys()].includes('\u0001channel=online'), '');
+check('and absent when it does not', ![...ngrams('KOPITIAM 88').keys()].includes('\u0001channel=online'), '');
+
+// A model trained with a different extractor must never be scored.
+const stale = await registerModel(env, {
+  model_key: 'stale_features',
+  architecture: 'tfidf + logreg',
+  training_examples: 900,
+  validation_metrics: { macro_f1: 0.9, high_confidence_precision: 0.95 },
+  classes: ['5812', '5411', '4121', '5814'],
+  intercept: [0, 0, 0, 0],
+  feature_version: FEATURE_VERSION - 1,
+});
+sql(`UPDATE ml_models SET feature_count = 900 WHERE model_key='stale_features' AND version = ?`, stale.version);
+const staleRow = (await listModels(env, 'stale_features'))[0];
+check('a model from an older feature set is refused', !meetsBar(staleRow).ok, '');
+check(
+  'and told to retrain rather than scored',
+  meetsBar(staleRow).missing.some((m) => /retrain/.test(m)),
+  meetsBar(staleRow).missing.join('; ')
+);
+let staleCost: any = null;
+const staleAnswer = await classify(env, 'din tai fung jem restaurant', { model: staleRow, onCost: (c) => (staleCost = c) });
+check('and it declines to answer at all', staleAnswer === null, '');
+check('saying why, in the version', /feature set v/.test(staleCost?.abstain_reason ?? ''), String(staleCost?.abstain_reason));
+
+// --- guessing, where guessing is honest ------------------------------------
+
+check('a kopitiam is dining', lexiconCategory('KOPITIAM 88 OUTLET 3')?.category === 'dining', '');
+check('a supermarket is groceries', lexiconCategory('SHENG SIONG SUPERMARKET')?.category === 'groceries', '');
+check('an airline is travel', lexiconCategory('SCOOT AIRLINES')?.category === 'travel', '');
+check('two words agreeing counts for more', (lexiconCategory('NTUC FAIRPRICE SUPERMARKET')?.confidence ?? 0) > 0.6, '');
+check('and one word for less', (lexiconCategory('SOMEWHERE CAFE')?.confidence ?? 1) < 0.6, '');
+check(
+  'a line that is two things at once gets no answer',
+  lexiconCategory('CALTEX SUPERMARKET') === null,
+  'choosing between petrol and groceries from a word list is the confident guess this design is against'
+);
+check('and an unknown line gets none either', lexiconCategory('ZZQQ HOLDINGS') === null, '');
+check(
+  'the lexicon never guesses a code, only a kind of place',
+  !JSON.stringify(lexiconCategory('KOPITIAM 88')).includes('mcc'),
+  'a word cannot support a claim about what an acquirer registered'
+);
+
+// A sibling outlet lends its code; an ambiguous merchant lends nothing.
+sql(`INSERT INTO merchants (canonical_name, normalized_key) VALUES ('Kopitiam 88 Outlet 7', 'kopitiam 88 outlet 7')`);
+const sib = (db.prepare(`SELECT id FROM merchants WHERE normalized_key='kopitiam 88 outlet 7'`).get() as any).id;
+sql(
+  `INSERT INTO merchant_mcc_evidence (merchant_id, mcc, source, confidence, observed_at) VALUES (?, '5814', 'user', 'confirmed', '2026-09-01')`,
+  sib
+);
+const borrowed = await siblingCode(env, 'KOPITIAM 88 OUTLET 3');
+check('a sibling outlet lends its code', borrowed?.mcc === '5814', JSON.stringify(borrowed));
+check('naming where it came from', borrowed?.from === 'Kopitiam 88 Outlet 7', String(borrowed?.from));
+check('at a confidence below what evidence earns', (borrowed?.confidence ?? 1) <= 0.72, String(borrowed?.confidence));
+check('and the bar is above a plain prefix match', SIBLING_SIMILARITY > 0.8, String(SIBLING_SIMILARITY));
+
+sql(`INSERT INTO merchants (canonical_name, normalized_key) VALUES ('Contested Place One', 'contested place one')`);
+const contested = (db.prepare(`SELECT id FROM merchants WHERE normalized_key='contested place one'`).get() as any).id;
+for (const mcc of ['5812', '5814']) {
+  sql(
+    `INSERT INTO merchant_mcc_evidence (merchant_id, mcc, source, confidence, observed_at) VALUES (?, ?, 'statement', 'guess', '2026-09-01')`,
+    contested, mcc
+  );
+}
+check(
+  'a merchant with two codes of its own lends nothing',
+  (await siblingCode(env, 'CONTESTED PLACE TWO')) === null,
+  'lending an uncertainty is worse than lending nothing — the borrower cannot see it was contested'
+);
+
+check('a merchant nothing resembles lends nothing', (await siblingCode(env, 'QQZZ WWXX')) === null, '');
 
 // --- the other thing worth predicting -------------------------------------
 //

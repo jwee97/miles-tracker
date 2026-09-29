@@ -565,6 +565,11 @@ CREATE TABLE IF NOT EXISTS ml_models (
   classes_json           TEXT,
   intercept_json         TEXT,
   feature_count          INTEGER NOT NULL DEFAULT 0,
+  -- Which feature extractor trained it. A model scored with a different one
+  -- produces confident nonsense — the weights are attached to features that no
+  -- longer mean the same thing — and nothing about the output looks wrong. So
+  -- a mismatch refuses to answer rather than guessing.
+  feature_version        INTEGER NOT NULL DEFAULT 1,
   -- The probability at or above which this model's answer may be acted on
   -- without asking. Stored with the model because it was measured on it.
   high_confidence        REAL    NOT NULL DEFAULT 0.85,

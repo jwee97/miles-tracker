@@ -1,4 +1,4 @@
-import { ngrams, softmax, tf } from '../../../shared/ml/text';
+import { FEATURE_VERSION, ngrams, softmax, tf } from '../../../shared/ml/text';
 import type { Env } from '../../types';
 import { activeModel, type ModelRecord } from './registry';
 
@@ -136,6 +136,14 @@ export async function classify(
 
   const model = opts.model !== undefined ? opts.model : await activeModel(env, opts.modelKey ?? 'merchant_mcc');
   if (!model) return give('no model deployed');
+
+  // The check that matters more than any threshold: a model trained with a
+  // different feature extractor has weights attached to features that no
+  // longer mean the same thing. Scoring it produces confident nonsense and
+  // nothing about the answer would look wrong.
+  if ((model.feature_version ?? 1) !== FEATURE_VERSION) {
+    return give(`trained with feature set v${model.feature_version ?? 1}, this build reads v${FEATURE_VERSION}`);
+  }
 
   const classes: string[] = safeJson(model.classes_json) ?? [];
   const intercept: number[] = safeJson(model.intercept_json) ?? [];

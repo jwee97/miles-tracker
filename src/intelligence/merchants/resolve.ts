@@ -5,6 +5,7 @@ import type { Env } from '../../types';
 import { classify, type InferenceCost } from '../models/classifier';
 import { activeModel } from '../models/registry';
 import { parseDescriptor, type NormalizedDescriptor } from './normalize';
+import { lexiconCategory, siblingCode } from './priors';
 import {
   decideReview,
   policyFrom,
@@ -53,6 +54,8 @@ export type PredictionSource =
   | 'user_history'
   | 'merchant_evidence'
   | 'fuzzy'
+  | 'chain_sibling'
+  | 'lexicon'
   | 'self_trained_ml'
   | 'workers_ai'
   | 'external'
@@ -195,6 +198,36 @@ export async function resolveMerchantIntelligence(env: Env, input: ResolveInput)
     });
   }
 
+  // --- 6b. the same chain, a different outlet ------------------------------
+  //
+  // Before the model, because this is not a guess about what a name means —
+  // it is evidence about a merchant that is, to any reasonable reading, the
+  // same business. `KOPITIAM 88 OUTLET 3` inherits nothing from
+  // `KOPITIAM 88 OUTLET 7` today purely because they are different rows.
+  if (!mccOut.length) {
+    const sibling = await siblingCode(env, input.descriptor, {
+      excludeMerchantId: merchant?.id,
+      channel: input.channel,
+    });
+    if (sibling) {
+      source = 'chain_sibling';
+      mccOut = [
+        {
+          mcc: sibling.mcc,
+          probability: sibling.confidence,
+          description: null,
+          evidence: `borrowed from ${sibling.from} (${Math.round(sibling.similarity * 100)}% alike, ${sibling.observations} observation${sibling.observations === 1 ? '' : 's'})`,
+        },
+      ];
+      trail.push({
+        step: 'chain_sibling',
+        outcome: `${sibling.mcc} from ${sibling.from}, ${Math.round(sibling.similarity * 100)}% alike`,
+      });
+    } else {
+      trail.push({ step: 'chain_sibling', outcome: 'no near-identical merchant with a settled code' });
+    }
+  }
+
   // --- 7. the trained model ------------------------------------------------
   //
   // Consulted ONLY where evidence found nothing. This ordering is the whole
@@ -283,6 +316,24 @@ export async function resolveMerchantIntelligence(env: Env, input: ResolveInput)
               : `${catModel.model_key} has not seen enough of this descriptor`,
           });
         }
+      }
+    }
+
+    // --- 8b. what the words mean ------------------------------------------
+    //
+    // The last thing tried before asking. No training data behind "kopitiam is
+    // a coffee shop" — it is simply true of this market, and a model would
+    // need dozens of examples to discover it. Category only: a word can
+    // support a claim about what kind of place this is, and cannot support a
+    // claim about what an acquirer registered it as.
+    if (!category.value) {
+      const guess = lexiconCategory(input.descriptor);
+      if (guess) {
+        category = { value: guess.category, confidence: guess.confidence };
+        if (source === 'none') source = 'lexicon';
+        trail.push({ step: 'lexicon', outcome: `looks like ${guess.category} — the word “${guess.matched}”` });
+      } else {
+        trail.push({ step: 'lexicon', outcome: 'no word in it says what kind of place this is' });
       }
     }
 

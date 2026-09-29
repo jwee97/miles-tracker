@@ -70,6 +70,60 @@ untouched.
 | C — hybrid | What now runs, in the only sense that matters: deterministic evidence first, model only where evidence is silent. |
 | D — deterministic only | Still the fallback, still what answers whenever the model declines — which it does often, by design. |
 
+### What the model sees
+
+Character 3–5 grams, **plus the structure the parser already recovers**: which
+processor routed the payment, which country the terminal was in, whether the
+line carried a reference number, how many words it has, and the channel when
+the caller knows it.
+
+The first version saw the characters and nothing else, which threw away
+signals that were already extracted and that predict a code strongly — `SQ *`
+means a small independent merchant on Square, a different distribution from
+the same name arriving through an airline's gateway, and none of that survives
+in the letters once the prefix is stripped. Adding them cost nothing and
+required no new data.
+
+Feature extraction is **versioned**. A model scored with a different extractor
+than it trained with has weights attached to features that no longer mean the
+same thing: the output is confident nonsense and nothing about it looks wrong.
+So the version travels with the model, a mismatch is refused at the promotion
+bar, and the classifier declines to answer rather than guessing.
+
+### Guessing, where guessing is honest
+
+A trained model can only name codes it has seen enough of — for a personal
+ledger, perhaps a dozen. Everything else reaches the end of the chain and
+becomes a question. Two kinds of question are answerable without any learning,
+and both now are:
+
+**A sibling outlet** (step 6b, before the model). `KOPITIAM 88 OUTLET 3`
+inherits nothing from `KOPITIAM 88 OUTLET 7` today purely because they are
+different rows. Matching on similarity alone is bad at exactly this case —
+three shared words of four scores 0.6, indistinguishable from coincidence — so
+the comparison strips outlet, branch and unit numbers and asks whether what
+remains is the same chain. The difference between the strings is the signal,
+not how alike they are. A merchant that presents two codes of its own lends
+nothing: passing on an uncertainty is worse than passing on nothing, because
+the borrower cannot see it was contested.
+
+**What the words mean** (step 8b, last before asking). There is no training
+data behind "kopitiam is a coffee shop"; it is simply true of this market, and
+a model would need dozens of examples to discover it. A short list of things
+that are unambiguous in Singaporean usage is the cheapest intelligence
+available and needs no corpus at all.
+
+Two constraints on it. It maps to **categories, never to MCCs** — a word can
+support a claim about what kind of place this is, and cannot support a claim
+about what an acquirer registered it as; guessing a four-digit code from the
+word "cafe" would be inventing a fact about a bank. And **disagreement returns
+nothing**: a line matching two categories gets no answer rather than a
+confident pick.
+
+Both carry lower confidence than evidence or the model, say in the trail that
+they are guessing, and still pass through the reward-impact check that decides
+whether the answer is worth acting on.
+
 ### Data available
 
 Harvested from the ledger, not imported from anywhere:

@@ -1,3 +1,4 @@
+import { FEATURE_VERSION } from '../../../shared/ml/text';
 import { today } from '../../spend';
 import type { Env } from '../../types';
 
@@ -40,6 +41,8 @@ export interface ModelRecord {
   /** One bias term per class, same order, as JSON. */
   intercept_json: string | null;
   feature_count: number;
+  /** Which feature extractor trained it. A mismatch must never be scored. */
+  feature_version: number;
   /** The probability this model has to reach before its answer may be used. */
   high_confidence: number;
   created_at: string;
@@ -93,6 +96,7 @@ export interface RegisterInput {
   classes?: string[] | null;
   intercept?: number[] | null;
   feature_count?: number;
+  feature_version?: number;
   high_confidence?: number;
 }
 
@@ -109,8 +113,8 @@ export async function registerModel(env: Env, input: RegisterInput): Promise<{ o
   await env.DB.prepare(
     `INSERT INTO ml_models
        (model_key, version, architecture, trained_at, training_examples, validation_metrics_json,
-        artifact_hash, status, note, classes_json, intercept_json, feature_count, high_confidence)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?)`
+        artifact_hash, status, note, classes_json, intercept_json, feature_count, feature_version, high_confidence)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       input.model_key,
@@ -124,6 +128,7 @@ export async function registerModel(env: Env, input: RegisterInput): Promise<{ o
       input.classes ? JSON.stringify(input.classes) : null,
       input.intercept ? JSON.stringify(input.intercept) : null,
       input.feature_count ?? 0,
+      input.feature_version ?? FEATURE_VERSION,
       input.high_confidence ?? 0.85
     )
     .run();
@@ -206,6 +211,13 @@ export function meetsBar(m: ModelRecord): { ok: boolean; missing: string[] } {
   // model had simply turned out to be bad.
   if (m.feature_count < PROMOTION_BAR.min_features) {
     missing.push(`only ${m.feature_count} features stored — the upload did not finish`);
+  }
+  // Refused outright rather than scored: weights attached to a different
+  // feature set are not a worse model, they are a meaningless one.
+  if ((m.feature_version ?? 1) !== FEATURE_VERSION) {
+    missing.push(
+      `trained with feature set v${m.feature_version ?? 1}, this build reads v${FEATURE_VERSION} — retrain`
+    );
   }
   if (!m.classes_json || !m.intercept_json) {
     missing.push('the model has no classes recorded');

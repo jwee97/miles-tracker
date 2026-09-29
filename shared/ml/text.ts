@@ -15,6 +15,22 @@ export const NGRAM_MIN = 3;
 export const NGRAM_MAX = 5;
 
 /**
+ * Which feature extractor a model was trained with.
+ *
+ * Bumped whenever the features change. A model scored with a different
+ * extractor than it was trained with produces confident nonsense — the weights
+ * are attached to n-grams that no longer mean the same thing — and nothing
+ * about the output would look wrong. So the version travels with the model and
+ * a mismatch refuses to answer.
+ *
+ * 1 — character 3–5 grams of the descriptor, and nothing else.
+ * 2 — plus the structure the parser already recovers: which processor routed
+ *     the payment, which country the terminal was in, whether the line carried
+ *     a reference number, and how long the name is.
+ */
+export const FEATURE_VERSION = 2;
+
+/**
  * The text a model sees.
  *
  * Padded with a space at each end so that the start and end of the string are
@@ -25,8 +41,58 @@ export function prepare(descriptor: string): string {
   return ` ${descriptor.toLowerCase().replace(/[^a-z0-9& ]+/g, ' ').replace(/\s+/g, ' ').trim()} `;
 }
 
-/** Every character n-gram in the descriptor, with how often it appears. */
-export function ngrams(descriptor: string, min = NGRAM_MIN, max = NGRAM_MAX): Map<string, number> {
+/**
+ * Structure the descriptor carries that its characters do not.
+ *
+ * The first version of this model saw nothing but character n-grams, which
+ * threw away things the parser had already worked out and that predict a code
+ * strongly. `SQ *` means a small independent merchant on Square, and that is a
+ * different distribution of codes from the same name arriving through an
+ * airline's own gateway. A foreign country marker changes it again. None of
+ * that is recoverable from the letters alone once the prefix has been
+ * stripped, and it was being stripped.
+ *
+ * Prefixed with `` so these can never collide with a real n-gram.
+ */
+export function structureTokens(descriptor: string): string[] {
+  const raw = (descriptor ?? '').toString();
+  const tokens: string[] = [];
+
+  const processor = raw.match(/^\s*(sq|sqc|stripe|paypal|pp|grab|amaze|shopback|fave|adyen|2c2p|nets|wl)\s*[*\s]/i);
+  if (processor) tokens.push(`\u0001proc=${processor[1].toLowerCase()}`);
+
+  const country = raw.match(/\b(sg|sgp|singapore|my|mys|hk|hkg|us|usa|au|aus|jp|jpn|gb|uk)\b\s*$/i);
+  if (country) tokens.push(`\u0001country=${country[1].toLowerCase()}`);
+
+  // A trailing reference number marks a terminal-generated line, which skews
+  // toward physical acceptance rather than a web checkout. Looked for before
+  // the country marker as well as at the very end, since a statement prints
+  // "… 8829 SG" as often as "… 8829".
+  if (/\s\d{4,}\s*(?:[a-z]{2,3}\s*)?$/i.test(raw)) tokens.push('\u0001ref');
+  if (/\b(?:www\.|https?:|\.com|\.sg\b)/i.test(raw)) tokens.push('\u0001web');
+
+  // Length in coarse buckets. Long descriptors are aggregators and marketplaces;
+  // short ones are shops.
+  const words = prepare(raw).trim().split(/\s+/).filter(Boolean).length;
+  tokens.push(`\u0001words=${words <= 1 ? '1' : words <= 3 ? '2-3' : words <= 6 ? '4-6' : '7+'}`);
+
+  return tokens;
+}
+
+/**
+ * Every feature the model sees, with how often it appears.
+ *
+ * Character n-grams plus the structure tokens above. Callers pass extra
+ * context — the channel a purchase came through, for instance — where they
+ * have it; the trainer and the Worker must pass the same things or the
+ * weights mean nothing, which is what `FEATURE_VERSION` guards.
+ */
+export function ngrams(
+  descriptor: string,
+  min = NGRAM_MIN,
+  max = NGRAM_MAX,
+  context: { channel?: string | null } = {}
+): Map<string, number> {
   const s = prepare(descriptor);
   const out = new Map<string, number>();
   if (s.trim() === '') return out;
@@ -37,6 +103,10 @@ export function ngrams(descriptor: string, min = NGRAM_MIN, max = NGRAM_MAX): Ma
       out.set(g, (out.get(g) ?? 0) + 1);
     }
   }
+
+  for (const t of structureTokens(descriptor)) out.set(t, 1);
+  if (context.channel) out.set(`\u0001channel=${context.channel.toLowerCase()}`, 1);
+
   return out;
 }
 
