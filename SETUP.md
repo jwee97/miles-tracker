@@ -313,9 +313,12 @@ What it cannot do is read prose. "Miles are awarded on the first S$1,000 of
 eligible spend in each statement month, excluding the categories set out in
 Clause 7.2" is a rule no regular expression should be trusted with. For that,
 **Copy the prompt for Claude** on the same panel — it hands over the whole page
-wrapped in the instructions that turn it into `/addearn` and `/exclude` lines.
-`/cardrules citirw` in the bot gives you the same prompt, bare, to paste a page
-under yourself.
+wrapped in the instructions that turn it into `/addearn`, `/exclude` and `/req`
+lines. `/cardrules citirw` in the bot gives you the same prompt, bare, to paste
+a page under yourself. It asks for the minimum spend a bonus depends on as well
+as the cap, and if the page dates the new rates it returns the date instead of
+commands — dated rates belong in a new version, not written over the one that
+covers the months already earned.
 
 **2. Type them yourself.**
 

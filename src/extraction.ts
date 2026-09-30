@@ -81,10 +81,11 @@ export function cardRulesPrompt(
   const { source, text } = opts;
   return `Extract this credit card's earning structure into commands.
 
-Return ONLY a list of commands, one per line, no commentary:
+Return ONLY commands, one per line, and # comment lines. No other prose:
 
-/addearn ${nickname} <category> <rate> cap <amount> window <window> mcc <codes> group <name>
+/addearn ${nickname} <category> <rate> cap <amount> window <window> mcc <codes> group <name> tier <amount>
 /exclude <mcc> ${nickname} <reason>
+/req ${nickname}|monthly_min|<amount>|<window>|||<txns>|<note>
 
 Rules:
 1. <rate> is miles per dollar as a plain number (4), OR a percentage with a
@@ -95,19 +96,35 @@ Rules:
 3. ALWAYS include a /addearn ${nickname} * <rate> line for the base rate.
 4. cap is the spend at which the bonus rate stops, in dollars. Omit if none.
 5. window is statement_cycle, calendar_month or calendar_quarter — whichever
-   the cap resets on. Omit if there is no cap.
+   the cap resets on. Omit if there is no cap. There is no yearly window: if a
+   cap is annual, leave window out and say so in a # comment. Calling it monthly
+   would claim twelve times the bonus headroom that exists.
 6. mcc is a comma-separated list of four-digit codes the rate is restricted to,
    when the terms name them. This matters more than the category word: a rate
    restricted to 5262,5964,5969 is not the same thing as "online".
 7. If ONE cap is shared across several categories, give those lines the SAME
    group name. If each category has its own cap, omit group. This matters:
    getting it wrong makes the app think you have more bonus headroom than you do.
-8. Add a /exclude line for every merchant code or category the terms say earns
+8. A minimum spend is NOT a cap. If the bonus needs one, write a /req line for
+   it — window is calendar_month, statement_cycle, calendar_quarter or
+   statement_quarter — and add \`tier <amount>\` to any rate that applies only
+   above a spend rung. A rate recorded without its minimum is a rate the app
+   will promise and the bank will not pay.
+9. Add a /exclude line for every merchant code or category the terms say earns
    nothing, with the reason in a few words.
-9. If the card lets you CHOOSE the bonus category, output only the category
-   currently selected, and add a comment line saying so.
-10. Do not invent rates or codes. If the terms do not state one, leave that line
-   out and add a comment naming what is missing.
+10. If the card lets you CHOOSE the bonus category, output only the category
+   currently selected, and add a # comment saying so.
+11. Do not invent rates or codes. If the terms do not state one, leave that line
+   out and add a # comment naming what is missing.
+12. If the page says these rates start on a FUTURE date — "with effect from
+   1 Nov 2026" — output no /addearn lines at all. Write
+   \`# effective from YYYY-MM-DD\`, list the rates as # comments, and stop. Dated
+   rates go in as a new version under Catalogue → Edit its rules; /addearn
+   would write them into the version that also covers earlier months, restating
+   what those months earned at rates that did not apply to them.
+13. End with \`# source <url>\` for the page you read. Recording that URL against
+   the card is what lets the app re-read the page later and tell you when the
+   bank has changed it.
 
 Card: ${product} (nickname: ${nickname})
 ${source ? `Source: ${source}\n` : ''}

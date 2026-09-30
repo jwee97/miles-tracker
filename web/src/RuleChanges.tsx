@@ -121,9 +121,11 @@ function Change({ c, onDone }: { c: PendingRuleChange; onDone: () => void }) {
                   />
                 </td>
                 <td>
+                  {/* The engine knows two reward types. A third value here
+                      would be stored and then priced as miles anyway, which is
+                      a wrong number wearing the right label. */}
                   <select value={r.reward_type ?? 'miles'} onChange={(e) => set(i, { reward_type: e.target.value })}>
                     <option value="miles">miles</option>
-                    <option value="points">points</option>
                     <option value="cashback">cashback</option>
                   </select>
                 </td>
@@ -136,11 +138,18 @@ function Change({ c, onDone }: { c: PendingRuleChange; onDone: () => void }) {
                   />
                 </td>
                 <td>
+                  {/*
+                    These are the only three windows the cap calculation can
+                    tell apart; anything else it reads as the statement cycle.
+                    So there is no "year" to offer — an annual cap labelled
+                    yearly would be treated as resetting every statement, which
+                    hands back twelve times the headroom that exists.
+                  */}
                   <select value={r.cap_window ?? ''} onChange={(e) => set(i, { cap_window: e.target.value || null })}>
                     <option value="">no cap</option>
-                    <option value="monthly">month</option>
-                    <option value="statement">statement</option>
-                    <option value="yearly">year</option>
+                    <option value="statement_cycle">statement cycle</option>
+                    <option value="calendar_month">calendar month</option>
+                    <option value="calendar_quarter">calendar quarter</option>
                   </select>
                 </td>
                 <td>

@@ -1159,6 +1159,23 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('the bot accepts a rate restricted to merchant codes', rule?.mcc_include === '5262,5964,5969', JSON.stringify(rule));
   check('and still reads the cap beside it', rule?.cap_cents === 100000 && rule?.cap_group === 'tenx', JSON.stringify(rule));
 
+  // The prompt also promises `tier` and a /req line. A shape the prompt asks
+  // for and the bot rejects is a flow that dead-ends on the last step, which is
+  // exactly the failure this block exists to catch.
+  await tg('/addearn crw groceries 6% tier 1000 cap 500 window calendar_month');
+  const tiered = db
+    .prepare(`SELECT * FROM earn_rules WHERE card_id = (SELECT id FROM cards WHERE nickname='crw') AND category='groceries'`)
+    .get() as any;
+  check('the bot accepts a rate that needs a spend rung', tiered?.min_tier_cents === 100000, JSON.stringify(tiered));
+  check('and reads it as cashback from the % sign', tiered?.reward_type === 'cashback', JSON.stringify(tiered));
+
+  await tg('/req crw|monthly_min|800|calendar_month|||4|6% on groceries');
+  const req = db
+    .prepare(`SELECT * FROM requirements WHERE card_id = (SELECT id FROM cards WHERE nickname='crw') AND kind='monthly_min'`)
+    .get() as any;
+  check('and the minimum spend the bonus depends on', req?.amount_cents === 80000, JSON.stringify(req));
+  check('with the transaction count beside it', req?.min_txns === 4, JSON.stringify(req));
+
   const before = db.prepare(`SELECT COUNT(*) AS n FROM earn_rules`).get() as any;
   await tg('/addearn crw dining 4 mcc 526');
   const after = db.prepare(`SELECT COUNT(*) AS n FROM earn_rules`).get() as any;

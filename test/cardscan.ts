@@ -116,6 +116,21 @@ check('and insists on a base rate', prompt.includes('/addearn crw * <rate>'), ''
 check('and asks for the merchant codes too', prompt.includes('/exclude <mcc> crw'), '');
 check('and carries the page text', prompt.includes('Earn 4 mpd online.'), '');
 
+// Every command shape the prompt promises has to exist, and the bare prompt has
+// to survive Telegram: /cardrules sends it as one message, and a prompt that
+// arrives cut in half loses whichever rules fell off the end.
+check('it asks for the minimum spend, not only the cap', prompt.includes('/req crw|monthly_min|'), '');
+check('and for the spend rung a rate depends on', prompt.includes('tier <amount>'), '');
+check('and refuses to date-stamp a version by hand', prompt.includes('# effective from YYYY-MM-DD'), '');
+check('and asks where the page was', prompt.includes('# source <url>'), '');
+check(
+  'and offers no window the cap calculation cannot tell apart',
+  !/window is[^.]*year/i.test(prompt) && prompt.includes('There is no yearly window'),
+  ''
+);
+const bare = cardRulesPrompt('crw', 'Rewards');
+check(`the bare prompt fits one Telegram message (${bare.length})`, bare.length <= 4096, String(bare.length));
+
 // Nothing above wrote a rule: that is the whole point of the design.
 const ruleCount = db.prepare(`SELECT COUNT(*) AS n FROM earn_rules`).get() as { n: number };
 check('reading a page never writes a rule', Number(ruleCount.n) === 0, String(ruleCount.n));

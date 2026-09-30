@@ -390,8 +390,16 @@ the wrong paragraph would misdirect every recommendation the app makes, so it
 is offered, never applied.
 
 For the prose it cannot read, **Copy the prompt for Claude** hands over the
-page already wrapped in the instructions that turn it into `/addearn` and
-`/exclude` lines. `/cardrules alt` gives the same prompt in the bot.
+page already wrapped in the instructions that turn it into `/addearn`,
+`/exclude` and `/req` lines. `/cardrules alt` gives the same prompt in the bot.
+
+Two of those instructions exist because getting them wrong is expensive. A
+minimum spend is not a cap — a rate recorded without the $800 a month it depends
+on is a rate the app will promise and the bank will not pay — so minimums come
+back as `/req` lines and rates that need a spend rung carry `tier`. And a page
+that says the new rates start on 1 November produces no `/addearn` lines at all,
+only the date: `/addearn` writes into the version that also covers earlier
+months, and those months earned the old rates.
 
 The codes matter more than the category word: `/addearn alt online 4` claims
 every online purchase earns the bonus, while
