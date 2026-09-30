@@ -78,8 +78,13 @@ export async function ruleSetOn(env: Env, productId: number, date: string): Prom
 
 export async function rulesIn(env: Env, ruleSetId: number): Promise<EarnRule[]> {
   return cached(env, `rulesin:${ruleSetId}`, async () => {
+    // Active only. /delearn switches a rule off rather than deleting it, and
+    // this read ignored the switch — so on any card linked to a product, which
+    // after the migration is every card, a removed rule vanished from /earn and
+    // went on pricing every purchase. The one place it still showed was the
+    // number, and nobody could see why.
     const { results } = await env.DB.prepare(
-      `SELECT * FROM earn_rules WHERE rule_set_id = ? ORDER BY priority DESC, id`
+      `SELECT * FROM earn_rules WHERE rule_set_id = ? AND active = 1 ORDER BY priority DESC, id`
     )
       .bind(ruleSetId)
       .all<EarnRule>();

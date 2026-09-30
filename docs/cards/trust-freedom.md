@@ -28,8 +28,12 @@ bank changes the card, change `test/fixtures/trust-freedom.ts` first and let tha
 
 ## Setup
 
-Paste in blocks of up to eight lines; `#` lines are skipped. Then set the mode you are on, from the date
-the current quarter began: `/mode freedom stockback 2026-07-01`.
+The quickest way, and the one that also cleans up a card set up before: `/cardfix freedom` shows what
+would change, and `/cardfix freedom confirm stockback` applies it and records the mode you are on from
+the day the card was opened. It switches off every rule the card has collected and writes the ones below.
+
+By hand instead: paste in blocks of up to eight lines, then `/mode freedom stockback <YYYY-MM-DD>`.
+Both come from `src/cards/profiles.ts`, so they describe the same card.
 
 ```
 # Trust Freedom Card — verified against trustbank.sg Key Facts Sheet and Product Terms, 30 Sep 2026.

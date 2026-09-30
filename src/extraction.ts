@@ -182,6 +182,7 @@ export const COMMANDS: { command: string; description: string }[] = [
   { command: 'delearn', description: 'Remove an earn rule' },
   { command: 'cardrules', description: 'Get the prompt that reads a card\'s rates out of its page' },
   { command: 'mode', description: 'Cards you choose the reward of: see or switch the mode' },
+  { command: 'cardfix', description: 'Put a card back to its checked definition: /cardfix freedom' },
   { command: 'tiers', description: 'Tiered cashback: /tiers uobone 600=50 1000=110' },
   { command: 'req', description: 'Add a minimum spend requirement' },
   { command: 'reqs', description: 'List minimum spend requirements' },
@@ -262,6 +263,8 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /mode <card> <key> [YYYY-MM-DD] [category] — switch, from the day it started
 /mode <card> add <key>|<label>|<payout>|<categories> — record a mode it offers
 /mode <card> compare — what each mode would have paid on your own spending
+/cardfix <card> — put a card's rules, modes and exclusions back to its checked definition
+   shows what would change; \`/cardfix <card> confirm [mode]\` applies it
 /cardrules <card> — get a prompt to extract a card's rates with Claude
    paste the whole reply back in one message: every command line runs, up to 8
 /setearn <id> <rate> — correct a rule, e.g. \`/setearn 3 5%\`

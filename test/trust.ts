@@ -22,7 +22,7 @@ import worker from '../src/index';
 import { runMigrations, runSeed } from '../src/migrate';
 import { evaluate } from '../src/rules';
 import { modeComparison } from '../src/intelligence/planning/modes';
-import { TRUST_FREEDOM_COMMANDS } from './fixtures/trust-freedom';
+import { profileCommands, TRUST_FREEDOM } from '../src/cards/profiles';
 import type { Card, Env } from '../src/types';
 
 const said: string[] = [];
@@ -92,7 +92,9 @@ check('the card exists and is linked to a product', !!(card as any)?.product_id,
 // --- the commands, exactly as they would be pasted ---------------------------
 // Sent in blocks of up to eight lines, which is what the bot accepts in one
 // message — so this also proves the pasted-block path handles all of them.
-const lines = TRUST_FREEDOM_COMMANDS.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('/'));
+// Generated from the same profile /cardfix applies, so the commands a person
+// pastes and the repair cannot describe two different cards.
+const lines = profileCommands(TRUST_FREEDOM, 'freedom').split('\n').map((l) => l.trim()).filter((l) => l.startsWith('/'));
 for (let i = 0; i < lines.length; i += 8) {
   const before = said.length;
   await tg(lines.slice(i, i + 8).join('\n'));

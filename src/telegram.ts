@@ -8,6 +8,7 @@ import type { ScanResult } from './rss';
 import { currentRuleSetFor } from './catalog/migrate-products';
 import { choicesOf, chooseMode, defineMode, ModeError, modeOn, modesOf } from './cards/modes';
 import { modeComparison, NoModesError } from './intelligence/planning/modes';
+import { applyProfile, planProfile, PROFILES, profileFor, ProfileError } from './cards/profiles';
 import { ingestTransaction } from './transactions/ingest';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
@@ -845,6 +846,80 @@ async function runCommand(
           );
         } catch (e) {
           if (e instanceof ModeError) return reply(`Cannot switch: ${e.message}`);
+          throw e;
+        }
+      }
+
+      /**
+       * Put a card's records back to a checked definition of it.
+       *
+       *   /cardfix freedom                        what would change
+       *   /cardfix freedom confirm                change it
+       *   /cardfix freedom confirm stockback      and record the mode, from the day
+       *                                           the card was opened
+       *
+       * Shows first and changes only on `confirm`, because it switches off
+       * every rule the card has collected — that is the point of it, and also
+       * not something to do to a card by accident.
+       */
+      case '/cardfix': {
+        const [nick, action, mode, category] = args.trim().split(/\s+/);
+        if (!nick)
+          return reply(
+            'Format: `/cardfix <card>` to see what would change, then `/cardfix <card> confirm [mode]`.\n' +
+              `Cards it knows: ${PROFILES.map((p) => `${p.issuer} ${p.product_name}`).join(', ')}.`
+          );
+        const card = await env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`)
+          .bind(nick)
+          .first<any>();
+        if (!card) return reply(`No card with nickname \`${nick}\`. /cards to list them.`);
+        const product = card.product_id
+          ? await env.DB.prepare(`SELECT product_key FROM card_products WHERE id = ?`).bind(card.product_id).first<any>()
+          : null;
+        const profile = profileFor(product?.product_key ?? card.product_key);
+        if (!profile)
+          return reply(
+            `There is no checked definition of *${card.product}* to put it back to. ` +
+              `Cards it knows: ${PROFILES.map((p) => `${p.issuer} ${p.product_name}`).join(', ')}.`
+          );
+
+        const apply = action?.toLowerCase() === 'confirm';
+        try {
+          const plan = apply
+            ? await applyProfile(env, card, profile, { mode: mode?.toLowerCase() ?? null, category: category ?? null })
+            : await planProfile(env, card, profile, mode?.toLowerCase() ?? null);
+
+          const off = plan.remove.rules;
+          const lines = [
+            `*${card.product}* → ${profile.issuer} ${profile.product_name}, as checked on ${profile.verified_on}`,
+            '',
+            apply ? '*Done:*' : '*Would change:*',
+            `• ${off.length} rule${off.length === 1 ? '' : 's'} switched off` +
+              (off.length ? `:\n  ${off.slice(0, 12).join('\n  ')}${off.length > 12 ? `\n  …and ${off.length - 12} more` : ''}` : ''),
+            `• ${plan.add.rules} rules added across ${plan.add.modes} modes`,
+            `• exclusions: ${plan.remove.exclusions} replaced by ${plan.add.exclusions} codes from the Product Terms`,
+            `• minimums: ${plan.remove.requirements} replaced by the Bonus Cashback minimum, which applies only in that mode`,
+            ...(plan.remove.modes.length ? [`• modes removed: ${plan.remove.modes.join(', ')}`] : []),
+            ...(plan.remove.choices.length ? [`• mode history cleared: ${plan.remove.choices.join('; ')}`] : []),
+            ...plan.card_fields.map((f) => `• ${f}`),
+            `• mode: ${plan.mode_after}`,
+          ];
+          if (apply) {
+            lines.push(
+              '',
+              'Purchases already logged keep the prices they were given. Re-price them under Activity → ' +
+                '"Re-price against the current rules", card `' + card.nickname + '`.'
+            );
+          } else {
+            lines.push(
+              '',
+              `Send \`/cardfix ${card.nickname} confirm\` to apply` +
+                (profile.modes.length ? `, or \`/cardfix ${card.nickname} confirm stockback\` to also record the mode you are on.` : '.')
+            );
+          }
+          return reply(lines.join('\n'));
+        } catch (e) {
+          if (e instanceof ProfileError) return reply(`Cannot fix it: ${e.message}`);
           throw e;
         }
       }
