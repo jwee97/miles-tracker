@@ -2831,3 +2831,59 @@ export const applyRuleChange = (id: number, rules: PendingRuleChange['proposed']
   );
 export const dismissRuleChange = (id: number, note?: string) =>
   post<{ ok: boolean; error?: string }>(`/api/catalog/rule-changes/${id}/dismiss`, { note });
+
+export interface CardMode {
+  mode_key: string;
+  label: string;
+  payout: string;
+  picks_category: number;
+  category_choices: string | null;
+  note: string | null;
+}
+
+export interface ModeChoice {
+  mode_key: string;
+  category: string | null;
+  effective_from: string;
+  effective_until: string | null;
+}
+
+export interface ModeCard {
+  nickname: string;
+  product: string;
+  modes: CardMode[];
+  history: ModeChoice[];
+  current: ModeChoice | null;
+}
+
+export interface ModeOutcome {
+  mode_key: string;
+  label: string;
+  payout: string;
+  category: string | null;
+  value_cents: number;
+  miles: number;
+  cashback_cents: number;
+  uncovered_cents: number;
+  rounded_away_cents: number;
+  selected: boolean;
+  summary: string;
+}
+
+export interface ModeComparison {
+  card: string;
+  product: string;
+  label: string;
+  transactions: number;
+  spend_cents: number;
+  modes: ModeOutcome[];
+  better_by_cents: number;
+  headline: string;
+  caveats: string[];
+}
+
+export const fetchModeCards = () => get<{ cards: ModeCard[]; as_of: string }>('/api/cards/modes');
+export const chooseCardMode = (body: { nickname: string; mode_key: string; from: string; category?: string | null }) =>
+  post<{ ok?: boolean; error?: string }>('/api/cards/modes/choose', body);
+export const fetchModeComparison = (card: string, range = 'lastquarter') =>
+  get<ModeComparison>(`/api/cards/modes/compare?card=${encodeURIComponent(card)}&range=${range}`);

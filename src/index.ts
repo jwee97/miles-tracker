@@ -23,6 +23,8 @@ import { merchantMetrics } from './intelligence/merchants/metrics';
 import { listModels, promoteModel, registerModel, retireModel, predictionsFromRetiredModels } from './intelligence/models/registry';
 import { modelHealth, modelHistory, retireIfDegraded } from './intelligence/models/health';
 import { rewardLeakage } from './intelligence/planning/leakage';
+import { modeComparison, NoModesError } from './intelligence/planning/modes';
+import { choicesOf, chooseMode, ModeError, modeOn, modesOf } from './cards/modes';
 import { monthlyPlan } from './intelligence/planning/allocate';
 import { applyChange, dismissChange, pendingChanges, watchProductPages } from './catalog/watch/detect';
 import { evaluateFinishedForecasts, periodOutlook, storeForecast } from './intelligence/forecasting/forecast';
@@ -862,6 +864,60 @@ export default {
               end: url.searchParams.get('to') ?? month.end,
             })
           );
+        }
+
+        // --- cards you choose the reward of -------------------------------
+        if (url.pathname === '/api/cards/modes' && req.method === 'GET') {
+          const { results } = await env.DB.prepare(
+            `SELECT c.id, c.nickname, c.product, c.product_id FROM cards c
+              WHERE c.closed_at IS NULL AND c.product_id IN (SELECT product_id FROM card_modes)
+              ORDER BY c.nickname`
+          ).all<any>();
+          const cards = [];
+          for (const c of results ?? []) {
+            cards.push({
+              nickname: c.nickname,
+              product: c.product,
+              modes: await modesOf(env, c.product_id),
+              history: await choicesOf(env, c.id),
+              current: await modeOn(env, c.id, today(env)),
+            });
+          }
+          return json({ cards, as_of: today(env) });
+        }
+
+        if (url.pathname === '/api/cards/modes/choose' && req.method === 'POST') {
+          const b = (await req.json().catch(() => ({}))) as Record<string, any>;
+          const card = await env.DB.prepare(`SELECT id, nickname, product_id FROM cards WHERE nickname = ? COLLATE NOCASE`)
+            .bind(String(b.nickname ?? '').trim())
+            .first<any>();
+          if (!card) return json({ error: 'no such card' }, 404);
+          try {
+            const made = await chooseMode(env, card, String(b.mode_key ?? ''), {
+              from: String(b.from ?? today(env)),
+              category: b.category ?? null,
+              note: b.note ?? null,
+            });
+            return json({ ok: true, choice: made });
+          } catch (e) {
+            if (e instanceof ModeError) return json({ error: e.message }, 400);
+            throw e;
+          }
+        }
+
+        if (url.pathname === '/api/cards/modes/compare' && req.method === 'GET') {
+          try {
+            return json(
+              await modeComparison(env, url.searchParams.get('card') ?? '', {
+                range: url.searchParams.get('range'),
+                from: url.searchParams.get('from'),
+                to: url.searchParams.get('to'),
+              })
+            );
+          } catch (e) {
+            if (e instanceof NoModesError) return json({ error: (e as Error).message }, 400);
+            throw e;
+          }
         }
 
         // --- a bank changed its own card ----------------------------------

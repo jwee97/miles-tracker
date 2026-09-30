@@ -1,4 +1,5 @@
 import { cached } from './cache';
+import { modeOn, rulesUnder } from './cards/modes';
 import {
   calendarMonth,
   calendarMonthOf,
@@ -39,6 +40,17 @@ export interface EarnRule {
   min_tier_cents: number | null;
   /** The versioned set this rule belongs to; null on rules not yet migrated. */
   rule_set_id: number | null;
+  /**
+   * The selectable reward mode this rule belongs to, on cards that make you
+   * choose one. Null means it applies whatever the card is set to, which is
+   * every ordinary card's rules.
+   */
+  mode_key?: string | null;
+  /**
+   * Spend rounded down to this step before anything is earned — Trust's nearest
+   * S$5. Null on cards that pay on the exact amount.
+   */
+  earn_step_cents?: number | null;
   /** Higher wins among rules that are otherwise equal. */
   priority: number;
   note: string | null;
@@ -444,7 +456,29 @@ export async function evaluate(
   // Rules resolved through a product are already this card's; the legacy path
   // returns only this card's too. The filter keeps a caller-supplied list from
   // leaking another card's rules in.
-  const mine = rules.filter((r) => r.rule_set_id != null || r.card_id === card.id);
+  const ofThisCard = rules.filter((r) => r.rule_set_id != null || r.card_id === card.id);
+
+  // Cards you choose the reward of: only the selected mode's rules apply, and
+  // which mode was selected is a question about the same date the rules are.
+  // This is the one place a card's applicable rules are settled, whether the
+  // caller supplied them or they were just read, so every path that prices a
+  // purchase inherits it rather than each having to remember.
+  //
+  // Asked only when the card's own rules name a mode. If none of them do, the
+  // filter is the identity function and the lookup is a database call spent to
+  // learn nothing — which, on a statement import that prices a row at a time,
+  // is a subrequest per row out of the fifty an invocation gets.
+  const choice = ofThisCard.some((r) => r.mode_key) ? await modeOn(env, card.id, on) : null;
+  const mine = rulesUnder(ofThisCard, choice);
+  if (choice) {
+    trace.push({
+      check: 'Reward mode',
+      pass: true,
+      detail:
+        `Set to ${choice.mode_key}${choice.category ? ` (${choice.category})` : ''} since ${choice.effective_from}` +
+        ' — the other modes this card offers do not apply',
+    });
+  }
 
   const exclusions =
     opts.exclusions ??
@@ -531,7 +565,12 @@ export async function evaluate(
   });
 
   const rewardType = rule.reward_type ?? 'miles';
-  const baseRate = fallback?.mpd ?? card.base_mpd ?? 0;
+  // The rate that applies once a cap is full cannot be the capped rule itself.
+  // A card paying "3% on everything, up to $500 a quarter" says nothing about
+  // what the next dollar earns, and reading it as another 3% makes the cap have
+  // no effect at all — which is how a capped base rate priced as if uncapped.
+  const uncappedBase = mine.find((r) => r.category === '*' && !r.cap_cents) ?? null;
+  const baseRate = uncappedBase?.mpd ?? (fallback && !fallback.cap_cents ? fallback.mpd : (card.base_mpd ?? 0));
   const bonusRate = rule.mpd;
 
   // 3. Cap: how much of this purchase actually gets the bonus rate.
@@ -552,9 +591,32 @@ export async function evaluate(
     trace.push({ check: 'Bonus cap', pass: true, detail: 'No cap on this rule' });
   }
 
-  const bonusPortion = headroom === null ? amount : Math.min(amount, headroom);
-  const basePortion = amount - bonusPortion;
-  const rateForBonus = matched && headroom !== 0 ? bonusRate : baseRate;
+  // Some cards round a transaction DOWN before paying anything on it. Trust
+  // rounds to the nearest S$5, so S$4.99 earns nothing at all and S$9.99 earns
+  // what S$5 does. It is neither a cap nor a minimum, and without it the app
+  // would quote a rate this card does not pay on small purchases — which is
+  // most of them.
+  const step = rule.earn_step_cents ?? 0;
+  const earnable = step > 1 ? Math.floor(amount / step) * step : amount;
+  if (earnable !== amount) {
+    trace.push({
+      check: 'Rounding',
+      pass: earnable > 0,
+      detail:
+        earnable > 0
+          ? `Rounded down to $${money(earnable)} — this card earns in steps of $${money(step)}`
+          : `Under $${money(step)}, and this card rounds down to that step, so it earns nothing`,
+    });
+  }
+
+  const bonusPortion = headroom === null ? earnable : Math.min(earnable, headroom);
+  const basePortion = earnable - bonusPortion;
+  // Whatever the paying rule pays — matched or fallback alike. Reading this as
+  // "the base rate unless a category matched" was the same thing while the
+  // fallback rule WAS the base rate; now that a capped fallback no longer
+  // supplies the rate beyond its own cap, the two have to be told apart, and
+  // the portion under the cap is always the paying rule's own rate.
+  const rateForBonus = bonusRate;
 
   let miles = 0;
   let cashback = 0;

@@ -6,6 +6,8 @@ import { daysUntil, OFFER_STATUSES, parseExtraction, saveExtraction, sweepExpire
 import { feedStorage, ignoreFeedItem, purgeFeedItems, retentionDays, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
 import type { ScanResult } from './rss';
 import { currentRuleSetFor } from './catalog/migrate-products';
+import { choicesOf, chooseMode, defineMode, ModeError, modeOn, modesOf } from './cards/modes';
+import { modeComparison, NoModesError } from './intelligence/planning/modes';
 import { ingestTransaction } from './transactions/ingest';
 import { activeCards, daysBetween, money, parseDateToken, parseMoney, requirementProgress, requirementsFor, today, utilization } from './spend';
 import { balances, categoryForMerchant, executeTransfer, formatRate, planRoutes, rankCards, ratesReview, rememberMerchant, tranchesByExpiry } from './points';
@@ -699,6 +701,145 @@ async function runCommand(
         return reply(ok ? `Taken back out of the wallet (#${id}).` : `#${id} was not credited.`);
       }
 
+      /**
+       * Cards you choose the reward of.
+       *
+       *   /mode                       what every such card is set to
+       *   /mode freedom               this card's options and its history
+       *   /mode freedom stockback     switch, from today
+       *   /mode freedom stockback 2026-10-01 [category]
+       *   /mode freedom add miles|Miles|miles
+       *
+       * The date matters more than it looks: the choice is locked for a
+       * membership quarter, so a switch recorded with today's date says last
+       * quarter's purchases were earned under the old mode, which they were.
+       */
+      case '/mode': {
+        const tok = args.trim().split(/\s+/).filter(Boolean);
+
+        if (!tok.length) {
+          const { results: cards } = await env.DB.prepare(
+            `SELECT c.id, c.nickname, c.product, c.product_id FROM cards c
+              WHERE c.closed_at IS NULL AND c.product_id IN (SELECT product_id FROM card_modes)
+              ORDER BY c.nickname`
+          ).all<any>();
+          if (!cards?.length)
+            return reply(
+              'No card here has selectable rewards.\n' +
+                'A card that makes you choose — miles, cashback or stock, one at a time — is set up with\n' +
+                '`/mode <card> add <key>|<label>|<payout>` and then `/mode <card> <key> <from>`.'
+            );
+          const lines = await Promise.all(
+            (cards ?? []).map(async (c: any) => {
+              const now = await modeOn(env, c.id, today(env));
+              return `*${c.nickname}* — ${now ? `${now.mode_key}${now.category ? ` (${now.category})` : ''} since ${now.effective_from}` : 'nothing chosen, so it earns only its unconditional rates'}`;
+            })
+          );
+          return reply(`*Reward modes*\n\n${lines.join('\n')}`);
+        }
+
+        const card = await cardByNick(env, tok[0]);
+        if (!card) return reply(`No card with nickname \`${tok[0]}\`. /cards to list them.`);
+        const productId = (card as any).product_id ?? null;
+
+        // /mode <card> add key|label|payout|categories
+        if (tok[1]?.toLowerCase() === 'add') {
+          if (!productId) return reply(`*${card.product}* is not linked to a product yet — run /migrate first.`);
+          const [key, label, payout, cats] = args.slice(args.indexOf('add') + 3).split('|').map((x) => x.trim());
+          if (!key || !label)
+            return reply(
+              'Format: `/mode <card> add <key>|<label>|<payout>|<categories>`\n' +
+                '`payout` is what it actually pays: `miles`, `cash`, `stock` or `points`.\n' +
+                'Add categories only when the mode also makes you pick one:\n' +
+                '`/mode freedom add bonus_cashback|Bonus Cashback|cash|dining,shopping,travel`'
+            );
+          const m = await defineMode(env, productId, {
+            mode_key: key.toLowerCase(),
+            label,
+            payout: (payout || 'cash').toLowerCase(),
+            picks_category: !!cats,
+            category_choices: cats || null,
+          });
+          return reply(
+            `*${card.product}* can now be set to *${m.label}* (\`${m.mode_key}\`), paid as ${m.payout}` +
+              (m.picks_category ? `, picking one of ${m.category_choices}` : '') +
+              `.\n\nRules for it carry \`mode ${m.mode_key}\`: \`/addearn ${card.nickname} * 1.3 mode ${m.mode_key}\``
+          );
+        }
+
+        // /mode <card> compare [range] — the quarterly decision, on your own
+        // spending rather than on the headline rates.
+        if (tok[1]?.toLowerCase() === 'compare') {
+          try {
+            const cmp = await modeComparison(env, card.nickname, { range: tok[2] ?? null });
+            return reply(
+              `*${cmp.product}* · ${cmp.label}\n${cmp.headline}\n\n` +
+                cmp.modes
+                  .map((m, i) => `${i === 0 ? '🥇' : m.selected ? '👉' : '  '} ${m.summary}`)
+                  .join('\n') +
+                `\n\n_${cmp.caveats[0]}_`
+            );
+          } catch (e) {
+            if (e instanceof NoModesError) return reply(`Cannot compare: ${(e as Error).message}`);
+            throw e;
+          }
+        }
+
+        const offered = await modesOf(env, productId);
+
+        // /mode <card> — what it offers and what it has been set to.
+        if (tok.length === 1) {
+          if (!offered.length)
+            return reply(
+              `*${card.product}* has no selectable rewards recorded.\n` +
+                `Add one with \`/mode ${card.nickname} add <key>|<label>|<payout>\`.`
+            );
+          const history = await choicesOf(env, card.id);
+          const now = await modeOn(env, card.id, today(env));
+          return reply(
+            `*${card.product}*\n\n` +
+              offered
+                .map(
+                  (m) =>
+                    `${now?.mode_key === m.mode_key ? '👉' : '  '} *${m.label}* \`${m.mode_key}\` — paid as ${m.payout}` +
+                    (m.picks_category ? `, picks one of ${m.category_choices}` : '')
+                )
+                .join('\n') +
+              '\n\n' +
+              (history.length
+                ? '*History*\n' +
+                  history
+                    .map(
+                      (h) =>
+                        `${h.effective_from} → ${h.effective_until ?? 'now'} · ${h.mode_key}${h.category ? ` (${h.category})` : ''}`
+                    )
+                    .join('\n')
+                : 'Nothing chosen yet, so only rules with no mode apply.') +
+              `\n\nSwitch with \`/mode ${card.nickname} <key> <YYYY-MM-DD>\` — the date it started, not today, if they differ.\n\`/mode ${card.nickname} compare\` prices each one against what you actually spent.`
+          );
+        }
+
+        // /mode <card> <key> [from] [category]
+        const key = tok[1].toLowerCase();
+        const rest = tok.slice(2);
+        const from = rest.find((t) => /^\d{4}-\d{2}-\d{2}$/.test(t)) ?? today(env);
+        const category = rest.find((t) => !/^\d{4}-\d{2}-\d{2}$/.test(t)) ?? null;
+        try {
+          const made = await chooseMode(env, { id: card.id, product_id: productId, nickname: card.nickname }, key, {
+            from,
+            category,
+          });
+          const mode = offered.find((m) => m.mode_key === made.mode_key);
+          return reply(
+            `*${card.product}* is on *${mode?.label ?? made.mode_key}*${made.category ? ` (${made.category})` : ''} from ${made.effective_from}.\n\n` +
+              'Everything bought before that keeps the mode it was bought under, so what the card has already earned does not change.'
+          );
+        } catch (e) {
+          if (e instanceof ModeError) return reply(`Cannot switch: ${e.message}`);
+          throw e;
+        }
+      }
+
       case '/setprogram': {
         const [nick, key] = args.split(/\s+/).map((x) => x?.trim());
         if (!nick) return reply('Format: `/setprogram <card> <programme key>` · `/routes` lists programmes.');
@@ -852,19 +993,35 @@ async function runCommand(
       }
 
       case '/exclude': {
-        // /exclude 6540 [card] [reason]
+        // /exclude 6540[,6051,...] [card] [reason]
+        //
+        // A list, because terms name exclusions in lists: "MCC 4829, 6010,
+        // 6011, 6012" is one clause and one line to write. One code at a time
+        // meant a card's exclusions arrived as eight commands, and the eight
+        // were the ones most likely to be abandoned half done.
         const parts = args.trim().split(/\s+/);
-        const code = parts[0] ?? '';
-        if (!/^\d{4}$/.test(code))
-          return reply('Format: `/exclude <mcc> [card] [reason]`\nLeave the card out to exclude it everywhere.');
+        const codes = (parts[0] ?? '')
+          .split(',')
+          .map((c) => c.trim())
+          .filter(Boolean);
+        if (!codes.length || codes.some((c) => !/^\d{4}$/.test(c)))
+          return reply(
+            'Format: `/exclude <mcc> [card] [reason]`\n' +
+              'Several at once: `/exclude 4829,6010,6011 freedom financial institutions`\n' +
+              'Leave the card out to exclude it everywhere.'
+          );
         const maybeCard = parts[1] ? await cardByNick(env, parts[1]) : null;
         const reason = parts.slice(maybeCard ? 2 : 1).join(' ') || 'excluded';
-        await env.DB.prepare(
-          `INSERT INTO exclusions (card_id, mcc, reason, source, active) VALUES (?, ?, ?, 'user', 1)`
-        )
-          .bind(maybeCard?.id ?? null, code, reason)
-          .run();
-        return reply(`MCC ${code} now earns nothing on ${maybeCard ? `*${maybeCard.product}*` : 'every card'}` +
+        await env.DB.batch(
+          codes.map((code) =>
+            env.DB.prepare(
+              `INSERT INTO exclusions (card_id, mcc, reason, source, active) VALUES (?, ?, ?, 'user', 1)`
+            ).bind(maybeCard?.id ?? null, code, reason)
+          )
+        );
+        return reply(
+          `MCC ${codes.join(', ')} now earn${codes.length > 1 ? '' : 's'} nothing on ` +
+            `${maybeCard ? `*${maybeCard.product}*` : 'every card'}` +
             ' and will not count toward a minimum. It applies from the next purchase you log.'
         );
       }
@@ -1350,6 +1507,8 @@ async function runCommand(
         let capGroup: string | undefined;
         let mccList: string | undefined;
         let minTier: string | undefined;
+        let modeKey: string | undefined;
+        let earnStep: string | undefined;
         let note: string | undefined;
 
         if (args.includes('|')) {
@@ -1366,8 +1525,10 @@ async function runCommand(
                 '`/addearn citirw online 4 cap 1000 group tenx` — shares that cap with other `tenx` rules\n' +
                 '`/addearn citirw * 0.4` — the fallback rate for everything else\n' +
                 '`/addearn citirw online 4 mcc 5262,5964,5969` — only those merchant codes\n\n' +
-                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`, `mcc <codes>`, `tier <amount>`, `note <text>`\n\n' +
-                '`tier` is for cards whose rate moves with the spend rung: `/addearn uobone groceries 6% tier 1000` earns 6% only while the card holds the $1,000 tier.'
+                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`, `mcc <codes>`, `tier <amount>`, `mode <key>`, `step <amount>`, `note <text>`\n\n' +
+                '`tier` is for cards whose rate moves with the spend rung: `/addearn uobone groceries 6% tier 1000` earns 6% only while the card holds the $1,000 tier.\n' +
+                '`mode` is for cards you choose the reward of: the rule applies only while that mode is selected — /mode.\n' +
+                '`step` is for cards that round a transaction down before paying on it: `step 5` is Trust\'s nearest S$5.'
             );
           [nick, cat, rateRaw] = tok;
           for (let i = 3; i < tok.length; i += 2) {
@@ -1378,6 +1539,8 @@ async function runCommand(
             else if (k === 'group') capGroup = v;
             else if (k === 'mcc') mccList = v;
             else if (k === 'tier') minTier = v;
+            else if (k === 'mode') modeKey = v;
+            else if (k === 'step') earnStep = v;
             else if (k === 'note') {
               note = tok.slice(i + 1).join(' ');
               break;
@@ -1405,10 +1568,22 @@ async function runCommand(
         // Same as the app: a rule added now belongs to the card's current
         // version, not loose beside it.
         const botRuleSet = await currentRuleSetFor(env, card.id, today(env));
+        // A mode has to be one the card actually offers, or the rule would sit
+        // in the table applying to nothing and looking like it applied.
+        if (modeKey) {
+          const offered = await modesOf(env, (card as any).product_id ?? null);
+          if (!offered.some((m) => m.mode_key === modeKey))
+            return reply(
+              offered.length
+                ? `*${card.product}* has no mode called \`${modeKey}\` — it offers ${offered.map((m) => `\`${m.mode_key}\``).join(', ')}.`
+                : `*${card.product}* has no selectable modes yet. Add them with \`/mode ${card.nickname} add <key>|<label>|<payout>\`.`
+            );
+        }
+
         await env.DB.prepare(
           `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, min_tier_cents,
-             cap_cents, cap_window, cap_group, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             cap_cents, cap_window, cap_group, mode_key, earn_step_cents, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             card.id,
@@ -1421,6 +1596,8 @@ async function runCommand(
             cap ? parseMoney(cap) : null,
             capWindow || (cap ? 'statement_cycle' : null),
             capGroup || null,
+            modeKey || null,
+            earnStep ? parseMoney(earnStep) : null,
             note || null
           )
           .run();
@@ -1428,6 +1605,8 @@ async function runCommand(
         return reply(`*${card.product}* earns ${formatRate(rate, isCashback ? 'cashback' : 'miles')} on *${cat}*` +
             (include.length ? `, but only on MCC ${include.join(', ')}` : '') +
             (minTier ? `, and only while the card holds the $${money(parseMoney(minTier) ?? 0)} tier` : '') +
+            (modeKey ? `, while the card is set to \`${modeKey}\`` : '') +
+            (earnStep ? `, rounding each purchase down to $${money(parseMoney(earnStep) ?? 0)}` : '') +
             (cap ? `, up to $${money(parseMoney(cap) ?? 0)} per ${capWindow || 'statement_cycle'}` : '') +
             (capGroup ? `\n_Shares that cap with other \`${capGroup}\` rules._` : '') +
             '\n\nTry `/which ' + cat.toLowerCase() + ' 100`.'

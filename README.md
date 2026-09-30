@@ -216,6 +216,35 @@ from them says it is uncertain.
 Adding a card means picking it, not describing it: the issuer, programme and
 every rate come with the product.
 
+### Cards you choose the reward of
+
+Some cards make you pick what they pay — the Trust Freedom Card offers miles, two
+cashback structures or stock, one at a time, chosen at onboarding and locked for
+the membership quarter. Encoding only the mode you happen to be on loses both
+halves of what matters: the app can never tell you the choice was worth
+revisiting, and when you do switch, last quarter's purchases get re-priced under
+this quarter's mode.
+
+So every mode is recorded against the product, and which one you are on is a
+**dated** choice against your card — the same shape as a versioned rule set, for
+the same reason. `/mode` shows it, `/mode <card> <key> <date>` switches from the
+day it actually started, and a purchase is always priced under the mode that was
+in force on its own day. Rules carrying no mode apply whatever the card is set
+to, which is every ordinary card's rules, so nothing else changes.
+
+`/mode <card> compare` — and **More → Plan the month** — answers the question the
+headline rates cannot: it replays what you actually spent through each mode and
+totals what each would have been worth, caps and all. 1.3 mpd against 3% in stock
+against 5% on one category depends entirely on what you buy and how much of it
+fits under a S$500 quarterly cap.
+
+Two smaller things this needed. A card that rounds each purchase **down** before
+paying on it — Trust's nearest S$5 — earns nothing at all on S$4.99, so `step` is
+recorded on the rule and the app stops quoting a rate the card does not pay on
+small purchases. And a cap on a card's *base* rate now actually stops it: "3% on
+everything, up to S$500 a quarter" used to price as an uncapped 3%, because the
+rate past the cap was read off the capped rule itself.
+
 ### When the bank changes it without telling you
 
 Each night the cards you hold have their own product pages re-read and compared

@@ -112,8 +112,15 @@ Rules:
    will promise and the bank will not pay.
 9. Add a /exclude line for every merchant code or category the terms say earns
    nothing, with the reason in a few words.
-10. If the card lets you CHOOSE the bonus category, output only the category
-   currently selected, and add a # comment saying so.
+10. If the card makes you CHOOSE what it pays — miles or cashback or stock, one
+   at a time — encode every mode, not just the one in use. Give each mode a key
+   and put \`mode <key>\` on its rules, and list the modes as # comments in the
+   form \`# mode <key>|<label>|<payout>|<categories it lets you pick>\`. The app
+   records which one is selected and from when, and prices each purchase under
+   the mode that was on that day; dropping the others loses the only thing that
+   can tell you the choice was worth changing. If a mode also picks a category
+   each quarter, use the category \`@selected\` for that rule rather than naming
+   one, and list the choices in the mode's comment line.
 11. Do not invent rates or codes. If the terms do not state one, leave that line
    out and add a # comment naming what is missing.
 12. If the page says these rates start on a FUTURE date — "with effect from
@@ -186,6 +193,7 @@ export const COMMANDS: { command: string; description: string }[] = [
   { command: 'setearn', description: 'Correct a rule\'s rate: /setearn 3 5%' },
   { command: 'delearn', description: 'Remove an earn rule' },
   { command: 'cardrules', description: 'Get the prompt that reads a card\'s rates out of its page' },
+  { command: 'mode', description: 'Cards you choose the reward of: see or switch the mode' },
   { command: 'tiers', description: 'Tiered cashback: /tiers uobone 600=50 1000=110' },
   { command: 'req', description: 'Add a minimum spend requirement' },
   { command: 'reqs', description: 'List minimum spend requirements' },
@@ -260,6 +268,11 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
    add \`cap 1000\`, \`window calendar_month\`, \`group tenx\`, \`mcc 5262,5964\`,
    \`tier 1000\` (rate only while the card holds that spend rung) as needed
    a rate ending in % means cashback: \`/addearn uobone groceries 5%\`
+/mode — cards you choose the reward of (Trust Freedom: miles, cashback, stock)
+/mode <card> — its options, what it is set to, and every switch so far
+/mode <card> <key> [YYYY-MM-DD] [category] — switch, from the day it started
+/mode <card> add <key>|<label>|<payout>|<categories> — record a mode it offers
+/mode <card> compare — what each mode would have paid on your own spending
 /cardrules <card> — get a prompt to extract a card's rates with Claude
    paste the whole reply back in one message: every command line runs, up to 8
 /setearn <id> <rate> — correct a rule, e.g. \`/setearn 3 5%\`

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchLeakage, fetchMonthlyPlan, money, type LeakageReport, type MonthlyPlan } from './api';
+import Modes from './Modes';
 
 /**
  * Two questions the app could not answer before.
@@ -226,6 +227,8 @@ export default function Planner() {
   return (
     <>
       <Plan />
+      {/* Renders nothing at all unless a card you hold makes you choose. */}
+      <Modes />
       <Leakage />
     </>
   );

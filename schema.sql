@@ -470,9 +470,58 @@ CREATE TABLE IF NOT EXISTS earn_rules (
   cap_group   TEXT,                            -- rules sharing one cap
   cap_window  TEXT,                            -- statement_cycle | calendar_month | calendar_quarter
   note        TEXT,
+  -- Cards that make you CHOOSE what they pay: the Trust Freedom Card offers
+  -- miles, two kinds of cashback, or stock, one at a time and locked in for a
+  -- quarter. A rule with a mode applies only while that mode is the one
+  -- selected; NULL means it applies whatever the card is set to, which is what
+  -- every ordinary card's rules are.
+  mode_key    TEXT,
+  -- Spend rounded DOWN to a step before anything is earned. Trust rounds each
+  -- transaction to the nearest S$5, so S$4.99 earns nothing and S$9.99 earns
+  -- what S$5 does. It is not a cap and not a minimum: it changes what a rate is
+  -- actually worth on small purchases, and nowhere else would say so.
+  earn_step_cents INTEGER,
   active      INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS earn_card ON earn_rules(card_id, active);
+
+-- ---------------------------------------------------------------------------
+-- Cards you choose the reward of.
+--
+-- Two tables because they answer two different questions, and the split is the
+-- same one the catalogue already makes. What modes EXIST is a fact about the
+-- product, true for everyone holding one. Which mode you are ON is a fact about
+-- your card, and a dated one: the choice is locked for a membership quarter, so
+-- a purchase from last quarter has to be priced under last quarter's mode even
+-- after you have switched. Overwriting the choice in place would quietly
+-- restate everything the card has already earned.
+CREATE TABLE IF NOT EXISTS card_modes (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id    INTEGER NOT NULL REFERENCES card_products(id) ON DELETE CASCADE,
+  mode_key      TEXT    NOT NULL,          -- 'miles' | 'stockback' | ...
+  label         TEXT    NOT NULL,          -- 'Stockback'
+  -- What the reward actually arrives as. The engine values stock like cashback
+  -- — 3% of spend is 3% of spend — but it is not cash, and a screen that says
+  -- cashback when the payout is ETF units is telling you something untrue.
+  payout        TEXT    NOT NULL DEFAULT 'cash',   -- cash | miles | stock | points
+  -- Some modes make you pick a category as well as the mode.
+  picks_category    INTEGER NOT NULL DEFAULT 0,
+  category_choices  TEXT,                  -- CSV of the categories that may be picked
+  note          TEXT,
+  UNIQUE(product_id, mode_key)
+);
+
+CREATE TABLE IF NOT EXISTS card_mode_choices (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id        INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  mode_key       TEXT    NOT NULL,
+  category       TEXT,                     -- when the mode picks one too
+  effective_from TEXT    NOT NULL,         -- YYYY-MM-DD
+  effective_until TEXT,                    -- NULL while current
+  note           TEXT,
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS card_mode_on ON card_mode_choices(card_id, effective_from);
 
 -- ===========================================================================
 -- Transaction capture (P0 phase 4)

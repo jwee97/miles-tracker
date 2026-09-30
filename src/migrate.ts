@@ -17,6 +17,9 @@ import type { Env } from './types';
  * EXISTS, so each is checked against PRAGMA table_info first.
  */
 const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
+  // --- cards you choose the reward of ---
+  { table: 'earn_rules', column: 'mode_key', ddl: 'ALTER TABLE earn_rules ADD COLUMN mode_key TEXT' },
+  { table: 'earn_rules', column: 'earn_step_cents', ddl: 'ALTER TABLE earn_rules ADD COLUMN earn_step_cents INTEGER' },
   // --- what an inference cost, and whether it turned out to be right ---
   { table: 'merchant_predictions', column: 'inference_ngrams', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN inference_ngrams INTEGER' },
   { table: 'merchant_predictions', column: 'inference_rows', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN inference_rows INTEGER' },
