@@ -147,7 +147,7 @@ const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 
 export default {
-  async fetch(req: Request, rawEnv: Env): Promise<Response> {
+  async fetch(req: Request, rawEnv: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     // Stored settings overlay the deployed config, so everything downstream
     // reads resolved values without knowing they are overridable.
@@ -160,12 +160,18 @@ export default {
       const given = req.headers.get('X-Telegram-Bot-Api-Secret-Token') ?? '';
       if (!safeEqual(given, env.TELEGRAM_SECRET)) return new Response('forbidden', { status: 403 });
       const update = await req.json();
-      // Always 200 quickly — Telegram retries on non-2xx and will duplicate work.
-      try {
-        await handleUpdate(env, update, url.origin);
-      } catch (err) {
-        console.error('update failed', err);
-      }
+      // Answer Telegram first, then do the work.
+      //
+      // Telegram delivers a chat's updates in order and retries one that does
+      // not get a 2xx — so an update that crashes the Worker, runs out of time
+      // or trips a resource limit is not one lost message. It is retried with
+      // growing gaps, and every message sent after it waits behind it: the bot
+      // looks dead, /help included, for as long as that one update keeps
+      // failing. Doing the work before answering made every slow command a
+      // candidate. Answered first, the worst a bad update can do is fail itself.
+      const work = handleUpdate(env, update, url.origin).catch((err) => console.error('update failed', err));
+      if (ctx) ctx.waitUntil(work);
+      else await work; // tests, which read the result straight after
       return new Response('ok');
     }
 

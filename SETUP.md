@@ -2856,6 +2856,15 @@ Logs** (or `npm run tail` on Path B) while messaging it. Nothing at all means
 Telegram isn't reaching you — check `getWebhookInfo` for `last_error_message`. A
 403 means `TELEGRAM_SECRET` and the registered `secret_token` don't match.
 
+**The bot answers nothing at all, not even /help.** Telegram delivers a chat's
+messages in order and retries one that failed, so a single message that crashed
+the Worker holds up everything sent after it. `getWebhookInfo` shows it as a
+`pending_update_count` above zero with a `last_error_message`. Clear the queue by
+registering the webhook again with `drop_pending_updates=true` (the same
+`setWebhook` URL as above, with `&drop_pending_updates=true` on the end), then
+resend what you need. The Worker now answers Telegram before doing the work, so
+a failing command can no longer jam the queue this way.
+
 **It answers `/start` but ignores everything else.** `OWNER_CHAT_ID` doesn't
 match your chat id. Redo A7.
 
