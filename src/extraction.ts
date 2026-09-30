@@ -133,6 +133,97 @@ ${text ? 'Page text follows:' : 'Rewards page and terms follow:'}
 ${text ? `${text.slice(0, 12_000)}\n` : ''}`;
 }
 
+/**
+ * The command menu Telegram offers when you type "/".
+ *
+ * Registered with setMyCommands, which is the only way the client knows a
+ * command exists — a command the bot handles but never advertises is a command
+ * only its author can find. Kept here beside HELP, and checked against the
+ * handler's own cases, because a menu that has drifted from the code is worse
+ * than no menu: it offers something that answers "Unknown command".
+ *
+ * Telegram's rules: name is lowercase letters, digits and underscores, 1-32
+ * characters, no leading slash; description 1-256 characters; at most 100.
+ * Order is the order it displays in, so the daily ones come first.
+ */
+export const COMMANDS: { command: string; description: string }[] = [
+  // Every day
+  { command: 'which', description: 'Best card for a category, merchant or amount' },
+  { command: 'recent', description: 'The last 15 entries' },
+  { command: 'review', description: 'Spend with no category yet' },
+  { command: 'cat', description: 'Set a category: /cat <id> <category>' },
+  { command: 'status', description: 'Utilization, minimums and what still needs spending' },
+  { command: 'cards', description: 'One line per card' },
+  { command: 'app', description: 'Open the dashboard' },
+  { command: 'add', description: 'Log spend: /add 25.40 uobone lunch' },
+  { command: 'del', description: 'Remove one entry: /del <id>' },
+  { command: 'undo', description: 'Remove the last entry' },
+  { command: 'posted', description: 'Set when the bank posted an entry' },
+  { command: 'optimise', description: 'Where the same spend would have earned more' },
+
+  // Points and miles
+  { command: 'bal', description: 'Balances, with the nearest expiry' },
+  { command: 'wallet', description: 'Everything you hold and what it is worth' },
+  { command: 'credit', description: 'Rewards your spending earned, waiting to be banked' },
+  { command: 'undocredit', description: 'Take one credited reward back out' },
+  { command: 'expiry', description: 'Every batch of points, soonest expiry first' },
+  { command: 'convert', description: 'Compare transfer routes without moving anything' },
+  { command: 'transfer', description: 'Move points, oldest batch first' },
+  { command: 'routes', description: 'Every transfer route and when it was last checked' },
+  { command: 'rates', description: 'The weekly rates review, on demand' },
+  { command: 'verified', description: 'Mark a transfer route checked against the bank' },
+  { command: 'setrate', description: 'Correct a transfer route' },
+  { command: 'setbonus', description: 'Record a promotional transfer bonus' },
+  { command: 'addconv', description: 'Add a transfer route' },
+  { command: 'addbal', description: 'Record a points balance' },
+  { command: 'setprogram', description: 'Where a card\'s points land' },
+
+  // Cards and what they pay
+  { command: 'newcard', description: 'Add a card: issuer|product|nickname|limit|statement_day|opened_at' },
+  { command: 'closecard', description: 'Close a card: nickname|YYYY-MM-DD' },
+  { command: 'earn', description: 'List earn rules' },
+  { command: 'addearn', description: 'Add an earn rule: /addearn citirw dining 4 cap 1000' },
+  { command: 'setearn', description: 'Correct a rule\'s rate: /setearn 3 5%' },
+  { command: 'delearn', description: 'Remove an earn rule' },
+  { command: 'cardrules', description: 'Get the prompt that reads a card\'s rates out of its page' },
+  { command: 'tiers', description: 'Tiered cashback: /tiers uobone 600=50 1000=110' },
+  { command: 'req', description: 'Add a minimum spend requirement' },
+  { command: 'reqs', description: 'List minimum spend requirements' },
+  { command: 'delreq', description: 'Remove a requirement' },
+
+  // Merchant codes
+  { command: 'codes', description: 'Codes you have spent on, and what each card pays' },
+  { command: 'mcc', description: 'Look up or record a merchant\'s code' },
+  { command: 'mccscan', description: 'Refresh merchant codes from the public directory' },
+  { command: 'mccskip', description: 'Stop listing a merchant as missing a code' },
+  { command: 'merchants', description: 'Merchants you have tagged, most seen first' },
+  { command: 'exclude', description: 'Record a code that earns nothing' },
+
+  // Off-card spending
+  { command: 'spend', description: 'Spending that never touched a card: PayLah, cash, PayNow' },
+  { command: 'spends', description: 'A month of off-card spending, and what it cost you' },
+  { command: 'delspend', description: 'Remove an off-card entry' },
+
+  // Offers
+  { command: 'offers', description: 'Tracked offers and their clauses' },
+  { command: 'extract', description: 'Get the prompt that turns an offer\'s terms into data' },
+  { command: 'save', description: 'Store what the prompt returned: /save <offer id> {json}' },
+  { command: 'rule', description: 'Answer a clause only you can settle' },
+  { command: 'apply', description: 'Mark an offer as applied' },
+  { command: 'dismiss', description: 'Set an offer aside' },
+  { command: 'scan', description: 'Check every source now' },
+  { command: 'feeds', description: 'List the sources that get scanned' },
+  { command: 'addfeed', description: 'Add a source: <url>|<label>|<rss|page>' },
+  { command: 'prune', description: 'What the scanned history costs, and clean it up' },
+
+  // Housekeeping
+  { command: 'commands', description: 'Refresh this menu after a deploy' },
+  { command: 'migrate', description: 'Bring the database up to date after a deploy' },
+  { command: 'seed', description: 'Load the default feeds and transfer routes' },
+  { command: 'help', description: 'Everything, in one message' },
+  { command: 'start', description: 'Connect this chat and show the help' },
+];
+
 export const HELP = `*Miles tracker*
 
 *Logging spend*
@@ -170,6 +261,7 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
    \`tier 1000\` (rate only while the card holds that spend rung) as needed
    a rate ending in % means cashback: \`/addearn uobone groceries 5%\`
 /cardrules <card> — get a prompt to extract a card's rates with Claude
+   paste the whole reply back in one message: every command line runs, up to 8
 /setearn <id> <rate> — correct a rule, e.g. \`/setearn 3 5%\`
 /delearn <id>
 /routes — every transfer route and when it was last checked
@@ -238,5 +330,6 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /prune — what the scanned history costs, and clean it up
 /prune offers — mark ended offers expired, remove old ones
 /app — open the dashboard
+/commands — refresh the / menu after a deploy
 /migrate — bring the database up to date after a deploy
 /seed — load the default feeds and transfer routes`;

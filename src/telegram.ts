@@ -1,6 +1,6 @@
 import { mintToken } from './auth';
 import { buildDigest, checkAlerts } from './digest';
-import { cardRulesPrompt, extractionPrompt, HELP } from './extraction';
+import { cardRulesPrompt, COMMANDS, extractionPrompt, HELP } from './extraction';
 import { decideRule, evaluateOffer } from './eligibility';
 import { daysUntil, OFFER_STATUSES, parseExtraction, saveExtraction, sweepExpiredOffers, type OfferStatus } from './offers';
 import { feedStorage, ignoreFeedItem, purgeFeedItems, retentionDays, scanFeedsDetailed, scanUrl, trackFeedItem } from './rss';
@@ -50,6 +50,25 @@ export async function send(env: Env, chatId: string | number, text: string, extr
       });
     }
   }
+}
+
+/**
+ * Tell Telegram which commands exist, so typing "/" offers them.
+ *
+ * The client caches the menu, so this has to run again after a command is added
+ * — /commands does it on demand, and /start does it on the way past. The reply
+ * says whether Telegram accepted it rather than assuming: a rejected list fails
+ * quietly, and the symptom is a menu that is silently a version behind.
+ */
+export async function registerCommands(env: Env): Promise<{ ok: boolean; count: number; error?: string }> {
+  const res = await fetch(api(env, 'setMyCommands'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ commands: COMMANDS }),
+  });
+  if (!res.ok) return { ok: false, count: COMMANDS.length, error: `Telegram said ${res.status}` };
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; description?: string };
+  return { ok: body.ok !== false, count: COMMANDS.length, error: body.ok === false ? body.description : undefined };
 }
 
 function chunkText(text: string, size: number): string[] {
@@ -114,6 +133,31 @@ export async function pushFeedItem(env: Env, chatId: string, item: ScanResult) {
   });
 }
 
+/**
+ * Where a command's answer goes.
+ *
+ * One command per message sends straight back. A pasted block of commands
+ * collects each answer instead, so eight lines cost one message rather than
+ * eight — which matters because a Worker invocation may make only 50
+ * subrequests, and every send and every database call is one of them.
+ */
+type Reply = (text: string, extra?: Record<string, unknown>) => Promise<unknown>;
+
+/** A line the prompt writes for its own reader, not for the bot. */
+const isComment = (line: string) => /^#(\s|$)/.test(line);
+const isCommand = (line: string) => /^\/[a-z]/i.test(line);
+
+/**
+ * How many commands one message may run.
+ *
+ * Bounded by the subrequest budget, not by taste: /addearn alone costs three or
+ * four database calls, so eight lines plus the reply sits around thirty-five of
+ * the fifty a Worker invocation gets. Going over does not fail politely — the
+ * platform cuts the invocation off partway through, which would leave a card
+ * holding half its rates.
+ */
+const MAX_BLOCK = 8;
+
 export async function handleUpdate(env: Env, update: any, origin: string): Promise<void> {
   if (update.callback_query) return handleCallback(env, update.callback_query, origin);
 
@@ -129,50 +173,125 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
     return;
   }
 
+  // A pasted block of commands — what /cardrules asks Claude to produce — used
+  // to be read as a single command, so every line but the first was silently
+  // lost. Two or more command lines means the whole block was meant.
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !isComment(l));
+  if (lines.filter(isCommand).length > 1) return runBlock(env, chatId, lines, origin);
+
+  return void (await runCommand(env, chatId, text, origin, (t, extra) => send(env, chatId, t, extra)));
+}
+
+/**
+ * Run each command line and answer once.
+ *
+ * Every line reports what it did, including the ones that failed: a block where
+ * line four was rejected and nothing said so is a card that looks complete and
+ * is not. Lines that are not commands are listed as skipped rather than guessed
+ * at — a stray sentence in a pasted block must not become a spend entry.
+ */
+async function runBlock(env: Env, chatId: string, lines: string[], origin: string): Promise<void> {
+  const out: string[] = [];
+  let ran = 0;
+
+  for (const line of lines) {
+    if (!isCommand(line)) {
+      out.push(`· skipped, not a command: ${line.slice(0, 60)}`);
+      continue;
+    }
+    if (ran >= MAX_BLOCK) {
+      const left = lines.filter(isCommand).length - ran;
+      out.push(`\nStopped after ${MAX_BLOCK}. Send the remaining ${left} line${left === 1 ? '' : 's'} as a second message.`);
+      break;
+    }
+    ran++;
+
+    const said: string[] = [];
+    try {
+      await runCommand(env, chatId, line, origin, async (t) => void said.push(t));
+    } catch (err) {
+      said.push(`Error: ${(err as Error).message}`);
+    }
+    // The first line of the answer is the verdict; the rest is the usage help
+    // or the follow-up suggestion, which is noise eight times over.
+    const first = (said.join('\n').split('\n').find((l) => l.trim()) ?? 'done').trim();
+    out.push(`${line.split(/\s+/)[0]} — ${first}`);
+  }
+
+  await send(env, chatId, out.join('\n') || 'Nothing to run.');
+}
+
+async function runCommand(
+  env: Env,
+  chatId: string,
+  text: string,
+  origin: string,
+  reply: Reply
+): Promise<unknown> {
   const [rawCmd, ...rest] = text.split(/\s+/);
   const cmd = rawCmd.toLowerCase().split('@')[0];
   const args = rest.join(' ');
 
   try {
     switch (cmd) {
-      case '/start':
-        await send(env, chatId, `Connected. Your chat id is ${chatId}.\n\n${HELP}`);
+      case '/start': {
+        // Registering here means a fresh chat gets the menu without being told
+        // to ask for it.
+        const menu = await registerCommands(env);
+        await reply(
+          `Connected. Your chat id is ${chatId}.` +
+            (menu.ok ? ` ${menu.count} commands are in the menu — type / to see them.` : '') +
+            `\n\n${HELP}`
+        );
         return;
+      }
+
+      case '/commands': {
+        const menu = await registerCommands(env);
+        return reply(
+          menu.ok
+            ? `${menu.count} commands registered. Type / to see them — Telegram caches the menu, so it may take a moment to refresh.`
+            : `Telegram would not take the command list: ${menu.error ?? 'no reason given'}`
+        );
+      }
       case '/help':
-        await send(env, chatId, HELP);
+        await reply(HELP);
         return;
 
       case '/app': {
         const token = await mintToken(env.APP_SECRET);
-        await send(env, chatId, `Dashboard link (valid 30 days):\n${origin}/#t=${token}`, {
+        await reply(`Dashboard link (valid 30 days):\n${origin}/#t=${token}`, {
           disable_web_page_preview: true,
         });
         return;
       }
 
       case '/status':
-        await send(env, chatId, await buildDigest(env));
+        await reply(await buildDigest(env));
         return;
 
       case '/cards': {
         const { results } = await env.DB.prepare(
           `SELECT * FROM cards ORDER BY closed_at IS NOT NULL, issuer`
         ).all<Card>();
-        if (!results?.length) return send(env, chatId, 'No cards yet — /help for /newcard.');
+        if (!results?.length) return reply('No cards yet — /help for /newcard.');
         const lines = results.map(
           (c) =>
             `*${c.nickname}* — ${c.issuer} ${c.product}\n  limit $${money(c.credit_limit_cents)} · closes day ${c.statement_day}` +
             `\n  opened ${c.opened_at ?? '?'}${c.closed_at ? ` · closed ${c.closed_at}` : ''}` +
             `\n  earns into ${c.program_key ?? '— not set, /setprogram'}`
         );
-        return send(env, chatId, lines.join('\n\n'));
+        return reply(lines.join('\n\n'));
       }
 
       case '/newcard': {
         // issuer|product|nickname|limit|statement_day|opened_at
         const p = args.split('|').map((s) => s.trim());
         if (p.length < 5)
-          return send(env, chatId, 'Format:\n`/newcard DBS|Altitude Visa|alt|8000|18|2025-03-04`');
+          return reply('Format:\n`/newcard DBS|Altitude Visa|alt|8000|18|2025-03-04`');
         const [issuer, product, nickname, limit, stmtDay, opened] = p;
         // A starting guess at where this card's points land, from the issuer.
         // A cashback card earns none, so nothing is credited either way.
@@ -192,10 +311,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             guessed
           )
           .run();
-        return send(
-          env,
-          chatId,
-          `Added *${product}* as \`${nickname.toLowerCase()}\`.` +
+        return reply(`Added *${product}* as \`${nickname.toLowerCase()}\`.` +
             (guessed
               ? `\nPoints will go to \`${guessed}\` — \`/setprogram ${nickname.toLowerCase()} <programme>\` to change it.`
               : `\nNo programme guessed for ${issuer}. \`/setprogram ${nickname.toLowerCase()} <programme>\` if it earns points.`)
@@ -205,21 +321,18 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       case '/closecard': {
         const [nick, date] = args.split('|').map((s) => s.trim());
         const card = await cardByNick(env, nick ?? '');
-        if (!card) return send(env, chatId, `No card with nickname \`${nick}\`.`);
+        if (!card) return reply(`No card with nickname \`${nick}\`.`);
         await env.DB.prepare(`UPDATE cards SET closed_at = ? WHERE id = ?`)
           .bind(date || today(env), card.id)
           .run();
-        return send(env, chatId, `Closed ${card.product} on ${date || today(env)}. Eligibility cooldowns now run from that date.`);
+        return reply(`Closed ${card.product} on ${date || today(env)}. Eligibility cooldowns now run from that date.`);
       }
 
       case '/req': {
         // nickname|kind|amount|window|deadline|cap|txns|note
         const p = args.split('|').map((s) => s.trim());
         if (p.length < 4)
-          return send(
-            env,
-            chatId,
-            'Format: `nickname|kind|amount|window|deadline|cap|txns|note`\n\n' +
+          return reply('Format: `nickname|kind|amount|window|deadline|cap|txns|note`\n\n' +
               '`/req citirw|monthly_min|0|statement_cycle||1000||4 mpd, capped`\n' +
               '`/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback`\n' +
               '`/req alt|signup_min|1000|fixed_window|2026-11-14|||30k miles`\n\n' +
@@ -228,16 +341,13 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           );
         const [nick, kind, amount, window, deadline, cap, txns, note] = p;
         const card = await cardByNick(env, nick);
-        if (!card) return send(env, chatId, `No card with nickname \`${nick}\`.`);
+        if (!card) return reply(`No card with nickname \`${nick}\`.`);
 
         // A rolling quarter is counted from a date. Without one every month
         // would look like quarter one, so refuse rather than guess.
         const quarterly = window === 'statement_quarter';
         if (quarterly && !card.opened_at)
-          return send(
-            env,
-            chatId,
-            `A statement quarter is counted from the month *${card.product}* was issued, and that card has no opening date.\n` +
+          return reply(`A statement quarter is counted from the month *${card.product}* was issued, and that card has no opening date.\n` +
               'Set one in the Cards tab first.'
           );
 
@@ -261,10 +371,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             quarterly ? 1 : 0
           )
           .run();
-        return send(
-          env,
-          chatId,
-          `Requirement added to ${card.product}.` +
+        return reply(`Requirement added to ${card.product}.` +
             (quarterly
               ? ` Its quarters run from ${card.opened_at}, three statement months at a time. Add tiers with \`/tiers ${card.nickname} 600=50 1000=110\`.`
               : '') +
@@ -279,10 +386,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const tok = args.trim().split(/\s+/).filter(Boolean);
         const card = tok.length ? await cardByNick(env, tok[0]) : null;
         if (!card)
-          return send(
-            env,
-            chatId,
-            'Format: `/tiers <card> <spend>=<pays> ...`\n\n' +
+          return reply('Format: `/tiers <card> <spend>=<pays> ...`\n\n' +
               '`/tiers uobone 600=50 1000=110 2000=300`\n' +
               '_spend is per statement month, pays is per quarter._\n\n' +
               'With no rungs it lists what is recorded. Send `/tiers <card> none` to clear them.'
@@ -295,10 +399,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           .bind(card.id)
           .first<{ id: number; amount_cents: number }>();
         if (!req)
-          return send(
-            env,
-            chatId,
-            `*${card.product}* has no rolling-quarter minimum to attach tiers to.\n` +
+          return reply(`*${card.product}* has no rolling-quarter minimum to attach tiers to.\n` +
               `Add one first: \`/req ${card.nickname}|monthly_min|600|statement_quarter||||10|quarterly cashback\``
           );
 
@@ -309,11 +410,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           )
             .bind(req.id)
             .all<any>();
-          if (!results?.length) return send(env, chatId, `No tiers on *${card.product}* yet.`);
-          return send(
-            env,
-            chatId,
-            `*${card.product}* tiers\n` +
+          if (!results?.length) return reply(`No tiers on *${card.product}* yet.`);
+          return reply(`*${card.product}* tiers\n` +
               results
                 .map((t) => `$${money(t.min_spend_cents)} a month → $${money(t.reward_cents)} a quarter`)
                 .join('\n')
@@ -322,7 +420,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
         if (rungs.length === 1 && rungs[0].toLowerCase() === 'none') {
           await env.DB.prepare(`DELETE FROM requirement_tiers WHERE requirement_id = ?`).bind(req.id).run();
-          return send(env, chatId, `Tiers cleared on *${card.product}*.`);
+          return reply(`Tiers cleared on *${card.product}*.`);
         }
 
         const parsed: { spend: number; pays: number }[] = [];
@@ -331,7 +429,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           const spend = parseMoney(a ?? '');
           const pays = parseMoney(b ?? '');
           if (!spend || spend <= 0 || pays === null || pays < 0)
-            return send(env, chatId, `Could not read \`${rung}\`. Each rung is \`<spend>=<pays>\`, e.g. \`600=50\`.`);
+            return reply(`Could not read \`${rung}\`. Each rung is \`<spend>=<pays>\`, e.g. \`600=50\`.`);
           parsed.push({ spend, pays });
         }
         parsed.sort((a, b) => a.spend - b.spend);
@@ -355,10 +453,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           await env.DB.prepare(`UPDATE requirements SET amount_cents = ? WHERE id = ?`).bind(lowest, req.id).run();
         }
 
-        return send(
-          env,
-          chatId,
-          `*${card.product}* — ${parsed.length} tier(s)\n` +
+        return reply(`*${card.product}* — ${parsed.length} tier(s)\n` +
             parsed.map((t) => `$${money(t.spend)} a month → $${money(t.pays)} a quarter`).join('\n') +
             (moved
               ? `\n\nThe monthly minimum is now $${money(lowest)}, the lowest rung — it was $${money(req.amount_cents)}.`
@@ -373,11 +468,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           `SELECT r.*, c.nickname, c.product FROM requirements r
            JOIN cards c ON c.id = r.card_id WHERE r.active = 1 ORDER BY c.nickname`
         ).all<any>();
-        if (!results?.length) return send(env, chatId, 'No requirements set.');
-        return send(
-          env,
-          chatId,
-          results
+        if (!results?.length) return reply('No requirements set.');
+        return reply(results
             .map(
               (r) =>
                 `#${r.id} *${r.nickname}* ${r.kind} $${money(r.amount_cents)} / ${r.window}` +
@@ -391,7 +483,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
       case '/delreq':
         await env.DB.prepare(`UPDATE requirements SET active = 0 WHERE id = ?`).bind(parseInt(args, 10)).run();
-        return send(env, chatId, `Requirement #${parseInt(args, 10)} removed.`);
+        return reply(`Requirement #${parseInt(args, 10)} removed.`);
 
       case '/offers': {
         // `pending` is included: a tracked feed item sits there until it is
@@ -406,7 +498,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         )
           .bind(...wanted)
           .all<Offer>();
-        if (!results?.length) return send(env, chatId, 'No offers yet. `/scan` looks for some.');
+        if (!results?.length) return reply('No offers yet. `/scan` looks for some.');
         const out: string[] = [];
         for (const o of results) {
           const e = await evaluateOffer(env, o.id);
@@ -438,42 +530,39 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
               (o.source_url ? `\n  ${o.source_url}` : '')
           );
         }
-        return send(env, chatId, out.join('\n\n'), { disable_web_page_preview: true });
+        return reply(out.join('\n\n'), { disable_web_page_preview: true });
       }
 
       case '/extract': {
         const id = parseInt(args, 10);
         const offer = await env.DB.prepare(`SELECT * FROM offers WHERE id = ?`).bind(id).first<Offer>();
-        if (!offer) return send(env, chatId, `No offer #${id}.`);
-        await send(env, chatId, `Open the T&C, then paste this into Claude with the terms:\n${offer.source_url ?? ''}`, {
+        if (!offer) return reply(`No offer #${id}.`);
+        await reply(`Open the T&C, then paste this into Claude with the terms:\n${offer.source_url ?? ''}`, {
           disable_web_page_preview: true,
         });
         // Sent without parse_mode so the prompt's braces and backticks survive verbatim.
-        return send(env, chatId, extractionPrompt(id, offer.source_url), { parse_mode: undefined });
+        return reply(extractionPrompt(id, offer.source_url), { parse_mode: undefined });
       }
 
       case '/save': {
         const m = args.match(/^(\d+)\s+([\s\S]+)$/);
-        if (!m) return send(env, chatId, 'Format: `/save <offer id> {json}`');
+        if (!m) return reply('Format: `/save <offer id> {json}`');
         const id = parseInt(m[1], 10);
         let data: any;
         try {
           data = parseExtraction(m[2]);
         } catch (e) {
-          return send(env, chatId, `Could not parse that JSON: ${(e as Error).message}`);
+          return reply(`Could not parse that JSON: ${(e as Error).message}`);
         }
         let saved;
         try {
           saved = await saveExtraction(env, id, data);
         } catch (e) {
-          return send(env, chatId, (e as Error).message);
+          return reply((e as Error).message);
         }
         const e = saved.eligibility;
         const icon = e.verdict === 'eligible' ? '✅ Eligible' : e.verdict === 'not_eligible' ? '❌ Not eligible' : '🟡 Needs review';
-        return send(
-          env,
-          chatId,
-          `Saved offer #${id} with ${saved.rules_saved} rule(s)` +
+        return reply(`Saved offer #${id} with ${saved.rules_saved} rule(s)` +
             (saved.decisions_kept ? `, keeping ${saved.decisions_kept} of your answers` : '') +
             `.\n\n*${icon}*\n` +
             e.rules.map((r, i) => `${ruleIcon(r)} #${r.id} ${r.reason}`).join('\n') +
@@ -488,10 +577,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       case '/rule': {
         const m = args.match(/^(\d+)\s+(yes|no|na|clear)\s*([\s\S]*)$/i);
         if (!m)
-          return send(
-            env,
-            chatId,
-            'Format: `/rule <rule id> yes|no|na [note]`\n' +
+          return reply('Format: `/rule <rule id> yes|no|na [note]`\n' +
               '`yes` you meet it · `no` you do not · `na` it does not apply · `clear` undo.\n' +
               'Rule ids are shown by `/offers`.'
           );
@@ -499,13 +585,10 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const word = m[2].toLowerCase();
         const decision = word === 'yes' ? 'pass' : word === 'no' ? 'fail' : word === 'na' ? 'na' : null;
         const offerId = await decideRule(env, ruleId, decision, m[3].trim() || null);
-        if (!offerId) return send(env, chatId, `No rule #${ruleId}.`);
+        if (!offerId) return reply(`No rule #${ruleId}.`);
         const e = await evaluateOffer(env, offerId);
         const icon = e.verdict === 'eligible' ? '✅ Eligible' : e.verdict === 'not_eligible' ? '❌ Not eligible' : '🟡 Needs review';
-        return send(
-          env,
-          chatId,
-          `Offer #${offerId} — *${icon}*\n` +
+        return reply(`Offer #${offerId} — *${icon}*\n` +
             e.rules.map((r) => `${ruleIcon(r)} #${r.id} ${r.decision ? decisionText(r) : r.reason}`).join('\n')
         );
       }
@@ -513,22 +596,19 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       case '/apply': {
         const id = parseInt(args, 10);
         await env.DB.prepare(`UPDATE offers SET status='applied' WHERE id = ?`).bind(id).run();
-        return send(env, chatId, `Offer #${id} marked applied. Once approved, add the card with /newcard and its sign-up minimum with /req.`);
+        return reply(`Offer #${id} marked applied. Once approved, add the card with /newcard and its sign-up minimum with /req.`);
       }
 
       case '/dismiss': {
         const id = parseInt(args, 10);
-        if (!id) return send(env, chatId, 'Format: `/dismiss <offer id>`');
+        if (!id) return reply('Format: `/dismiss <offer id>`');
         await env.DB.prepare(`UPDATE offers SET status='dismissed' WHERE id = ?`).bind(id).run();
-        return send(env, chatId, `Offer #${id} dismissed. It stays on record; the app can bring it back.`);
+        return reply(`Offer #${id} dismissed. It stays on record; the app can bring it back.`);
       }
 
       case '/feeds': {
         const { results } = await env.DB.prepare(`SELECT url, label, active, kind FROM feeds`).all<any>();
-        return send(
-          env,
-          chatId,
-          (results ?? [])
+        return reply((results ?? [])
             .map((f) => `${f.active ? '·' : '✖'} ${f.label} [${f.kind ?? 'auto'}] — ${f.url}`)
             .join('\n') || 'No feeds.'
         );
@@ -538,12 +618,12 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         // kind is optional: rss, page (an HTML listing), or blank to detect.
         const [url, label, kind] = args.split('|').map((s) => s.trim());
         if (!/^https?:\/\//i.test(url ?? ''))
-          return send(env, chatId, 'Format:\n`/addfeed https://site/feed/|Label|rss`\nkind: `rss`, `page`, or blank to detect.');
+          return reply('Format:\n`/addfeed https://site/feed/|Label|rss`\nkind: `rss`, `page`, or blank to detect.');
         const k = kind && ['rss', 'page'].includes(kind.toLowerCase()) ? kind.toLowerCase() : null;
         await env.DB.prepare(`INSERT OR REPLACE INTO feeds (url, label, kind) VALUES (?, ?, ?)`)
           .bind(url, label || url, k)
           .run();
-        return send(env, chatId, `Feed added: ${label || url} [${k ?? 'auto'}]`);
+        return reply(`Feed added: ${label || url} [${k ?? 'auto'}]`);
       }
 
       case '/scan': {
@@ -551,21 +631,21 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         // articles, which is faster but only sees what the feed summary says.
         if (/^https?:\/\//i.test(args.trim())) {
           const hit = await scanUrl(env, args.trim());
-          if (!hit) return send(env, chatId, 'Could not read that page.');
+          if (!hit) return reply('Could not read that page.');
           await pushFeedItem(env, chatId, hit);
           if (hit.topic !== 'promo')
-            await send(env, chatId, 'Nothing in that page reads like a card offer — track it anyway if you disagree.');
+            await reply('Nothing in that page reads like a card offer — track it anyway if you disagree.');
           return;
         }
         const deep = args.trim().toLowerCase() !== 'quick';
-        await send(env, chatId, deep ? 'Scanning feeds and opening articles…' : 'Scanning feed summaries…');
+        await reply(deep ? 'Scanning feeds and opening articles…' : 'Scanning feed summaries…');
         const scan = await scanFeedsDetailed(env, { deep });
         for (const item of scan.fresh) await pushFeedItem(env, chatId, item);
         const stats =
           `${scan.feeds_read} source${scan.feeds_read === 1 ? '' : 's'} · ${scan.items_seen} new item(s) · ` +
           `${scan.pages_fetched} page(s) opened` +
           (scan.feeds_failed.length ? `\n⚠️ unreachable: ${scan.feeds_failed.join(', ')}` : '');
-        await send(env, chatId, (scan.fresh.length ? `${scan.fresh.length} match(es).` : 'No new promo items.') + `\n${stats}`);
+        await reply((scan.fresh.length ? `${scan.fresh.length} match(es).` : 'No new promo items.') + `\n${stats}`);
         return;
       }
 
@@ -578,7 +658,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
         if (!arg) {
           if (!pending.credits.length && !pending.unassigned.length)
-            return send(env, chatId, 'Nothing waiting. Points are added when you accept them here.');
+            return reply('Nothing waiting. Points are added when you accept them here.');
           const lines = pending.by_program.map(
             (g) => `*${g.program_name}* — ${g.points.toLocaleString()} ${g.unit} from ${g.count} purchase(s)`
           );
@@ -589,10 +669,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             (u) =>
               `⚠️ ${u.card} earned ${u.miles.toLocaleString()} with no programme set — \`/setprogram ${u.nickname} <programme>\``
           );
-          return send(
-            env,
-            chatId,
-            ['*Waiting to be banked*', ...lines, '', ...recent, ...orphan, '', '`/credit all` · `/credit <programme>`']
+          return reply(['*Waiting to be banked*', ...lines, '', ...recent, ...orphan, '', '`/credit all` · `/credit <programme>`']
               .filter(Boolean)
               .join('\n')
           );
@@ -602,14 +679,11 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           arg === 'all'
             ? pending.credits.map((c) => c.id)
             : pending.credits.filter((c) => c.program_key.toLowerCase() === arg).map((c) => c.id);
-        if (!ids.length) return send(env, chatId, arg === 'all' ? 'Nothing waiting.' : `Nothing waiting for \`${arg}\`.`);
+        if (!ids.length) return reply(arg === 'all' ? 'Nothing waiting.' : `Nothing waiting for \`${arg}\`.`);
 
         const res = await acceptCredits(env, ids);
         const w = await wallet(env);
-        return send(
-          env,
-          chatId,
-          `Banked ${res.points.toLocaleString()} from ${res.accepted} purchase(s).\n` +
+        return reply(`Banked ${res.points.toLocaleString()} from ${res.accepted} purchase(s).\n` +
             w.programs
               .filter((p) => p.points > 0)
               .map((p) => `${p.name}: ${p.points.toLocaleString()} ${p.unit}`)
@@ -620,27 +694,24 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
       case '/undocredit': {
         const id = parseInt(args, 10);
-        if (!id) return send(env, chatId, 'Format: `/undocredit <transaction id>`');
+        if (!id) return reply('Format: `/undocredit <transaction id>`');
         const ok = await undoCredit(env, id);
-        return send(env, chatId, ok ? `Taken back out of the wallet (#${id}).` : `#${id} was not credited.`);
+        return reply(ok ? `Taken back out of the wallet (#${id}).` : `#${id} was not credited.`);
       }
 
       case '/setprogram': {
         const [nick, key] = args.split(/\s+/).map((x) => x?.trim());
-        if (!nick) return send(env, chatId, 'Format: `/setprogram <card> <programme key>` · `/routes` lists programmes.');
+        if (!nick) return reply('Format: `/setprogram <card> <programme key>` · `/routes` lists programmes.');
         const card = await cardByNick(env, nick);
-        if (!card) return send(env, chatId, `No card with nickname \`${nick}\`.`);
+        if (!card) return reply(`No card with nickname \`${nick}\`.`);
         if (key && key !== 'none') {
           const prog = await env.DB.prepare(`SELECT key, name FROM programs WHERE key = ?`).bind(key).first<any>();
-          if (!prog) return send(env, chatId, `No programme \`${key}\`. \`/routes\` lists them.`);
+          if (!prog) return reply(`No programme \`${key}\`. \`/routes\` lists them.`);
         }
         await env.DB.prepare(`UPDATE cards SET program_key = ? WHERE id = ?`)
           .bind(key && key !== 'none' ? key : null, card.id)
           .run();
-        return send(
-          env,
-          chatId,
-          key && key !== 'none'
+        return reply(key && key !== 'none'
             ? `*${card.product}* now earns into \`${key}\`. Past purchases keep the programme they were logged with.`
             : `*${card.product}* no longer has a programme.`
         );
@@ -657,11 +728,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
               (p.pending ? ` · ${p.pending.toLocaleString()} waiting` : '') +
               (p.expiring_soon ? `\n  ⚠️ ${p.expiring_soon.toLocaleString()} expiring by ${p.next_expiry}` : '')
           );
-        if (!lines.length) return send(env, chatId, 'Wallet is empty. `/addbal` records a balance; `/credit` banks what you earn.');
-        return send(
-          env,
-          chatId,
-          ['*Wallet*', ...lines, '', `Worth about $${money(w.totals.value_cents)} at your mile value.`].join('\n')
+        if (!lines.length) return reply('Wallet is empty. `/addbal` records a balance; `/credit` banks what you earn.');
+        return reply(['*Wallet*', ...lines, '', `Worth about $${money(w.totals.value_cents)} at your mile value.`].join('\n')
         );
       }
 
@@ -670,7 +738,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const q = args.trim();
         const m = await mccMatrix(env, q ? { q } : { filter: 'used' });
         if (!m.rows.length)
-          return send(env, chatId, q ? `No code matches \`${q}\`.` : 'No spend with a known code yet.');
+          return reply(q ? `No code matches \`${q}\`.` : 'No spend with a known code yet.');
 
         const lines = m.rows.slice(0, 12).map((r) => {
           const cells = r.cells
@@ -685,10 +753,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           return `*${r.code}* ${r.description}\n  ${cells}`;
         });
         const more = m.rows.length > 12 ? `\n\n…and ${m.rows.length - 12} more. Open the Codes tab with /app.` : '';
-        return send(
-          env,
-          chatId,
-          (q ? `*Codes matching "${q}"*\n` : '*Codes you have spent on*\n') +
+        return reply((q ? `*Codes matching "${q}"*\n` : '*Codes you have spent on*\n') +
             lines.join('\n') +
             '\n\n✕ earns nothing and does not count toward a minimum · * capped' +
             more
@@ -698,16 +763,13 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       // Refresh merchant codes from the public directory, then show what is
       // still missing from your own spend.
       case '/mccscan': {
-        await send(env, chatId, 'Reading the merchant directory…');
+        await reply('Reading the merchant directory…');
         const r = await importMerchantCodes(env);
         const lines = [...r.added, ...r.updated]
           .slice(0, 12)
           .map((a) => `${a.merchant} → ${a.mcc}${a.verified ? ' ✓' : ''}`);
         const unknown = await unknownMerchants(env, { per: 8 });
-        return send(
-          env,
-          chatId,
-          `*${r.source}*\n${r.fetched} page(s) · ${r.added.length} new · ${r.updated.length} corrected · ${r.unchanged} unchanged` +
+        return reply(`*${r.source}*\n${r.fetched} page(s) · ${r.added.length} new · ${r.updated.length} corrected · ${r.unchanged} unchanged` +
             (r.failed.length ? ` · ${r.failed.length} unreadable` : '') +
             (lines.length ? `\n\n${lines.join('\n')}` : '') +
             (r.conflicts.length
@@ -732,20 +794,14 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const undo = /\s--undo$/i.test(args.trim());
         if (!name) {
           const rows = await ignoredMerchants(env);
-          if (!rows.length) return send(env, chatId, 'Nothing ignored. `/mccskip <merchant>` stops asking about one.');
-          return send(
-            env,
-            chatId,
-            `*Ignored merchants* (${rows.length})\n` +
+          if (!rows.length) return reply('Nothing ignored. `/mccskip <merchant>` stops asking about one.');
+          return reply(`*Ignored merchants* (${rows.length})\n` +
               rows.map((r) => `${r.merchant}${r.reason ? ` — ${r.reason}` : ''}`).join('\n') +
               '\n\n`/mccskip <merchant> --undo` puts one back.'
           );
         }
         const r = await ignoreMerchant(env, name, { undo });
-        return send(
-          env,
-          chatId,
-          r.ignored
+        return reply(r.ignored
             ? `*${r.merchant}* will no longer be listed as missing a code. \`/mccskip ${r.merchant} --undo\` to undo.`
             : `*${r.merchant}* is back on the list of merchants with no code.`
         );
@@ -757,25 +813,19 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           const last = parts[parts.length - 1];
           return /^\d{4}$/.test(last ?? '') ? [parts.slice(0, -1).join(' '), last] : [args.trim(), ''];
         })();
-        if (!merchant) return send(env, chatId, 'Format: `/mcc <merchant> [code]` — with a code it records one.');
+        if (!merchant) return reply('Format: `/mcc <merchant> [code]` — with a code it records one.');
         if (!code) {
           const guess = await lookupMerchant(env, merchant);
           if (guess.confidence !== 'unknown')
-            return send(
-              env,
-              chatId,
-              `*${merchant}* → ${guess.mcc} (${guess.description ?? '?'}) · ${guess.confidence}` +
+            return reply(`*${merchant}* → ${guess.mcc} (${guess.description ?? '?'}) · ${guess.confidence}` +
                 (guess.category ? `\ncategory: ${guess.category}` : '')
             );
 
           // Nothing here; ask the public directory before giving up.
           const online = await lookupMerchantOnline(env, merchant);
-          if (online.error) return send(env, chatId, `No code for *${merchant}* here, and ${online.source} ${online.error}.`);
+          if (online.error) return reply(`No code for *${merchant}* here, and ${online.source} ${online.error}.`);
           if (!online.results.length)
-            return send(
-              env,
-              chatId,
-              `No code for *${merchant}*, here or at ${online.source}.\n` +
+            return reply(`No code for *${merchant}*, here or at ${online.source}.\n` +
                 `\`/mcc ${merchant} 5812\` records one once your statement shows what it earned.`
             );
 
@@ -787,19 +837,13 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
                 `${r.channel ? ` (${r.channel})` : ''}` +
                 `${r.category ? ` · ${r.category}` : ''}\n  \`/mcc ${r.store} ${r.mcc}\``
             );
-          return send(
-            env,
-            chatId,
-            `*${online.results.length} match(es) at ${online.source}*\n` +
+          return reply(`*${online.results.length} match(es) at ${online.source}*\n` +
               lines.join('\n') +
               (online.results.length > 6 ? `\n…and ${online.results.length - 6} more.` : '')
           );
         }
         const r = await assignMerchantCode(env, merchant, code);
-        return send(
-          env,
-          chatId,
-          `*${r.merchant}* is now ${code}.` +
+        return reply(`*${r.merchant}* is now ${code}.` +
             (r.updated ? ` ${r.updated} past purchase(s) updated.` : '') +
             (r.categorised
               ? `\n${r.categorised} of them also took the code's category, *${r.category}* — anything you had categorised by hand was left alone.`
@@ -812,7 +856,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const parts = args.trim().split(/\s+/);
         const code = parts[0] ?? '';
         if (!/^\d{4}$/.test(code))
-          return send(env, chatId, 'Format: `/exclude <mcc> [card] [reason]`\nLeave the card out to exclude it everywhere.');
+          return reply('Format: `/exclude <mcc> [card] [reason]`\nLeave the card out to exclude it everywhere.');
         const maybeCard = parts[1] ? await cardByNick(env, parts[1]) : null;
         const reason = parts.slice(maybeCard ? 2 : 1).join(' ') || 'excluded';
         await env.DB.prepare(
@@ -820,10 +864,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         )
           .bind(maybeCard?.id ?? null, code, reason)
           .run();
-        return send(
-          env,
-          chatId,
-          `MCC ${code} now earns nothing on ${maybeCard ? `*${maybeCard.product}*` : 'every card'}` +
+        return reply(`MCC ${code} now earns nothing on ${maybeCard ? `*${maybeCard.product}*` : 'every card'}` +
             ' and will not count toward a minimum. It applies from the next purchase you log.'
         );
       }
@@ -834,14 +875,11 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         // /spend 12.80 paylah [date] [note]
         const parts = args.trim().split(/\s+/).filter(Boolean);
         if (parts.length < 2)
-          return send(
-            env,
-            chatId,
-            'Format: `/spend <amount> <method> [date] [note]`\n' +
+          return reply('Format: `/spend <amount> <method> [date] [note]`\n' +
               `Methods: ${METHODS.map((m) => `\`${m.key}\``).join(' ')}`
           );
         const cents = parseMoney(parts[0]);
-        if (!cents || cents <= 0) return send(env, chatId, `Could not read an amount from "${parts[0]}".`);
+        if (!cents || cents <= 0) return reply(`Could not read an amount from "${parts[0]}".`);
         const method = parts[1].toLowerCase();
 
         let date = today(env);
@@ -860,21 +898,15 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         )
           .bind(date, cents, method, note, category, defaultCardPossible(method))
           .run();
-        return send(
-          env,
-          chatId,
-          `Logged $${money(cents)} by ${method}${note ? ` — ${note}` : ''} (#${ins.meta.last_row_id}).` +
+        return reply(`Logged $${money(cents)} by ${method}${note ? ` — ${note}` : ''} (#${ins.meta.last_row_id}).` +
             (category ? ` #${category}` : ' _no category, so it cannot be costed — /spends to see the month_')
         );
       }
 
       case '/spends': {
         const m = await monthOfOther(env, /^\d{4}-\d{2}$/.test(args.trim()) ? args.trim() : undefined);
-        if (!m.rows.length) return send(env, chatId, `Nothing off-card in ${m.month}.`);
-        return send(
-          env,
-          chatId,
-          `*Off-card, ${m.month}*\n$${money(m.total_cents)} — ${m.share_percent.toFixed(0)}% of everything you spent\n` +
+        if (!m.rows.length) return reply(`Nothing off-card in ${m.month}.`);
+        return reply(`*Off-card, ${m.month}*\n$${money(m.total_cents)} — ${m.share_percent.toFixed(0)}% of everything you spent\n` +
             m.by_method.map((x) => `  ${x.label}: $${money(x.spend_cents)} (${x.count})`).join('\n') +
             (m.missed_value_cents > 0
               ? `\n\n*Left on the table*: about $${money(m.missed_value_cents)}` +
@@ -891,9 +923,9 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
       case '/delspend': {
         const id = parseInt(args, 10);
-        if (!id) return send(env, chatId, 'Format: `/delspend <id>`');
+        if (!id) return reply('Format: `/delspend <id>`');
         const r = await env.DB.prepare(`DELETE FROM other_spend WHERE id = ?`).bind(id).run();
-        return send(env, chatId, (r.meta.changes ?? 0) ? `Removed #${id}.` : `No off-card row #${id}.`);
+        return reply((r.meta.changes ?? 0) ? `Removed #${id}.` : `No off-card row #${id}.`);
       }
 
       case '/prune': {
@@ -902,10 +934,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const arg = args.trim().toLowerCase();
 
         if (!arg) {
-          return send(
-            env,
-            chatId,
-            `*Scanned history*\n` +
+          return reply(`*Scanned history*\n` +
               `${store.total} item(s) — ${store.undecided} waiting, ${store.tracked} tracked, ${store.ignored} ignored\n` +
               `Text stored: ${kb(store.text_bytes)}\n` +
               `Compactable now: ${store.compactable} item(s), about ${kb(store.reclaimable_bytes)}\n\n` +
@@ -918,27 +947,21 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
         if (arg === 'compact') {
           const r = await purgeFeedItems(env, { mode: 'compact', scope: 'decided', older_than_days: retentionDays(env) });
-          return send(env, chatId, `Compacted ${r.affected} item(s), freeing about ${kb(r.freed_bytes)}.`);
+          return reply(`Compacted ${r.affected} item(s), freeing about ${kb(r.freed_bytes)}.`);
         }
         if (arg === 'offers') {
           const sweep = await sweepExpiredOffers(env, today(env));
-          return send(
-            env,
-            chatId,
-            `Marked ${sweep.expired} offer(s) expired` +
+          return reply(`Marked ${sweep.expired} offer(s) expired` +
               (sweep.deleted ? ` and deleted ${sweep.deleted} that ended over ${sweep.retention_days} days ago.` : '.')
           );
         }
         if (arg === 'delete') {
           const r = await purgeFeedItems(env, { mode: 'delete', scope: 'ignored' });
-          return send(
-            env,
-            chatId,
-            `Deleted ${r.affected} ignored item(s), freeing about ${kb(r.freed_bytes)}.\n` +
+          return reply(`Deleted ${r.affected} ignored item(s), freeing about ${kb(r.freed_bytes)}.\n` +
               'Those are now forgotten — if a feed still carries one, the next scan will show it again.'
           );
         }
-        return send(env, chatId, 'Use `/prune`, `/prune compact`, `/prune delete` or `/prune offers`.');
+        return reply('Use `/prune`, `/prune compact`, `/prune delete` or `/prune offers`.');
       }
 
       case '/recent': {
@@ -947,11 +970,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
            FROM transactions t JOIN cards c ON c.id = t.card_id
            ORDER BY COALESCE(t.posted_at, t.occurred_at) DESC, t.id DESC LIMIT 15`
         ).all<any>();
-        if (!results?.length) return send(env, chatId, 'No transactions yet.');
-        return send(
-          env,
-          chatId,
-          '*Recent*\n' +
+        if (!results?.length) return reply('No transactions yet.');
+        return reply('*Recent*\n' +
             results
               .map(
                 (r) =>
@@ -969,16 +989,13 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const m = args.trim().split(/\s+/);
         const id = parseInt(m[0], 10);
         const when = m[1] ? parseDateToken(m[1], env) : today(env);
-        if (!id || !when) return send(env, chatId, 'Format: `/posted 12 2026-09-22` (or `today`, `yesterday`, `-2`).');
+        if (!id || !when) return reply('Format: `/posted 12 2026-09-22` (or `today`, `yesterday`, `-2`).');
         const row = await env.DB.prepare(`SELECT * FROM transactions WHERE id = ?`).bind(id).first<any>();
-        if (!row) return send(env, chatId, `No transaction #${id}.`);
+        if (!row) return reply(`No transaction #${id}.`);
         if (when < row.occurred_at)
-          return send(env, chatId, `A transaction cannot post (${when}) before it happened (${row.occurred_at}).`);
+          return reply(`A transaction cannot post (${when}) before it happened (${row.occurred_at}).`);
         await env.DB.prepare(`UPDATE transactions SET posted_at = ? WHERE id = ?`).bind(when, id).run();
-        return send(
-          env,
-          chatId,
-          `#${id} posted ${when}` + (when === row.occurred_at ? '.' : ` (made ${row.occurred_at}).`) + '\nWindows now use the posting date.'
+        return reply(`#${id} posted ${when}` + (when === row.occurred_at ? '.' : ` (made ${row.occurred_at}).`) + '\nWindows now use the posting date.'
         );
       }
 
@@ -988,16 +1005,16 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const row = id
           ? await env.DB.prepare(`SELECT * FROM transactions WHERE id = ?`).bind(id).first<any>()
           : await env.DB.prepare(`SELECT * FROM transactions ORDER BY id DESC LIMIT 1`).first<any>();
-        if (!row) return send(env, chatId, id ? `No transaction #${id}.` : 'Nothing to undo.');
+        if (!row) return reply(id ? `No transaction #${id}.` : 'Nothing to undo.');
         await env.DB.prepare(`DELETE FROM transactions WHERE id = ?`).bind(row.id).run();
-        return send(env, chatId, `Deleted #${row.id} — $${money(row.amount_cents)} on ${row.occurred_at}.`);
+        return reply(`Deleted #${row.id} — $${money(row.amount_cents)} on ${row.occurred_at}.`);
       }
 
       case '/which': {
         const [rawCat, amt] = args.trim().split(/\s+/);
         const cents = amt ? parseMoney(amt) : null;
         const cards = await activeCards(env);
-        if (!cards.length) return send(env, chatId, 'No cards yet.');
+        if (!cards.length) return reply('No cards yet.');
 
         // A minimum about to lapse can be worth more than a better rate.
         const nudges: { cardId: number; remaining: number; daysLeft: number }[] = [];
@@ -1014,7 +1031,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             `SELECT DISTINCT category FROM earn_rules WHERE active = 1 AND category <> '*' ORDER BY category`
           ).all<{ category: string }>();
           if (!cats?.length)
-            return send(env, chatId, 'No earn rules yet.\nStart with `/addearn <card> <category> <rate>` — see /help.');
+            return reply('No earn rules yet.\nStart with `/addearn <card> <category> <rate>` — see /help.');
 
           const lines: string[] = ['*Best card by category*', ''];
           for (const { category } of cats) {
@@ -1026,7 +1043,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             );
           }
           lines.push('', '_`/which <category or merchant> <amount>` for detail._');
-          return send(env, chatId, lines.join('\n'));
+          return reply(lines.join('\n'));
         }
 
         // The argument may be a merchant you have tagged before, not a category.
@@ -1035,7 +1052,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
         const picks = await rankCards(env, category, cents, { cards, minSpendNudge: nudges });
         if (!picks.length)
-          return send(env, chatId, 'No earn rules yet.\nStart with `/addearn <card> <category> <rate>` — see /help.');
+          return reply('No earn rules yet.\nStart with `/addearn <card> <category> <rate>` — see /help.');
 
         const header =
           `*${category}*${asMerchant ? ` _(${rawCat})_` : ''}${cents ? ` · $${money(cents)}` : ''}`;
@@ -1055,10 +1072,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         });
 
         const mv = parseFloat(env.MILE_VALUE_CENTS || '1.5');
-        return send(
-          env,
-          chatId,
-          `${header}\n\n${lines.join('\n')}` +
+        return reply(`${header}\n\n${lines.join('\n')}` +
             (picks.some((p) => p.reward_type === 'cashback') && picks.some((p) => p.reward_type === 'miles')
               ? `\n\n_Compared at ${mv}¢ per mile._`
               : '')
@@ -1070,20 +1084,17 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const [ptsRaw, from, to] = args.trim().split(/\s+/);
         const pts = parseInt((ptsRaw ?? '').replace(/,/g, ''), 10);
         if (!pts || !from || !to)
-          return send(env, chatId, 'Format: `/transfer 50000 citi_ty krisflyer`\nUse /convert first to compare routes.');
+          return reply('Format: `/transfer 50000 citi_ty krisflyer`\nUse /convert first to compare routes.');
         const plans = await planRoutes(env, pts, from, to);
         const best = plans.find((p) => p.possible);
-        if (!best) return send(env, chatId, plans[0]?.reason ?? `No route from ${from} to ${to}.`);
+        if (!best) return reply(plans[0]?.reason ?? `No route from ${from} to ${to}.`);
 
         const r = await executeTransfer(env, best.conversion.id, pts);
-        if (!r.ok) return send(env, chatId, `Could not transfer: ${r.error}`);
+        if (!r.ok) return reply(`Could not transfer: ${r.error}`);
         const used = (r.consumed ?? [])
           .map((c) => `${c.points.toLocaleString()} expiring ${c.expires_at ?? 'never'}`)
           .join(', ');
-        return send(
-          env,
-          chatId,
-          `Transferred ${r.plan!.transferable.toLocaleString()} ${from} → ` +
+        return reply(`Transferred ${r.plan!.transferable.toLocaleString()} ${from} → ` +
             `*${r.plan!.miles.toLocaleString()} ${to}*` +
             (r.plan!.fee_cents ? ` · fee $${money(r.plan!.fee_cents)}` : ' · free') +
             `\n\nTaken from: ${used}` +
@@ -1094,11 +1105,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
       case '/expiry': {
         const rows = await tranchesByExpiry(env);
-        if (!rows.length) return send(env, chatId, 'No balances recorded. /addbal to start.');
-        return send(
-          env,
-          chatId,
-          '*By expiry, soonest first*\n' +
+        if (!rows.length) return reply('No balances recorded. /addbal to start.');
+        return reply('*By expiry, soonest first*\n' +
             rows
               .map(
                 (r: any) =>
@@ -1117,7 +1125,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
            WHERE t.amount_cents > 0 AND t.category IS NULL
            ORDER BY t.posted_at IS NULL, t.occurred_at DESC LIMIT 20`
         ).all<any>();
-        if (!results?.length) return send(env, chatId, 'Everything is categorised.');
+        if (!results?.length) return reply('Everything is categorised.');
         const ready = results.filter((r: any) => r.posted_at);
         const waiting = results.filter((r: any) => !r.posted_at);
         const line = (r: any) =>
@@ -1130,38 +1138,32 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           out.push('*Waiting to post*', '_The MCC is not knowable until it posts._', ...waiting.map(line), '');
         }
         out.push('`/cat <id> <category>` to set one.');
-        return send(env, chatId, out.join('\n'));
+        return reply(out.join('\n'));
       }
 
       case '/cat': {
         const [idRaw, catRaw] = args.trim().split(/\s+/);
         const id = parseInt(idRaw, 10);
-        if (!id || !catRaw) return send(env, chatId, 'Format: `/cat 42 groceries`');
+        if (!id || !catRaw) return reply('Format: `/cat 42 groceries`');
         const cat = catRaw.toLowerCase();
         const row = await env.DB.prepare(`SELECT merchant FROM transactions WHERE id = ?`)
           .bind(id)
           .first<{ merchant: string | null }>();
-        if (!row) return send(env, chatId, `No transaction #${id}.`);
+        if (!row) return reply(`No transaction #${id}.`);
         await rememberMerchant(env, row.merchant, cat);
         await env.DB.prepare(
           `UPDATE transactions SET category = ?, category_source = 'manual', needs_review = 0 WHERE id = ?`
         )
           .bind(cat, id)
           .run();
-        return send(
-          env,
-          chatId,
-          `#${id} is now *${cat}*.` + (row.merchant ? `\n${row.merchant} will categorise itself from now on.` : '')
+        return reply(`#${id} is now *${cat}*.` + (row.merchant ? `\n${row.merchant} will categorise itself from now on.` : '')
         );
       }
 
       case '/bal': {
         const rows = await balances(env);
-        if (!rows.length) return send(env, chatId, 'No programmes yet. /addbal to record a balance.');
-        return send(
-          env,
-          chatId,
-          '*Balances*\n' +
+        if (!rows.length) return reply('No programmes yet. /addbal to record a balance.');
+        return reply('*Balances*\n' +
             rows
               .map(
                 (r) =>
@@ -1175,21 +1177,21 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       case '/addbal': {
         // program|points|expires_at|note
         const [prog, pts, exp, note] = args.split('|').map((s) => s.trim());
-        if (!prog || !pts) return send(env, chatId, 'Format: `/addbal citi_ty|50000|2027-03-31|statement balance`');
+        if (!prog || !pts) return reply('Format: `/addbal citi_ty|50000|2027-03-31|statement balance`');
         await env.DB.prepare(
           `INSERT INTO balance_tranches (program_key, points, earned_at, expires_at, note) VALUES (?, ?, ?, ?, ?)`
         )
           .bind(prog, parseInt(pts.replace(/,/g, ''), 10), today(env), exp || null, note || null)
           .run();
-        return send(env, chatId, `Recorded ${parseInt(pts.replace(/,/g, ''), 10).toLocaleString()} in ${prog}. /bal to check.`);
+        return reply(`Recorded ${parseInt(pts.replace(/,/g, ''), 10).toLocaleString()} in ${prog}. /bal to check.`);
       }
 
       case '/convert': {
         const [ptsRaw, from, to] = args.trim().split(/\s+/);
         const pts = parseInt((ptsRaw ?? '').replace(/,/g, ''), 10);
-        if (!pts || !from || !to) return send(env, chatId, 'Format: `/convert 50000 citi_ty krisflyer`');
+        if (!pts || !from || !to) return reply('Format: `/convert 50000 citi_ty krisflyer`');
         const plans = await planRoutes(env, pts, from, to);
-        if (!plans.length) return send(env, chatId, `No route from ${from} to ${to}. Add one with /addconv.`);
+        if (!plans.length) return reply(`No route from ${from} to ${to}. Add one with /addconv.`);
 
         const out = plans.map((p) => {
           const c = p.conversion;
@@ -1203,7 +1205,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
             (p.fee_cents ? ` · ${p.cents_per_mile.toFixed(3)}¢ per mile` : ' · free')
           );
         });
-        return send(env, chatId, `*${pts.toLocaleString()} ${from} → ${to}*\n\n` + out.join('\n\n'));
+        return reply(`*${pts.toLocaleString()} ${from} → ${to}*\n\n` + out.join('\n\n'));
       }
 
       case '/migrate': {
@@ -1214,15 +1216,12 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         if (r.alreadyCurrent) bits.push('Database already up to date.');
         if (r.errors.length) bits.push(`\nProblems:\n${r.errors.join('\n')}`);
         else if (!r.alreadyCurrent) bits.push('\nRun /seed to load the default feeds and transfer routes.');
-        return send(env, chatId, bits.join('\n'));
+        return reply(bits.join('\n'));
       }
 
       case '/seed': {
         const r = await runSeed(env);
-        return send(
-          env,
-          chatId,
-          `Seed applied (${r.applied} statements).` +
+        return reply(`Seed applied (${r.applied} statements).` +
             (r.errors.length ? `\n\nProblems:\n${r.errors.join('\n')}` : '\n/routes and /feeds to see what loaded.')
         );
       }
@@ -1260,12 +1259,12 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         if (!o.reallocations.length && !o.underused.length && !o.notes.length) {
           lines.push('Nothing to suggest yet — log a few months of categorised spend first.');
         }
-        return send(env, chatId, lines.join('\n'));
+        return reply(lines.join('\n'));
       }
 
       case '/rates':
         // On demand, always the full report rather than the quiet daily one.
-        return send(env, chatId, (await ratesReview(env, { quiet: false })) ?? 'Nothing to flag.');
+        return reply((await ratesReview(env, { quiet: false })) ?? 'Nothing to flag.');
 
       case '/routes': {
         const { results } = await env.DB.prepare(
@@ -1273,11 +1272,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
            JOIN programs pf ON pf.key = c.from_program JOIN programs pt ON pt.key = c.to_program
            WHERE c.active = 1 ORDER BY pf.name, c.id`
         ).all<any>();
-        if (!results?.length) return send(env, chatId, 'No routes configured.');
-        return send(
-          env,
-          chatId,
-          '*Transfer routes*\n' +
+        if (!results?.length) return reply('No routes configured.');
+        return reply('*Transfer routes*\n' +
             results
               .map(
                 (c) =>
@@ -1293,18 +1289,18 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         const [idRaw, dateRaw] = args.trim().split(/\s+/);
         const id = parseInt(idRaw, 10);
         const when = dateRaw ? parseDateToken(dateRaw, env) : today(env);
-        if (!id || !when) return send(env, chatId, 'Format: `/verified 4` (or `/verified 4 2026-09-01`).');
+        if (!id || !when) return reply('Format: `/verified 4` (or `/verified 4 2026-09-01`).');
         const r = await env.DB.prepare(`UPDATE conversions SET verified_at = ?, note = NULL WHERE id = ?`)
           .bind(when, id)
           .run();
-        if (!(r.meta.changes ?? 0)) return send(env, chatId, `No route #${id}. /routes to list them.`);
-        return send(env, chatId, `Route #${id} marked verified ${when}.`);
+        if (!(r.meta.changes ?? 0)) return reply(`No route #${id}. /routes to list them.`);
+        return reply(`Route #${id} marked verified ${when}.`);
       }
 
       case '/setrate': {
         // id|from_units|to_units|fee|min_block|increment
         const p = args.split('|').map((s) => s.trim());
-        if (p.length < 6) return send(env, chatId, 'Format: `/setrate 4|5000|10000|27.25|5000|5000`');
+        if (p.length < 6) return reply('Format: `/setrate 4|5000|10000|27.25|5000|5000`');
         const [idRaw, fu, tu, fee, minB, inc] = p;
         const r = await env.DB.prepare(
           `UPDATE conversions SET from_units=?, to_units=?, fee_cents=?, min_block=?, block_increment=?,
@@ -1312,18 +1308,18 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         )
           .bind(parseInt(fu, 10), parseInt(tu, 10), parseMoney(fee) ?? 0, parseInt(minB, 10), parseInt(inc, 10), today(env), parseInt(idRaw, 10))
           .run();
-        if (!(r.meta.changes ?? 0)) return send(env, chatId, `No route #${parseInt(idRaw, 10)}.`);
-        return send(env, chatId, `Route #${parseInt(idRaw, 10)} updated and marked verified.`);
+        if (!(r.meta.changes ?? 0)) return reply(`No route #${parseInt(idRaw, 10)}.`);
+        return reply(`Route #${parseInt(idRaw, 10)} updated and marked verified.`);
       }
 
       case '/setbonus': {
         // id|pct|until
         const [idRaw, pct, until] = args.split('|').map((s) => s.trim());
-        if (!idRaw || !pct) return send(env, chatId, 'Format: `/setbonus 2|8|2026-12-31` — use 0 to clear.');
+        if (!idRaw || !pct) return reply('Format: `/setbonus 2|8|2026-12-31` — use 0 to clear.');
         await env.DB.prepare(`UPDATE conversions SET bonus_pct = ?, bonus_until = ? WHERE id = ?`)
           .bind(parseFloat(pct), until || null, parseInt(idRaw, 10))
           .run();
-        return send(env, chatId, `Route #${parseInt(idRaw, 10)}: ${pct}% bonus${until ? ` until ${until}` : ''}.`);
+        return reply(`Route #${parseInt(idRaw, 10)}: ${pct}% bonus${until ? ` until ${until}` : ''}.`);
       }
 
       case '/earn': {
@@ -1331,11 +1327,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           `SELECT e.*, c.nickname FROM earn_rules e JOIN cards c ON c.id = e.card_id
            WHERE e.active = 1 ORDER BY c.nickname, e.mpd DESC`
         ).all<any>();
-        if (!results?.length) return send(env, chatId, 'No earn rules yet. /addearn to add one.');
-        return send(
-          env,
-          chatId,
-          '*Earn rules*\n' +
+        if (!results?.length) return reply('No earn rules yet. /addearn to add one.');
+        return reply('*Earn rules*\n' +
             results
               .map(
                 (r) =>
@@ -1365,10 +1358,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         } else {
           const tok = args.trim().split(/\s+/);
           if (tok.length < 3)
-            return send(
-              env,
-              chatId,
-              '*Add an earn rule*\n`/addearn <card> <category> <rate>`\n\n' +
+            return reply('*Add an earn rule*\n`/addearn <card> <category> <rate>`\n\n' +
                 'Examples:\n' +
                 '`/addearn citirw shopping 4` — 4 miles per dollar\n' +
                 '`/addearn uobone groceries 5%` — 5% cashback\n' +
@@ -1396,11 +1386,11 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         }
 
         const card = await cardByNick(env, nick);
-        if (!card) return send(env, chatId, `No card with nickname \`${nick}\`. /cards to list them.`);
+        if (!card) return reply(`No card with nickname \`${nick}\`. /cards to list them.`);
 
         const isCashback = /%$/.test(rateRaw ?? '');
         const rate = parseFloat((rateRaw ?? '').replace('%', ''));
-        if (!Number.isFinite(rate)) return send(env, chatId, `Could not read a rate from "${rateRaw}".`);
+        if (!Number.isFinite(rate)) return reply(`Could not read a rate from "${rateRaw}".`);
 
         // A list of codes is what makes a rule precise: "4 mpd online" is not
         // the same thing as "4 mpd on 5262, 5964 and 5969", and the terms
@@ -1410,7 +1400,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           .map((x) => x.trim())
           .filter(Boolean);
         if (include.some((x) => !/^\d{4}$/.test(x)))
-          return send(env, chatId, `\`mcc\` takes four-digit codes, comma separated — got "${mccList}".`);
+          return reply(`\`mcc\` takes four-digit codes, comma separated — got "${mccList}".`);
 
         // Same as the app: a rule added now belongs to the card's current
         // version, not loose beside it.
@@ -1435,10 +1425,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           )
           .run();
 
-        return send(
-          env,
-          chatId,
-          `*${card.product}* earns ${formatRate(rate, isCashback ? 'cashback' : 'miles')} on *${cat}*` +
+        return reply(`*${card.product}* earns ${formatRate(rate, isCashback ? 'cashback' : 'miles')} on *${cat}*` +
             (include.length ? `, but only on MCC ${include.join(', ')}` : '') +
             (minTier ? `, and only while the card holds the $${money(parseMoney(minTier) ?? 0)} tier` : '') +
             (cap ? `, up to $${money(parseMoney(cap) ?? 0)} per ${capWindow || 'statement_cycle'}` : '') +
@@ -1449,9 +1436,9 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
 
       case '/cardrules': {
         const card = await cardByNick(env, args.trim());
-        if (!card) return send(env, chatId, 'Format: `/cardrules citirw` — use /cards for nicknames.');
-        await send(env, chatId, `Open ${card.product}'s rewards page, then paste this into Claude with it:`);
-        return send(env, chatId, cardRulesPrompt(card.nickname, card.product), { parse_mode: undefined });
+        if (!card) return reply('Format: `/cardrules citirw` — use /cards for nicknames.');
+        await reply(`Open ${card.product}'s rewards page, then paste this into Claude with it:`);
+        return reply(cardRulesPrompt(card.nickname, card.product), { parse_mode: undefined });
       }
 
       case '/merchants': {
@@ -1459,23 +1446,48 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
           `SELECT merchant, category, hits FROM merchant_categories ORDER BY hits DESC, merchant LIMIT 30`
         ).all<any>();
         if (!results?.length)
-          return send(env, chatId, 'Nothing learned yet. Tag a merchant once: `25.40 citirw #groceries NTUC`');
-        return send(
-          env,
-          chatId,
-          '*Learned merchants*\n' + results.map((r) => `${r.merchant} → ${r.category} _(${r.hits}×)_`).join('\n')
+          return reply('Nothing learned yet. Tag a merchant once: `25.40 citirw #groceries NTUC`');
+        return reply('*Learned merchants*\n' + results.map((r) => `${r.merchant} → ${r.category} _(${r.hits}×)_`).join('\n')
+        );
+      }
+
+      /**
+       * Correct a rate that was entered wrong.
+       *
+       * An in-place edit, deliberately: this is for a rate that was always
+       * meant to be 5% and got typed as 4. A rate the BANK changed is a
+       * different thing and belongs in a new version, or the months already
+       * earned get restated — Catalogue → Edit its rules is where that goes.
+       */
+      case '/setearn': {
+        const [idRaw, rateRaw] = args.trim().split(/\s+/);
+        const id = parseInt(idRaw, 10);
+        const isCashback = /%$/.test(rateRaw ?? '');
+        const rate = parseFloat((rateRaw ?? '').replace('%', ''));
+        if (!id || !Number.isFinite(rate))
+          return reply('Format: `/setearn <id> <rate>` — e.g. `/setearn 3 5%`.\n/earn lists the ids.');
+
+        const rule = await env.DB.prepare(`SELECT * FROM earn_rules WHERE id = ?`).bind(id).first<any>();
+        if (!rule) return reply(`No earn rule #${id}. /earn lists them.`);
+
+        await env.DB.prepare(`UPDATE earn_rules SET mpd = ?, reward_type = ? WHERE id = ?`)
+          .bind(rate, isCashback ? 'cashback' : 'miles', id)
+          .run();
+        return reply(
+          `Earn rule #${id} (${rule.category}) now pays ${formatRate(rate, isCashback ? 'cashback' : 'miles')}` +
+            `, was ${formatRate(rule.mpd, rule.reward_type)}.`
         );
       }
 
       case '/delearn':
         await env.DB.prepare(`UPDATE earn_rules SET active = 0 WHERE id = ?`).bind(parseInt(args, 10)).run();
-        return send(env, chatId, `Earn rule #${parseInt(args, 10)} removed.`);
+        return reply(`Earn rule #${parseInt(args, 10)} removed.`);
 
       case '/addconv': {
         // from|to|from_units|to_units|fee|min_block|increment|route
         const p = args.split('|').map((s) => s.trim());
         if (p.length < 7)
-          return send(env, chatId, 'Format: `/addconv citi_ty|krisflyer|25000|10000|27.25|25000|25000|direct`');
+          return reply('Format: `/addconv citi_ty|krisflyer|25000|10000|27.25|25000|25000|direct`');
         const [from, to, fu, tu, fee, minB, inc, route] = p;
         await env.DB.prepare(
           `INSERT INTO conversions (from_program, to_program, from_units, to_units, fee_cents, min_block, block_increment, route)
@@ -1483,19 +1495,19 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
         )
           .bind(from, to, parseInt(fu, 10), parseInt(tu, 10), parseMoney(fee) ?? 0, parseInt(minB, 10), parseInt(inc, 10), route || null)
           .run();
-        return send(env, chatId, `Route added: ${from} → ${to} via ${route || 'direct'}.`);
+        return reply(`Route added: ${from} → ${to} via ${route || 'direct'}.`);
       }
 
       case '/add':
-        return logSpend(env, chatId, args);
+        return logSpend(env, chatId, args, reply);
 
       default:
         // Anything that isn't a command is treated as a spend entry.
-        if (!text.startsWith('/')) return logSpend(env, chatId, text);
-        return send(env, chatId, `Unknown command. /help`);
+        if (!text.startsWith('/')) return logSpend(env, chatId, text, reply);
+        return reply(`Unknown command. /help`);
     }
   } catch (err) {
-    await send(env, chatId, `Error: ${(err as Error).message}`);
+    await reply(`Error: ${(err as Error).message}`);
   }
 }
 
@@ -1508,9 +1520,9 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
  *   25.40 uobone -3 lunch           -> three days ago
  * Whatever is left over becomes the note.
  */
-async function logSpend(env: Env, chatId: string, input: string) {
+async function logSpend(env: Env, chatId: string, input: string, reply: Reply) {
   const tokens = input.trim().split(/\s+/);
-  if (tokens.length < 2) return send(env, chatId, 'Format: `25.40 uobone lunch` — add a date like `yesterday` or `5/9` to backdate.');
+  if (tokens.length < 2) return reply('Format: `25.40 uobone lunch` — add a date like `yesterday` or `5/9` to backdate.');
 
   let amount: number | null = null;
   let occurred: string | null = null;
@@ -1539,19 +1551,19 @@ async function logSpend(env: Env, chatId: string, input: string) {
     rest.push(tok);
   }
 
-  if (amount === null) return send(env, chatId, `Could not read an amount from "${input}".`);
-  if (!rest.length) return send(env, chatId, 'Which card? e.g. `25.40 uobone lunch`');
+  if (amount === null) return reply(`Could not read an amount from "${input}".`);
+  if (!rest.length) return reply('Which card? e.g. `25.40 uobone lunch`');
 
   const nick = rest[0];
   const note = rest.slice(1).join(' ');
   const date = occurred ?? today(env);
 
   if (date > today(env)) {
-    return send(env, chatId, `${date} is in the future — check the date and try again.`);
+    return reply(`${date} is in the future — check the date and try again.`);
   }
 
   const card = await cardByNick(env, nick);
-  if (!card) return send(env, chatId, `No card with nickname \`${nick}\`. /cards to list them.`);
+  if (!card) return reply(`No card with nickname \`${nick}\`. /cards to list them.`);
 
   // Tagging a merchant once is enough: later spend there categorises itself.
   // '#?' is an explicit "I don't know yet" — better than a guess, because a
@@ -1579,7 +1591,7 @@ async function logSpend(env: Env, chatId: string, input: string) {
     merchant: note || null,
     category: resolved,
   });
-  if (result.status === 'rejected') return send(env, chatId, result.warnings[0]?.detail ?? 'Could not log that.');
+  if (result.status === 'rejected') return reply(result.warnings[0]?.detail ?? 'Could not log that.');
 
   const row = await env.DB.prepare(`SELECT category, category_source, mcc FROM transactions WHERE id = ?`)
     .bind(result.transaction_id)
@@ -1640,9 +1652,9 @@ async function logSpend(env: Env, chatId: string, input: string) {
   if (lag > 0 && daysBetween(date, boundary) <= lag && date <= boundary) {
     bits.push(`⏳ Close to ${boundary} — may post after it. \`/posted ${ins.meta.last_row_id} <date>\` once you see it.`);
   }
-  await send(env, chatId, bits.join('\n'));
+  await reply(bits.join('\n'));
 
-  for (const alert of await checkAlerts(env, card)) await send(env, chatId, alert);
+  for (const alert of await checkAlerts(env, card)) await reply(alert);
 }
 
 async function handleCallback(env: Env, cq: any, _origin: string) {

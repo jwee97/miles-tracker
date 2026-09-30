@@ -1481,7 +1481,20 @@ async function main() {
     // path with a hash is a same-document fragment jump and nothing reloads.
     // Each scenario therefore gets a URL of its own.
     let visit = 0;
-    const open = () => page.goto(`${server.url}/?v=${++visit}#t=test-token`);
+    /**
+     * A fresh visit.
+     *
+     * The app now remembers the last tab, so each scenario clears that first —
+     * otherwise a scenario starts on whichever screen the previous one left
+     * open, and the failure appears in whichever test runs second rather than
+     * in the one that moved the tab. `keepTab` is for the test that checks the
+     * remembering itself. Clearing throws on about:blank before the first load,
+     * where there is nothing stored anyway.
+     */
+    const open = async (opts: { keepTab?: boolean } = {}) => {
+      if (!opts.keepTab) await page.evaluate(() => localStorage.removeItem('tab')).catch(() => void 0);
+      await page.goto(`${server.url}/?v=${++visit}#t=test-token`);
+    };
     await open();
 
     // --- home, with the ledger back before the action centre -------------
@@ -2328,6 +2341,29 @@ async function main() {
     await page.locator('.card', { hasText: 'Nothing changed' }).waitFor();
     check('applying sends the rules the reviewer saw', appliedChange?.rules?.[0]?.mpd === 3, JSON.stringify(appliedChange));
     check('with the date the new rates start from', appliedChange?.effective_from === '2026-10-01', JSON.stringify(appliedChange));
+
+    // --- the app comes back where you left it ----------------------------
+    // A refresh on a phone is how the dashboard recovers from being
+    // backgrounded, and landing on Home each time loses your place.
+    await open();
+    await page.getByRole('button', { name: /^More/ }).click();
+    await page.getByRole('button', { name: 'Plan the month' }).click();
+    await page.locator('.card', { hasText: 'The rest of the month' }).first().waitFor();
+
+    await open({ keepTab: true });
+    await page.locator('.card', { hasText: 'The rest of the month' }).first().waitFor();
+    check('a refresh returns to the tab you were on', true);
+    check(
+      'and the More menu shows it as the one selected',
+      (await page.getByRole('button', { name: /^More/ }).getAttribute('class')) === 'on',
+      String(await page.getByRole('button', { name: /^More/ }).getAttribute('class'))
+    );
+
+    // A stored value that no longer names a screen must not restore to nothing.
+    await page.evaluate(() => localStorage.setItem('tab', 'a-tab-that-was-renamed'));
+    await open({ keepTab: true });
+    await page.locator('.advisor').waitFor();
+    check('a tab that no longer exists falls back to home', true);
 
     await page.close();
   } finally {

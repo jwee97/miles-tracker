@@ -82,5 +82,41 @@ for (const secret of SECRETS) {
   check(`${secret} is not editable from the app`, !new RegExp(`key:\\s*'${secret}'`).test(settings));
 }
 
+// --- the command menu, against the commands that exist -----------------------
+// Telegram only offers what setMyCommands registered, so the menu and the
+// handler are two lists that have to say the same thing. A command in the menu
+// and not in the handler answers "Unknown command"; a command in the handler and
+// not in the menu can only be found by someone who already knows it is there.
+const bot = readFileSync(new URL('../src/telegram.ts', import.meta.url), 'utf8');
+const extraction = readFileSync(new URL('../src/extraction.ts', import.meta.url), 'utf8');
+
+const handled = new Set([...bot.matchAll(/case '\/([a-z]+)'/g)].map((m) => m[1]));
+const listed = [...extraction.matchAll(/\{ command: '([a-z_]+)', description: '((?:[^']|\\')*)' \}/g)].map((m) => ({
+  command: m[1],
+  description: m[2],
+}));
+
+/** Spellings that exist only so both spellings work. */
+const ALIASES = new Set(['optimize']);
+
+check(`the command menu is not empty (${listed.length})`, listed.length > 20, String(listed.length));
+check('and fits what Telegram accepts', listed.length <= 100, String(listed.length));
+
+for (const { command, description } of listed) {
+  check(`/${command} in the menu is a command the bot handles`, handled.has(command), 'listed but never handled');
+  check(`/${command} has a name Telegram will take`, /^[a-z0-9_]{1,32}$/.test(command), command);
+  check(
+    `/${command} has a description Telegram will take`,
+    description.length > 0 && description.length <= 256,
+    String(description.length)
+  );
+}
+
+const inMenu = new Set(listed.map((c) => c.command));
+for (const command of [...handled].sort()) {
+  if (ALIASES.has(command)) continue;
+  check(`/${command} is offered in the menu`, inMenu.has(command), 'handled but not registered with Telegram');
+}
+
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

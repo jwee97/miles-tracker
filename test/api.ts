@@ -7,8 +7,17 @@ import type { Env } from '../src/types';
 // Telegram is the only outbound call the handler makes; swallow it so the
 // tests exercise the endpoint without touching the network.
 const sent: string[] = [];
-globalThis.fetch = (async (input: any) => {
+/** What the bot actually said, so a reply can be read and not just counted. */
+const said: string[] = [];
+globalThis.fetch = (async (input: any, init?: any) => {
   sent.push(String(input));
+  if (String(input).includes('sendMessage')) {
+    try {
+      said.push(String(JSON.parse(String(init?.body ?? '{}')).text ?? ''));
+    } catch {
+      said.push('');
+    }
+  }
   return new Response('{"ok":true}', { status: 200 });
 }) as typeof fetch;
 
@@ -1175,6 +1184,69 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
     .get() as any;
   check('and the minimum spend the bonus depends on', req?.amount_cents === 80000, JSON.stringify(req));
   check('with the transaction count beside it', req?.min_txns === 4, JSON.stringify(req));
+
+  // The command menu only exists if setMyCommands was actually called.
+  {
+    await tg('/commands');
+    check('the bot registers its command menu with Telegram', sent.some((u) => u.includes('setMyCommands')), '');
+    check('and says how many it registered', /commands registered/.test(said[said.length - 1]), said[said.length - 1] ?? '');
+  }
+
+  // /setearn was in the help text for months without being implemented, so
+  // anyone who followed the help got "Unknown command".
+  {
+    const rule = db
+      .prepare(`SELECT id, mpd FROM earn_rules WHERE card_id = (SELECT id FROM cards WHERE nickname='crw') AND category='online'`)
+      .get() as any;
+    await tg(`/setearn ${rule.id} 5%`);
+    const fixed = db.prepare(`SELECT mpd, reward_type FROM earn_rules WHERE id = ?`).get(rule.id) as any;
+    check('a mistyped rate can be corrected', fixed?.mpd === 5 && fixed?.reward_type === 'cashback', JSON.stringify(fixed));
+    await tg(`/setearn ${rule.id} 4`);
+
+    const missing = said.length;
+    await tg('/setearn 99999 4');
+    check('and a rule that does not exist says so', /No earn rule/.test(said[said.length - 1]), said[missing] ?? '');
+  }
+
+  // --- a pasted block of commands ---------------------------------------
+  // The prompt produces several lines at once. Read as one command, every line
+  // but the first vanished silently, which looks exactly like a card whose
+  // rates were entered.
+  {
+    const msgs = sent.filter((u) => u.includes('sendMessage')).length;
+    await tg(
+      '# source https://example.test/rw\n' +
+        '/addearn crw transport 3 cap 300 window calendar_month\n' +
+        '/exclude 4900 crw utilities earn nothing\n' +
+        '/addearn crw fuel notarate\n' +
+        'a stray sentence from the page'
+    );
+    const after = sent.filter((u) => u.includes('sendMessage')).length;
+    check('a pasted block answers once, not once per line', after - msgs === 1, `${msgs} -> ${after}`);
+
+    const reply = said[said.length - 1];
+    check('the reply accounts for every command', /\/addearn/.test(reply) && /\/exclude/.test(reply), reply);
+    check('including the one it could not run', /could not read a rate/i.test(reply), reply);
+    check('and prose is skipped, not logged as spend', /skipped, not a command/.test(reply), reply);
+
+    const moved = db
+      .prepare(`SELECT * FROM earn_rules WHERE card_id = (SELECT id FROM cards WHERE nickname='crw') AND category='transport'`)
+      .get() as any;
+    check('the lines that were commands took effect', moved?.mpd === 3 && moved?.cap_cents === 30000, JSON.stringify(moved));
+    const excl = db.prepare(`SELECT COUNT(*) AS n FROM exclusions WHERE mcc = '4900' AND source = 'user'`).get() as any;
+    check('every one of them, not just the first', Number(excl.n) >= 1, JSON.stringify(excl));
+    const fuel = db
+      .prepare(`SELECT COUNT(*) AS n FROM earn_rules WHERE card_id = (SELECT id FROM cards WHERE nickname='crw') AND category='fuel'`)
+      .get() as any;
+    check('and a line with no readable rate stores nothing', Number(fuel.n) === 0, JSON.stringify(fuel));
+
+    // The cap exists because a Worker invocation may make only 50 subrequests,
+    // and a block cut off by the platform would leave a card half-updated.
+    await tg(Array.from({ length: 11 }, (_, i) => `/addearn crw entertainment ${i + 1}`).join('\n'));
+    const capped = said[said.length - 1];
+    check('too long a block stops and says how many are left', /Stopped after 8/.test(capped), capped);
+    check('and says to send the rest', /second message/.test(capped), capped);
+  }
 
   const before = db.prepare(`SELECT COUNT(*) AS n FROM earn_rules`).get() as any;
   await tg('/addearn crw dining 4 mcc 526');

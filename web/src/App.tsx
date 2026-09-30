@@ -1867,6 +1867,59 @@ function PointsTab() {
 }
 
 /**
+ * Every screen the app can be showing.
+ *
+ * A list rather than a bare union, because the last tab is remembered across a
+ * refresh and a remembered value arrives as a string from storage. Checking it
+ * against this list is what stops a renamed tab — or anything else that ends up
+ * in that key — from restoring to a screen that renders nothing at all.
+ */
+export const TAB_KEYS = [
+  'home',
+  'use',
+  'cards',
+  'catalog',
+  'review',
+  'setup',
+  'rewardcheck',
+  'transfers',
+  'offers2',
+  'discovery',
+  'improve',
+  'planner',
+  'ledger',
+  'other',
+  'trends',
+  'audit',
+  'points',
+  'expiry',
+  'codes',
+  'offers',
+  'settings',
+] as const;
+
+export type Tab = (typeof TAB_KEYS)[number];
+
+const TAB_STORE = 'tab';
+
+/**
+ * The tab to open on, which is the one last left open.
+ *
+ * Refreshing and landing back on Home loses your place for no reason — the
+ * dashboard is opened from a link on a phone, and a refresh is how it recovers
+ * from being backgrounded. Storage can throw (private windows, blocked site
+ * data) and can hold anything, so both are answered with Home.
+ */
+function rememberedTab(): Tab {
+  try {
+    const raw = localStorage.getItem(TAB_STORE);
+    return (TAB_KEYS as readonly string[]).includes(raw ?? '') ? (raw as Tab) : 'home';
+  } catch {
+    return 'home';
+  }
+}
+
+/**
  * Everything that is not the everyday product.
  *
  * These are management tools — the ledger of merchant codes, the Cloudflare
@@ -1874,7 +1927,7 @@ function PointsTab() {
  * built and kept them out of habit, which left the screen that answers "which
  * card?" competing with eleven siblings.
  */
-const MORE: [string, string][] = [
+const MORE: [Tab, string][] = [
   ['use', 'Advisor'],
   ['planner', 'Plan the month'],
   ['improve', 'Improve my setup'],
@@ -1896,29 +1949,7 @@ const MORE: [string, string][] = [
 
 export default function App() {
   const [more, setMore] = useState(false);
-  const [tab, setTab] = useState<
-    | 'home'
-    | 'use'
-    | 'cards'
-    | 'catalog'
-    | 'review'
-    | 'setup'
-    | 'rewardcheck'
-    | 'transfers'
-    | 'offers2'
-    | 'discovery'
-    | 'improve'
-    | 'planner'
-    | 'ledger'
-    | 'other'
-    | 'trends'
-    | 'audit'
-    | 'points'
-    | 'expiry'
-    | 'codes'
-    | 'offers'
-    | 'settings'
-  >('home');
+  const [tab, setTab] = useState<Tab>(rememberedTab);
   const [categories, setCategories] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [offers, setOffers] = useState<OfferRow[] | null>(null);
@@ -1971,6 +2002,17 @@ export default function App() {
       .catch(() => void 0);
   }, []);
 
+  // Remembered on every change rather than in each handler: the tab also moves
+  // from the home screen's shortcuts and from onboarding, and a handler-by-handler
+  // version would remember some routes to a screen and not others.
+  useEffect(() => {
+    try {
+      localStorage.setItem(TAB_STORE, tab);
+    } catch {
+      /* nothing to do: the tab still applies for this visit */
+    }
+  }, [tab]);
+
   async function removeTxn(id: number) {
     await deleteTransaction(id);
     refresh();
@@ -2010,7 +2052,7 @@ export default function App() {
               key={k}
               className={tab === k ? 'on' : ''}
               onClick={() => {
-                setTab(k as typeof tab);
+                setTab(k);
                 setMore(false);
               }}
             >
@@ -2084,11 +2126,11 @@ export default function App() {
           <p className="pad sub">Loading…</p>
         ))}
 
-      {tab === 'home' && <Home onGo={(t) => setTab(t as typeof tab)} />}
+      {tab === 'home' && <Home onGo={(t) => setTab(t as Tab)} />}
 
       {tab === 'use' && <Advisor />}
 
-      {tab === 'setup' && <Onboarding onGo={(t) => setTab(t as typeof tab)} />}
+      {tab === 'setup' && <Onboarding onGo={(t) => setTab(t as Tab)} />}
 
       {tab === 'rewardcheck' && <RewardCheck />}
 

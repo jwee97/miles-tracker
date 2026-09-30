@@ -401,9 +401,24 @@ that says the new rates start on 1 November produces no `/addearn` lines at all,
 only the date: `/addearn` writes into the version that also covers earlier
 months, and those months earned the old rates.
 
+Its reply can be pasted back **in one message**: every command line runs, `#`
+comment lines are ignored, and anything that is not a command is reported as
+skipped rather than guessed at. Eight lines per message is the ceiling — a
+Worker invocation gets fifty subrequests and a block cut off halfway would leave
+a card holding half its rates — so a longer block is answered with how many are
+left to send.
+
+Typing `/` in Telegram offers the commands with a line each. `/commands`
+re-registers that menu, which is worth doing after a deploy that adds one.
+
 The codes matter more than the category word: `/addearn alt online 4` claims
 every online purchase earns the bonus, while
 `/addearn alt online 4 mcc 5262,5964,5969` is what the terms actually say.
+
+The app also reopens on the tab you were last on. A refresh is how the
+dashboard recovers from being backgrounded on a phone, and starting over on Home
+each time loses your place; the tab is remembered per browser, and a tab that no
+longer exists falls back to Home rather than to a blank screen.
 
 ### Working an offer
 
