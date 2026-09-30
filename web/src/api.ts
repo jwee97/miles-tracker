@@ -525,7 +525,18 @@ export const saveRoute = (body: Record<string, unknown>) => post<{ ok: true; id:
 export const deleteRoute = (id: number) => post<{ ok: true }>('/api/route/delete', { id });
 
 export const runMigrate = () =>
-  post<{ created: string[]; altered: string[]; alreadyCurrent: boolean; errors: string[] }>('/api/migrate', {});
+  post<{
+    created: string[];
+    altered: string[];
+    alreadyCurrent: boolean;
+    errors: string[];
+    products?: {
+      cards_linked: number;
+      skipped: { nickname: string; why: string }[];
+      /** Data that was inconsistent and has been made consistent. */
+      repaired: { nickname: string; what: string }[];
+    };
+  }>('/api/migrate', {});
 export const runSeed = () => post<Record<string, unknown>>('/api/seed', {});
 
 export const fetchSettings = () => get<{ settings: SettingRow[] }>('/api/settings');

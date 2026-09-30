@@ -738,11 +738,18 @@ function Maintenance() {
     setMsg(null);
     try {
       const r = await runMigrate();
+      // A repair changed the data, so it is said in full rather than counted:
+      // "cleared the programme on one card" is something you may want to put
+      // back, and a number alone gives you no way to know which card.
+      const repaired = (r.products?.repaired ?? []).map((x) => `${x.nickname} ${x.what}`);
+      const skipped = (r.products?.skipped ?? []).map((x) => `${x.nickname} — ${x.why}`);
       setMsg(
-        r.alreadyCurrent
+        (r.alreadyCurrent
           ? 'Already up to date.'
           : `Created ${r.created.length} table(s), added ${r.altered.length} column(s).` +
-              (r.errors.length ? ` ${r.errors.length} problem(s): ${r.errors[0]}` : '')
+            (r.errors.length ? ` ${r.errors.length} problem(s): ${r.errors[0]}` : '')) +
+          (repaired.length ? `\n\nRepaired: ${repaired.join('; ')}` : '') +
+          (skipped.length ? `\n\nNot linked: ${skipped.join('; ')}` : '')
       );
     } catch (e) {
       setMsg((e as Error).message);
@@ -779,7 +786,8 @@ function Maintenance() {
         <button className="secondary" onClick={seed} disabled={!!busy}>
           {busy === 'seed' ? 'Loading…' : 'Load reference data'}
         </button>
-        {msg && <span className="sub">{msg}</span>}
+        {/* The migration answer can now name cards, so newlines have to survive. */}
+        {msg && <span className="sub" style={{ whiteSpace: 'pre-wrap' }}>{msg}</span>}
       </div>
       <p className="sub">
         Both are safe to repeat. Migrating only fills gaps; loading reference data refreshes merchant-code descriptions

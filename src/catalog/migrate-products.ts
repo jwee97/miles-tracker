@@ -24,6 +24,8 @@ export interface ProductMigrationReport {
   exclusions_copied: number;
   /** Cards that could not be linked, with the reason. Never silent. */
   skipped: { nickname: string; why: string }[];
+  /** Data that was inconsistent and has been made consistent, said out loud. */
+  repaired: { nickname: string; what: string }[];
   alreadyDone: boolean;
 }
 
@@ -38,6 +40,7 @@ export async function migrateCardsToProducts(env: Env, today: string): Promise<P
     rules_attached: 0,
     exclusions_copied: 0,
     skipped: [],
+    repaired: [],
     alreadyDone: false,
   };
 
@@ -50,11 +53,59 @@ export async function migrateCardsToProducts(env: Env, today: string): Promise<P
     return report;
   }
 
+  // Which programmes exist, read once. Every card is checked against this, and
+  // the alternative is one query per card on a step that already runs on every
+  // deploy.
+  const { results: programs } = await env.DB.prepare(`SELECT key FROM programs`).all<{ key: string }>();
+  const known = new Set((programs ?? []).map((p) => p.key));
+
   for (const card of cards) {
+    try {
+      await migrateOneCard(env, card, today, report, known);
+    } catch (e) {
+      // One card's problem used to end the whole step, so a single bad row left
+      // every other card unlinked — and the reason was a database error with no
+      // card named in it.
+      report.skipped.push({ nickname: card.nickname, why: (e as Error).message });
+    }
+  }
+
+  report.alreadyDone =
+    report.products_created === 0 &&
+    report.cards_linked === 0 &&
+    report.rule_sets_created === 0 &&
+    report.rules_attached === 0 &&
+    report.exclusions_copied === 0 &&
+    report.repaired.length === 0;
+  return report;
+}
+
+async function migrateOneCard(
+  env: Env,
+  card: any,
+  today: string,
+  report: ProductMigrationReport,
+  known: Set<string>
+): Promise<void> {
+  {
     const key = (card.product_key ?? '').trim() || productKeyOf(card.issuer ?? 'unknown', card.product ?? card.nickname);
     if (!key) {
       report.skipped.push({ nickname: card.nickname, why: 'no issuer or product name to build a key from' });
-      continue;
+      return;
+    }
+
+    // A card pointing at a programme that is not in the table is a write
+    // waiting to fail: the product it becomes has the same foreign key, so the
+    // whole migration stopped here. The programme is the least of what a card
+    // holds, so the dangling name is cleared and said out loud rather than
+    // being carried forward into a second table.
+    if (card.program_key && !known.has(card.program_key)) {
+      await env.DB.prepare(`UPDATE cards SET program_key = NULL WHERE id = ?`).bind(card.id).run();
+      report.repaired.push({
+        nickname: card.nickname,
+        what: `pointed at a programme called "${card.program_key}", which does not exist — cleared, so set it again under Cards`,
+      });
+      card.program_key = null;
     }
 
     const before = await env.DB.prepare(`SELECT id FROM card_products WHERE product_key = ?`).bind(key).first();
@@ -90,7 +141,7 @@ export async function migrateCardsToProducts(env: Env, today: string): Promise<P
       .all<{ id: number }>();
 
     if (!set) {
-      if (!loose?.length) continue; // nothing to version yet
+      if (!loose?.length) return; // nothing to version yet
       // The card's opening date, or the dawn of the data if it has none. Never
       // invented: an unknown start is explicitly the earliest possible one.
       const from = (card.opened_at ?? '').trim() || DAWN;
@@ -124,14 +175,6 @@ export async function migrateCardsToProducts(env: Env, today: string): Promise<P
       report.exclusions_copied++;
     }
   }
-
-  report.alreadyDone =
-    report.products_created === 0 &&
-    report.cards_linked === 0 &&
-    report.rule_sets_created === 0 &&
-    report.rules_attached === 0 &&
-    report.exclusions_copied === 0;
-  return report;
 }
 
 /**

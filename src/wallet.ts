@@ -318,6 +318,31 @@ export function defaultProgramForIssuer(issuer: string): string | null {
   return null;
 }
 
+/**
+ * What a programme a screen or a command asked for actually resolves to.
+ *
+ * `cards.program_key` and `card_products.program_key` both point at
+ * `programs(key)`, so a value that is not in that table is not a bad label —
+ * it is a write that fails, and the failure surfaces as a raw database error
+ * on a screen that was only asking to add a card.
+ *
+ * Two spellings mean no programme rather than an unknown one: an empty string,
+ * and the literal `none`, which is what the new-card form sends for a cashback
+ * card. It needs a word for that because an empty value already means "guess
+ * from the issuer", and those are different intentions.
+ */
+export async function resolveProgramKey(
+  env: Env,
+  raw: string | null | undefined
+): Promise<{ key: string | null } | { error: string }> {
+  const asked = String(raw ?? '').trim();
+  if (!asked || asked.toLowerCase() === 'none') return { key: null };
+
+  const row = await env.DB.prepare(`SELECT key FROM programs WHERE key = ?`).bind(asked).first<{ key: string }>();
+  if (!row) return { error: `no programme called "${asked}" — /api/points lists the ones there are` };
+  return { key: row.key };
+}
+
 /** Only suggest a programme the database actually knows about. */
 export async function guessProgram(env: Env, issuer: string): Promise<string | null> {
   const key = defaultProgramForIssuer(issuer);

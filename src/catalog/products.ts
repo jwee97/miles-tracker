@@ -82,6 +82,19 @@ export async function ensureProduct(env: Env, p: NewProduct): Promise<CardProduc
   const existing = await productByKey(env, p.product_key);
   if (existing) return existing;
 
+  // program_key points at programs(key), so a programme that is not there does
+  // not store a slightly wrong label — it refuses the whole insert. The
+  // programme is the least important thing on a product and the rates are the
+  // most, so an unrecognised one is dropped and the product still gets made.
+  // Callers that care whether it was accepted resolve it before calling.
+  let program: string | null = null;
+  if (p.program_key) {
+    const row = await env.DB.prepare(`SELECT key FROM programs WHERE key = ?`)
+      .bind(p.program_key)
+      .first<{ key: string }>();
+    program = row?.key ?? null;
+  }
+
   await env.DB.prepare(
     `INSERT INTO card_products (product_key, issuer, product_name, network, card_type, reward_type,
        program_key, base_mpd, base_cashback_pct, annual_fee_cents, official_url, source, verification_status)
@@ -95,7 +108,7 @@ export async function ensureProduct(env: Env, p: NewProduct): Promise<CardProduc
       p.network ?? null,
       p.card_type ?? 'credit',
       p.reward_type ?? 'miles',
-      p.program_key ?? null,
+      program,
       p.base_mpd ?? null,
       p.base_cashback_pct ?? null,
       p.annual_fee_cents ?? null,

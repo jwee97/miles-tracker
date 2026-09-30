@@ -136,5 +136,52 @@ const indexes = (db: DatabaseSync) =>
   check('and reports nothing left to do', again.alreadyCurrent, JSON.stringify(again));
 }
 
+// --- a card pointing at a programme that is not there -------------------------
+// Reported from the app: "/migrate" answered `1 problem(s): linking cards to
+// products — D1_ERROR: FOREIGN KEY constraint failed`, and adding a card failed
+// the same way. Both columns hold a programme key that references programs(key),
+// so a name that is not in that table does not store badly — it refuses the
+// insert, and one such card stopped every other card being linked.
+{
+  const { db, env } = makeEnv();
+  await runMigrations(env);
+  await runSeed(env);
+
+  // A row from a database that predates the constraint, or whose programme was
+  // renamed. Written with the constraint off, because that is the only way it
+  // could have got there.
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.prepare(
+    `INSERT INTO cards (issuer, product, product_key, nickname, credit_limit_cents, statement_day, opened_at, base_mpd, program_key)
+     VALUES ('Trust','Freedom Card','trust_freedom_card','freedom',3910000,19,'2026-09-19',1.5,'none')`
+  ).run();
+  db.prepare(
+    `INSERT INTO cards (issuer, product, product_key, nickname, credit_limit_cents, statement_day, opened_at, base_mpd, program_key)
+     VALUES ('UOB','One Card','uob_one_card','one',500000,18,'2026-01-01',0,NULL)`
+  ).run();
+  db.exec('PRAGMA foreign_keys = ON');
+
+  const r = await runMigrations(env);
+  check('one card with a dangling programme no longer fails the whole step', r.errors.length === 0, JSON.stringify(r.errors));
+
+  const freedom = db.prepare(`SELECT product_id, program_key FROM cards WHERE nickname = 'freedom'`).get() as any;
+  check('the card is linked to a product anyway', typeof freedom?.product_id === 'number', JSON.stringify(freedom));
+  check('and the programme that does not exist is cleared', freedom?.program_key === null, JSON.stringify(freedom));
+  check(
+    'the repair is reported rather than silent',
+    (r.products?.repaired ?? []).some((x) => x.nickname === 'freedom' && /does not exist/.test(x.what)),
+    JSON.stringify(r.products?.repaired)
+  );
+
+  const other = db.prepare(`SELECT product_id FROM cards WHERE nickname = 'one'`).get() as any;
+  check('and every other card is linked too', typeof other?.product_id === 'number', JSON.stringify(other));
+
+  const prod = db.prepare(`SELECT program_key FROM card_products WHERE product_key = 'trust_freedom_card'`).get() as any;
+  check('the product it created carries no invented programme', prod?.program_key === null, JSON.stringify(prod));
+
+  const twice = await runMigrations(env);
+  check('and a second run has nothing left to repair', (twice.products?.repaired ?? []).length === 0, JSON.stringify(twice.products));
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

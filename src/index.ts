@@ -131,7 +131,7 @@ import {
 import { scanCardPage } from './cardscan';
 import { parseStatement, type ParsedRow } from './statement';
 import { merchantGroups, renameMerchant } from './tidy';
-import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
+import { acceptCredits, guessProgram, resolveProgramKey, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import { executeTransfer, tranchesByExpiry } from './points';
 import type { Env, Offer } from './types';
 
@@ -2243,9 +2243,22 @@ export default {
           if (b.opened_at && !opened) return json({ error: 'bad opening date' }, 400);
 
           // A programme is guessed from the issuer so points have somewhere to
-          // go; it is reported back rather than applied silently.
-          const program =
-            chosen?.program_key ?? (b.program_key === undefined ? await guessProgram(env, issuer) : b.program_key || null);
+          // go; it is reported back rather than applied silently. Anything the
+          // caller names is resolved against the programmes that exist first:
+          // both columns it lands in point at programs(key), so an unknown one
+          // is not a bad label but a failed insert, and the card is left half
+          // created with a database error on the screen.
+          let program: string | null;
+          if (chosen?.program_key !== undefined && chosen?.program_key !== null) {
+            const known = await resolveProgramKey(env, chosen.program_key);
+            program = 'error' in known ? null : known.key;
+          } else if (b.program_key === undefined) {
+            program = await guessProgram(env, issuer);
+          } else {
+            const asked = await resolveProgramKey(env, b.program_key);
+            if ('error' in asked) return json({ error: asked.error }, 400);
+            program = asked.key;
+          }
           const ins = await env.DB.prepare(
             `INSERT INTO cards (issuer, product, product_key, nickname, credit_limit_cents, statement_day,
                statement_day_known, opened_at, base_mpd, program_key, product_id)
@@ -2548,13 +2561,9 @@ export default {
             .bind(String(nickname ?? '').trim())
             .first<{ id: number }>();
           if (!card) return json({ error: 'no such card' }, 404);
-          if (program_key) {
-            const prog = await env.DB.prepare(`SELECT key FROM programs WHERE key = ?`).bind(program_key).first();
-            if (!prog) return json({ error: 'unknown programme' }, 400);
-          }
-          await env.DB.prepare(`UPDATE cards SET program_key = ? WHERE id = ?`)
-            .bind(program_key || null, card.id)
-            .run();
+          const asked = await resolveProgramKey(env, program_key);
+          if ('error' in asked) return json({ error: asked.error }, 400);
+          await env.DB.prepare(`UPDATE cards SET program_key = ? WHERE id = ?`).bind(asked.key, card.id).run();
           return json({ ok: true });
         }
 

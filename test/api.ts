@@ -930,6 +930,61 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   check('a duplicate nickname is refused', (await authed('/api/card', { issuer: 'X', product: 'Y', nickname: 'lady' })).status === 400, '');
   check('a nickname with spaces is refused', (await authed('/api/card', { issuer: 'X', product: 'Y', nickname: 'my card' })).status === 400, '');
   check('a card with no product is refused', (await authed('/api/card', { issuer: 'X', nickname: 'zz' })).status === 400, '');
+
+  // Reported from the app: adding a cashback card failed with
+  // `D1_ERROR: FOREIGN KEY constraint failed`. The form sends "none" for a card
+  // that earns no points, which is not an empty value because an empty value
+  // already means "guess from the issuer" — and "none" went straight into a
+  // column pointing at programs(key).
+  {
+    const r = await authed('/api/card', {
+      issuer: 'Trust',
+      product: 'Freedom Card',
+      nickname: 'freedom',
+      limit: '39100',
+      statement_day: 19,
+      opened_at: '2026-09-19',
+      program_key: 'none',
+      base_mpd: '1.5',
+    });
+    const body = (await r.json()) as any;
+    check('a card that earns no points can be added', r.status === 200, JSON.stringify(body));
+    check('and is stored with no programme at all', body.program_key === null, JSON.stringify(body.program_key));
+
+    const row = db.prepare(`SELECT program_key, product_id FROM cards WHERE nickname = 'freedom'`).get() as any;
+    check('the card row says the same', row?.program_key === null, JSON.stringify(row));
+    check('and it is linked to a product, not left half made', typeof row?.product_id === 'number', JSON.stringify(row));
+    const prod = db.prepare(`SELECT program_key FROM card_products WHERE product_key = 'trust_freedom_card'`).get() as any;
+    check('and the product carries no programme either', prod?.program_key === null, JSON.stringify(prod));
+
+    // A programme that was meant to be real and is not is a different thing,
+    // and must not be quietly dropped into "no programme".
+    const bad = await authed('/api/card', {
+      issuer: 'Trust',
+      product: 'Other Card',
+      nickname: 'other',
+      program_key: 'krisflyer_typo',
+    });
+    check('but a programme that was meant to exist is refused', bad.status === 400, String(bad.status));
+    check(
+      'and says so in words rather than in database terms',
+      /no programme called/.test(JSON.stringify(await bad.json())),
+      ''
+    );
+    check(
+      'and no card is left behind by the refusal',
+      !db.prepare(`SELECT id FROM cards WHERE nickname = 'other'`).get(),
+      'a rejected card must not exist'
+    );
+  }
+
+  // The same value on the way in from the card editor.
+  {
+    const r = await authed('/api/card/program', { nickname: 'freedom', program_key: 'none' });
+    check('"none" is understood when changing a card too', r.status === 200, String(r.status));
+    const r2 = await authed('/api/card/program', { nickname: 'freedom', program_key: 'not_a_programme' });
+    check('and an unknown one is still refused', r2.status === 400, String(r2.status));
+  }
 }
 {
   const res = await authed('/api/card/rule', {
