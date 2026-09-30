@@ -444,10 +444,12 @@ The codes matter more than the category word: `/addearn alt online 4` claims
 every online purchase earns the bonus, while
 `/addearn alt online 4 mcc 5262,5964,5969` is what the terms actually say.
 
-The app also reopens on the tab you were last on. A refresh is how the
-dashboard recovers from being backgrounded on a phone, and starting over on Home
-each time loses your place; the tab is remembered per browser, and a tab that no
-longer exists falls back to Home rather than to a blank screen.
+The app also reopens on the tab you were last on. The tab is carried in the
+address — `#tab=planner` — as well as in the browser's storage, and the address
+is the half that makes it work: this app is usually opened inside another app's
+browser, where storage is routinely partitioned or dropped between openings. A
+name that is not one of the screens falls back to Home rather than to a blank
+one, and a tab can now be linked to.
 
 ### Working an offer
 

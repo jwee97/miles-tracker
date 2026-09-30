@@ -13,6 +13,7 @@ import { isStale, type CardProduct } from '../catalog/products';
 
 import { assessConfidence, type ConfidenceReport, type RecommendationConfidence } from './confidence';
 import { scoreOf, totalScore, type ScoreComponents } from './score';
+import { cached } from '../cache';
 import type { Env } from '../types';
 
 /**
@@ -182,12 +183,18 @@ export async function recommendV2(
     if (row) purchase.category = row.category;
   }
 
-  const { results: cards } = await env.DB.prepare(
-    `SELECT * FROM cards WHERE closed_at IS NULL ORDER BY id`
-  ).all<Card>();
-  const { results: exclusions } = await env.DB.prepare(
-    `SELECT card_id, mcc, reason FROM exclusions WHERE active = 1`
-  ).all<any>();
+  // The cards you hold and the codes that earn nothing are the same answer for
+  // every purchase in a run, so they are read through the cache a caller may
+  // have turned on. `exclusions:active` is deliberately the key `evaluate`
+  // uses: two keys for one query would cache it twice and share nothing.
+  const cards = await cached<Card[]>(env, 'cards:open', async () =>
+    (await env.DB.prepare(`SELECT * FROM cards WHERE closed_at IS NULL ORDER BY id`).all<Card>()).results ?? []
+  );
+  const exclusions = await cached<{ card_id: number | null; mcc: string; reason: string }[]>(
+    env,
+    'exclusions:active',
+    async () => (await env.DB.prepare(`SELECT card_id, mcc, reason FROM exclusions WHERE active = 1`).all<any>()).results ?? []
+  );
 
   // --- evaluate every card -------------------------------------------------
   //

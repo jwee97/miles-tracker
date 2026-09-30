@@ -1902,19 +1902,41 @@ export type Tab = (typeof TAB_KEYS)[number];
 
 const TAB_STORE = 'tab';
 
+const isTab = (v: string | null | undefined): v is Tab => (TAB_KEYS as readonly string[]).includes(v ?? '');
+
+/** The tab named in the address, if one is. */
+function tabInUrl(): Tab | null {
+  const m = location.hash.match(/[#&]tab=([a-z0-9]+)/i);
+  return isTab(m?.[1]) ? (m![1] as Tab) : null;
+}
+
 /**
  * The tab to open on, which is the one last left open.
  *
  * Refreshing and landing back on Home loses your place for no reason — the
  * dashboard is opened from a link on a phone, and a refresh is how it recovers
- * from being backgrounded. Storage can throw (private windows, blocked site
- * data) and can hold anything, so both are answered with Home.
+ * from being backgrounded.
+ *
+ * Kept in the address as well as in storage, and the address is what makes this
+ * actually work. The first version stored it only in localStorage, which is
+ * correct in a browser and useless in the place this app is usually opened: a
+ * messaging app's in-app browser, where storage is routinely partitioned or
+ * dropped between openings. The address survives a refresh everywhere, needs no
+ * permission, and has the side benefit that a tab can be linked to.
+ *
+ * The token arrives in the hash too, and is taken out of it on boot. It cannot
+ * be mistaken for a tab: this looks for `tab=` and then for a name that is
+ * actually one of the screens.
  */
 function rememberedTab(): Tab {
+  const named = tabInUrl();
+  if (named) return named;
   try {
     const raw = localStorage.getItem(TAB_STORE);
-    return (TAB_KEYS as readonly string[]).includes(raw ?? '') ? (raw as Tab) : 'home';
+    return isTab(raw) ? raw : 'home';
   } catch {
+    // Private windows and blocked site data both throw here; Home is a
+    // perfectly good answer and not a reason to fail to render.
     return 'home';
   }
 }
@@ -2005,11 +2027,22 @@ export default function App() {
   // Remembered on every change rather than in each handler: the tab also moves
   // from the home screen's shortcuts and from onboarding, and a handler-by-handler
   // version would remember some routes to a screen and not others.
+  //
+  // Written to the address as well as to storage, because the address is the
+  // copy that survives being opened inside another app. `replaceState` rather
+  // than `pushState`: switching tabs should not fill the back button with a
+  // trail to reverse out of before the back gesture leaves the app.
   useEffect(() => {
     try {
       localStorage.setItem(TAB_STORE, tab);
     } catch {
-      /* nothing to do: the tab still applies for this visit */
+      /* nothing to do: the address still carries it */
+    }
+    // Not while the token is still in the hash — it is read and removed by the
+    // effects above, and overwriting it first would throw the token away.
+    if (!/[#&]t=/.test(location.hash)) {
+      const want = `#tab=${tab}`;
+      if (location.hash !== want) history.replaceState(null, '', `${location.pathname}${location.search}${want}`);
     }
   }, [tab]);
 

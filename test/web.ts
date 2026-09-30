@@ -2359,11 +2359,25 @@ async function main() {
       String(await page.getByRole('button', { name: /^More/ }).getAttribute('class'))
     );
 
+    // The case that made this fail in real use: the app is usually opened
+    // inside another app's browser, where storage is partitioned or dropped
+    // between openings. The address has to be enough on its own.
+    check('the tab is named in the address', /#tab=planner/.test(page.url()), page.url());
+    await page.evaluate(() => localStorage.removeItem('tab'));
+    await page.reload();
+    await page.locator('.card', { hasText: 'The rest of the month' }).first().waitFor();
+    check('a real refresh with no stored value still returns to the tab', true);
+
     // A stored value that no longer names a screen must not restore to nothing.
     await page.evaluate(() => localStorage.setItem('tab', 'a-tab-that-was-renamed'));
     await open({ keepTab: true });
     await page.locator('.advisor').waitFor();
     check('a tab that no longer exists falls back to home', true);
+
+    // Nor may a name in the address that is not a screen.
+    await page.goto(`${server.url}/?v=${++visit}#tab=not-a-screen`);
+    await page.locator('.advisor').waitFor();
+    check('and neither does one in the address', true);
 
     await page.close();
   } finally {

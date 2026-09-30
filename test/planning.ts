@@ -17,17 +17,46 @@ import { ruleSetOn } from '../src/catalog/rulesets';
 import type { Env } from '../src/types';
 
 const db = new DatabaseSync(':memory:');
+
+// A Worker invocation may make fifty subrequests, and every D1 call is one.
+// A report that replays the ledger is exactly the shape that quietly exceeds
+// that, and the failure is an error about API requests that says nothing about
+// the report.
+const FREE_PLAN_SUBREQUESTS = 50;
+let subrequests = 0;
+let inBatch = false;
+const countOne = () => {
+  if (!inBatch) subrequests++;
+};
 const wrap = (sql: string, args: unknown[] = []): any => ({
   bind: (...a: unknown[]) => wrap(sql, a),
-  first: async () => db.prepare(sql).get(...(args as any)) ?? null,
-  all: async () => ({ results: db.prepare(sql).all(...(args as any)) }),
+  first: async () => {
+    countOne();
+    return db.prepare(sql).get(...(args as any)) ?? null;
+  },
+  all: async () => {
+    countOne();
+    return { results: db.prepare(sql).all(...(args as any)) };
+  },
   run: async () => {
+    countOne();
     const r = db.prepare(sql).run(...(args as any));
     return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
   },
 });
 const env = {
-  DB: { prepare: (s: string) => wrap(s), batch: async (ss: any[]) => Promise.all(ss.map((x) => x.all())) },
+  DB: {
+    prepare: (s: string) => wrap(s),
+    batch: async (ss: any[]) => {
+      subrequests++;
+      inBatch = true;
+      try {
+        return await Promise.all(ss.map((x) => x.all()));
+      } finally {
+        inBatch = false;
+      }
+    },
+  },
   TZ_OFFSET_MINUTES: '480',
   MILE_VALUE_CENTS: '1.5',
   POSTING_LAG_DAYS: '0',
@@ -108,6 +137,57 @@ check(
   JSON.stringify(leak.caveats)
 );
 check('and it never tells anyone to spend', !leak.caveats.join(' ').match(/you should spend|spend more/i), '');
+
+// --- what the report costs to produce ---------------------------------------
+// Replaying the ledger is the most expensive thing this app does. Measured
+// rather than assumed, because the ceiling is not a soft one: past it the
+// platform cuts the invocation off and the screen shows an error about API
+// requests.
+{
+  for (let i = 0; i < 40; i++) {
+    sql(
+      `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category, mcc)
+       VALUES (1, 4000, '2026-07-${String((i % 28) + 1).padStart(2, '0')}', '2026-07-${String((i % 28) + 1).padStart(2, '0')}', 'Somewhere', 'dining', '5812')`
+    );
+  }
+  subrequests = 0;
+  const r = await rewardLeakage(env, { from: '2026-07-01', to: '2026-07-31' });
+  const cost = subrequests;
+  check(`forty purchases were replayed (${r.priced} priced)`, r.transactions_examined === 40, JSON.stringify(r.transactions_examined));
+  check(
+    `and the report fits in one Worker invocation (${cost} of ${FREE_PLAN_SUBREQUESTS})`,
+    cost <= FREE_PLAN_SUBREQUESTS,
+    `${cost} subrequests for 40 rows — past ${FREE_PLAN_SUBREQUESTS} the platform stops the request`
+  );
+  check(
+    'with room to spare, since a real ledger is longer than forty rows',
+    cost <= FREE_PLAN_SUBREQUESTS / 2,
+    `${cost} of ${FREE_PLAN_SUBREQUESTS}`
+  );
+
+  // The cost has to be flat in the number of rows, not merely small at forty:
+  // the reads this makes are of reference data, and re-reading it per row is
+  // what made the report fail on exactly the histories worth reporting on.
+  for (let i = 0; i < 40; i++) {
+    const d = `2026-07-${String((i % 28) + 1).padStart(2, '0')}`;
+    sql(
+      `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, category, mcc)
+       VALUES (1, 4000, ?, ?, 'Somewhere', 'dining', '5812')`,
+      d,
+      d
+    );
+  }
+  subrequests = 0;
+  await rewardLeakage(env, { from: '2026-07-01', to: '2026-07-31' });
+  check(
+    `and twice the rows costs no more (${subrequests} for 80)`,
+    subrequests <= cost,
+    `${cost} for 40, ${subrequests} for 80 — the cost has to be flat in the rows`
+  );
+
+  // Left behind, these would change what the plan below is asked about.
+  sql(`DELETE FROM transactions WHERE occurred_at LIKE '2026-07-%'`);
+}
 
 const quiet = await rewardLeakage(env, { from: '2026-01-01', to: '2026-01-31' });
 check('a month with nothing in it leaks nothing', quiet.leakage_cents === 0, String(quiet.leakage_cents));

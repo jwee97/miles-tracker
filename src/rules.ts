@@ -237,22 +237,28 @@ export async function rulesForCard(
   // Memoised per request and keyed by the date, because which rules apply is a
   // question about a date. Importing a statement asks this once a line for the
   // same card, and the rules cannot change while the import runs.
-  return cached(env, `rules:${card.id}:${on}`, async () => {
-    const productId = (card as unknown as { product_id?: number | null }).product_id ?? null;
-    if (productId) {
-      const set = await ruleSetOn(env, productId, on);
-      if (set) return { rules: await rulesIn(env, set.id), rule_set_id: set.id };
-      // A product with no version covering that day earns nothing extra — the
-      // honest answer, rather than quietly reaching for a version that had not
-      // started or had already ended.
-      return { rules: [], rule_set_id: null };
-    }
+  const productId = (card as unknown as { product_id?: number | null }).product_id ?? null;
+  if (productId) {
+    // Both halves are memoised on what they actually depend on — the product
+    // for its versions, the version for its rules — rather than on the date,
+    // which only decides which version to ask for.
+    const set = await ruleSetOn(env, productId, on);
+    if (set) return { rules: await rulesIn(env, set.id), rule_set_id: set.id };
+    // A product with no version covering that day earns nothing extra — the
+    // honest answer, rather than quietly reaching for a version that had not
+    // started or had already ended.
+    return { rules: [], rule_set_id: null };
+  }
 
+  // A card not yet on the product model has one set of rules and no dates, so
+  // the date has no business being in the key.
+  const rules = await cached(env, `rules:card:${card.id}`, async () => {
     const { results } = await env.DB.prepare(`SELECT * FROM earn_rules WHERE card_id = ? AND active = 1`)
       .bind(card.id)
       .all<EarnRule>();
-    return { rules: results ?? [], rule_set_id: null };
+    return results ?? [];
   });
+  return { rules, rule_set_id: null };
 }
 
 export interface Purchase {
@@ -321,6 +327,25 @@ async function capSpend(
 ): Promise<number> {
   const win = windowFor(rule.cap_window, card, env, opts.on);
   const group = rule.cap_group ? rules.filter((r) => r.cap_group === rule.cap_group) : [rule];
+  // Memoised on everything the answer depends on, for callers that turn the
+  // read cache on. A report that replays the ledger asks this once per
+  // transaction per card while the answer can only change if something is
+  // written — and nothing is, because it is a report. Without this a single
+  // screen made a query a row, which is what a Worker cannot afford.
+  const key =
+    `cap:${card.id}:${rule.cap_group ?? rule.id}:${win.start}:${win.end}` +
+    (opts.before ? `:before=${opts.before.date}#${opts.before.id}` : '');
+  return cached(env, key, async () => capSpendUncached(env, card, rule, group, win, opts));
+}
+
+async function capSpendUncached(
+  env: Env,
+  card: Card,
+  rule: EarnRule,
+  group: EarnRule[],
+  win: { start: string; end: string },
+  opts: { on?: string; before?: { id: number; date: string } } = {}
+): Promise<number> {
   const cats = group.map((r) => r.category);
   const ph = cats.map(() => '?').join(',');
 

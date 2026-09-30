@@ -1,3 +1,4 @@
+import { withReadCache } from '../../cache';
 import { recommendV2 } from '../../recommendations/recommend';
 import { EFFECTIVE_DATE, money, resolveRange, today } from '../../spend';
 import type { Env } from '../../types';
@@ -74,6 +75,13 @@ export async function rewardLeakage(
   env: Env,
   opts: { range?: string | null; from?: string | null; to?: string | null; limit?: number } = {}
 ): Promise<LeakageReport> {
+  // Every read this makes is of reference data — cards, their rules, the
+  // exclusions, how full a cap was in a given month — and nothing here writes,
+  // so none of it can change while the report is being built. Without the
+  // cache the same handful of rows was re-read once per transaction: a
+  // forty-row month cost 361 subrequests of the fifty a Worker invocation is
+  // allowed, so the screen failed on any history worth reporting on.
+  env = withReadCache(env);
   // An explicit window wins. Defaulting the named range unconditionally made
   // `from`/`to` silently ignored, so a caller asking about January was
   // answered about last month — with numbers that looked entirely plausible.

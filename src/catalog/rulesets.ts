@@ -1,3 +1,4 @@
+import { cached } from '../cache';
 import type { Env } from '../types';
 import type { EarnRule } from '../rules';
 
@@ -53,28 +54,37 @@ const dayBefore = (iso: string) => new Date(Date.parse(`${iso}T00:00:00Z`) - 86_
  * withdrawn versions are not — a draft has never applied to anything.
  */
 export async function ruleSetOn(env: Env, productId: number, date: string): Promise<RuleSet | null> {
-  return (
-    (await env.DB.prepare(
+  // The product's versions are read once and the date is chosen in memory.
+  // Keying the read on the date instead made every distinct day its own query,
+  // which is invisible on one purchase and ruinous on a report that replays a
+  // month of them — and the set of versions is the same answer either way.
+  const versions = await cached(env, `rulesets:${productId}`, async () => {
+    const { results } = await env.DB.prepare(
       `SELECT * FROM rule_sets
-        WHERE product_id = ?
-          AND status IN ('published', 'superseded')
-          AND effective_from <= ?
-          AND (effective_until IS NULL OR effective_until >= ?)
-        ORDER BY effective_from DESC
-        LIMIT 1`
+        WHERE product_id = ? AND status IN ('published', 'superseded')
+        ORDER BY effective_from DESC`
     )
-      .bind(productId, date, date)
-      .first<RuleSet>()) ?? null
+      .bind(productId)
+      .all<RuleSet>();
+    return results ?? [];
+  });
+
+  return (
+    versions.find(
+      (v) => v.effective_from <= date && (v.effective_until === null || v.effective_until >= date)
+    ) ?? null
   );
 }
 
 export async function rulesIn(env: Env, ruleSetId: number): Promise<EarnRule[]> {
-  const { results } = await env.DB.prepare(
-    `SELECT * FROM earn_rules WHERE rule_set_id = ? ORDER BY priority DESC, id`
-  )
-    .bind(ruleSetId)
-    .all<EarnRule>();
-  return results ?? [];
+  return cached(env, `rulesin:${ruleSetId}`, async () => {
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM earn_rules WHERE rule_set_id = ? ORDER BY priority DESC, id`
+    )
+      .bind(ruleSetId)
+      .all<EarnRule>();
+    return results ?? [];
+  });
 }
 
 export async function exclusionsIn(env: Env, ruleSetId: number): Promise<RuleExclusion[]> {
