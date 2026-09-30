@@ -42,6 +42,11 @@ export interface TransactionCandidate {
   raw_description?: string | null;
   /** 'pending' unless the source knows the bank has posted it. */
   status?: 'pending' | 'posted' | 'reversed' | 'refunded';
+  /**
+   * Spent abroad or in a foreign currency. Undefined when the source cannot
+   * tell — which is most of them — and read as local.
+   */
+  foreign?: boolean | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -238,7 +243,12 @@ export async function ingestTransaction(env: Env, c: TransactionCandidate): Prom
   // amount. Everything else is priced against the rules in force on its date.
   const expected =
     c.amount_cents > 0
-      ? await evaluate(env, card, { amount_cents: c.amount_cents, mcc, category, channel: c.channel ?? null }, { on: c.occurred_at })
+      ? await evaluate(
+          env,
+          card,
+          { amount_cents: c.amount_cents, mcc, category, channel: c.channel ?? null, foreign: c.foreign ?? null },
+          { on: c.occurred_at }
+        )
       : null;
   // Which wallet the points land in, resolved now rather than when they are
   // accepted: changing a card's programme later must not retroactively move
@@ -250,8 +260,8 @@ export async function ingestTransaction(env: Env, c: TransactionCandidate): Prom
   const ins = await env.DB.prepare(
     `INSERT INTO transactions (card_id, amount_cents, occurred_at, posted_at, merchant, merchant_raw, merchant_id,
        category, category_source, needs_review, mcc, channel, expected_miles, expected_cashback_cents,
-       expected_program, evaluated_rule_set_id, evaluated_at, status, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       expected_program, evaluated_rule_set_id, evaluated_at, status, source, is_foreign)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       card.id,
@@ -272,7 +282,8 @@ export async function ingestTransaction(env: Env, c: TransactionCandidate): Prom
       expected?.rule_set_id ?? null,
       today(env),
       status,
-      c.source
+      c.source,
+      c.foreign == null ? null : c.foreign ? 1 : 0
     )
     .run();
 
@@ -309,6 +320,7 @@ export async function ingestTransaction(env: Env, c: TransactionCandidate): Prom
         category,
         channel: c.channel ?? null,
         expected_program: program,
+        is_foreign: c.foreign == null ? null : c.foreign ? 1 : 0,
       },
       card
     );

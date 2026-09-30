@@ -186,6 +186,53 @@ export function statementQuarter(anchorDate: string, statementDay: number, env: 
   return { start: months[0].start, end: months[2].end, index: q + 1, months, pattern, anchor_month: anchorMonth };
 }
 
+/**
+ * A membership quarter: three CALENDAR months, counted from the month the card
+ * was approved.
+ *
+ * Not the statement quarter above, and the difference is the whole reason this
+ * exists. That one is built from statement cycles, which is how UOB One counts.
+ * Trust counts "three (3) consecutive months starting from the month your Trust
+ * Freedom credit card is approved", and its minimum is "Eligible Spend in a
+ * calendar month" by transaction date. A card approved on 20 September has
+ * quarters starting September, December, March and June — which no calendar
+ * quarter and no statement cycle reproduces.
+ *
+ * Asked about a date rather than about today, because caps are asked about the
+ * day a purchase was made, and a purchase from last quarter has to land in last
+ * quarter's window.
+ */
+export function membershipQuarter(anchorDate: string, on: string): StatementQuarter {
+  const NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const key = (iso: string) => Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7)) - 1;
+  const monthOf = (k: number) => {
+    const y = Math.floor(k / 12);
+    const m = k % 12;
+    const start = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+    const end = new Date(Date.UTC(y, m + 1, 0)).toISOString().slice(0, 10);
+    return { start, end };
+  };
+
+  const anchor = key(anchorDate);
+  const q = Math.floor(Math.max(0, key(on) - anchor) / 3);
+  const first = anchor + q * 3;
+  const months = [0, 1, 2].map((i) => monthOf(first + i));
+  const pattern = [0, 1, 2, 3]
+    .map((n) => (anchor + n * 3) % 12)
+    .sort((a, b) => a - b)
+    .map((m) => NAMES[m])
+    .join(', ');
+
+  return {
+    start: months[0].start,
+    end: months[2].end,
+    index: q + 1,
+    months,
+    pattern,
+    anchor_month: `${NAMES[anchor % 12]} ${Math.floor(anchor / 12)}`,
+  };
+}
+
 /** The cycle immediately after a given one. */
 function cycleAfter(cycle: { end: string }, statementDay: number): { start: string; end: string } {
   const end = new Date(`${cycle.end}T00:00:00Z`);
@@ -525,7 +572,9 @@ export async function requirementProgress(env: Env, card: Card, req: Requirement
   const quarter =
     req.window === 'statement_quarter'
       ? statementQuarter(req.anchor_at ?? req.starts_at ?? card.opened_at ?? now, card.statement_day, env)
-      : null;
+      : req.window === 'membership_quarter'
+        ? membershipQuarter(req.anchor_at ?? req.starts_at ?? card.opened_at ?? now, now)
+        : null;
 
   let window: { start: string; end: string };
   if (quarter && req.per_month) window = quarter.months.find((m) => m.end >= now) ?? quarter.months[2];
@@ -714,7 +763,7 @@ function shapeWarning(req: Requirement, tiers: RequirementTier[]): string | null
       (tiers.length ? '.' : ', and add its spend tiers.')
     );
   }
-  if (req.window === 'statement_quarter' && !req.per_month) {
+  if ((req.window === 'statement_quarter' || req.window === 'membership_quarter') && !req.per_month) {
     return (
       'This is set to one total across the whole quarter rather than a minimum in each of its three statement ' +
       'months, which is how these cards are actually counted.'
@@ -837,7 +886,21 @@ export async function requirementsFor(env: Env, cardId: number): Promise<Require
     )
       .bind(cardId)
       .all<Requirement>();
-    return results ?? [];
+    const all = results ?? [];
+
+    // A minimum that belongs to one reward mode applies only while that mode
+    // is the one in force. Asked only when some requirement names a mode, so
+    // every ordinary card pays nothing for it.
+    if (!all.some((r) => (r as { mode_key?: string | null }).mode_key)) return all;
+    const card = await env.DB.prepare(`SELECT product_id FROM cards WHERE id = ?`)
+      .bind(cardId)
+      .first<{ product_id: number | null }>();
+    const { modeOn } = await import('./cards/modes');
+    const now = await modeOn(env, cardId, today(env), card?.product_id ?? null);
+    return all.filter((r) => {
+      const m = (r as { mode_key?: string | null }).mode_key;
+      return !m || m === now?.mode_key;
+    });
   });
 }
 

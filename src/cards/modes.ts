@@ -28,6 +28,8 @@ export interface CardMode {
   payout: 'cash' | 'miles' | 'stock' | 'points' | string;
   picks_category: number;
   category_choices: string | null;
+  /** The mode the bank applies until the holder picks one. */
+  is_default?: number;
   note: string | null;
 }
 
@@ -87,8 +89,34 @@ export function chosenOn(choices: ModeChoice[], on: string): ModeChoice | null {
   return found;
 }
 
-export async function modeOn(env: Env, cardId: number, on: string): Promise<ModeChoice | null> {
-  return chosenOn(await choicesOf(env, cardId), on);
+/**
+ * The mode in force on a day — the one chosen, or the one the bank applies
+ * until something is.
+ *
+ * Trust: "If you start using your card before making a selection, Unlimited
+ * cashback will apply by default." Reading no choice as no mode made the card
+ * earn nothing at all until the holder thought to tell the app, which is the
+ * one answer the bank never gives.
+ */
+export async function modeOn(
+  env: Env,
+  cardId: number,
+  on: string,
+  productId: number | null = null
+): Promise<ModeChoice | null> {
+  const chosen = chosenOn(await choicesOf(env, cardId), on);
+  if (chosen || !productId) return chosen;
+  const fallback = (await modesOf(env, productId)).find((m) => m.is_default);
+  if (!fallback) return null;
+  return {
+    id: 0,
+    card_id: cardId,
+    mode_key: fallback.mode_key,
+    category: null,
+    effective_from: '(the default until one is chosen)',
+    effective_until: null,
+    note: null,
+  };
 }
 
 /**
@@ -107,9 +135,16 @@ export async function modeOn(env: Env, cardId: number, on: string): Promise<Mode
 export function rulesUnder(rules: EarnRule[], choice: ModeChoice | null): EarnRule[] {
   return rules
     .filter((r) => {
-      const mode = (r as { mode_key?: string | null }).mode_key ?? null;
-      if (!mode) return true;
-      return choice !== null && mode === choice.mode_key;
+      const tag = (r as { mode_key?: string | null }).mode_key ?? null;
+      if (!tag) return true;
+      if (!choice) return false;
+      // `bonus_cashback:dining` — a rule that belongs to a mode AND to one of the
+      // categories that mode lets you pick. Trust defines each category by its
+      // own list of codes, so "the category you picked" is six different rules
+      // of which one applies, rather than one rule with a word swapped in.
+      const [mode, pick] = tag.split(':');
+      if (mode !== choice.mode_key) return false;
+      return !pick || pick === (choice.category ?? '').toLowerCase();
     })
     .map((r) => {
       if (r.category !== SELECTED) return r;
@@ -201,15 +236,16 @@ export async function defineMode(
     payout?: string;
     picks_category?: boolean;
     category_choices?: string | null;
+    is_default?: boolean;
     note?: string | null;
   }
 ): Promise<CardMode> {
   await env.DB.prepare(
-    `INSERT INTO card_modes (product_id, mode_key, label, payout, picks_category, category_choices, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO card_modes (product_id, mode_key, label, payout, picks_category, category_choices, is_default, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(product_id, mode_key) DO UPDATE SET
        label = excluded.label, payout = excluded.payout, picks_category = excluded.picks_category,
-       category_choices = excluded.category_choices, note = excluded.note`
+       category_choices = excluded.category_choices, is_default = excluded.is_default, note = excluded.note`
   )
     .bind(
       productId,
@@ -218,9 +254,17 @@ export async function defineMode(
       m.payout ?? 'cash',
       m.picks_category ? 1 : 0,
       m.category_choices ?? null,
+      m.is_default ? 1 : 0,
       m.note ?? null
     )
     .run();
+  // One default at most: a second would make "what applies unchosen" depend on
+  // which row the database happened to return first.
+  if (m.is_default) {
+    await env.DB.prepare(`UPDATE card_modes SET is_default = 0 WHERE product_id = ? AND mode_key <> ?`)
+      .bind(productId, m.mode_key)
+      .run();
+  }
 
   const made = await env.DB.prepare(`SELECT * FROM card_modes WHERE product_id = ? AND mode_key = ?`)
     .bind(productId, m.mode_key)

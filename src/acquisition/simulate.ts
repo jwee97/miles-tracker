@@ -175,7 +175,7 @@ export async function simulateProduct(
       env,
       card,
       { amount_cents: t.amount_cents, mcc: t.mcc, category: t.category, channel: t.channel as any },
-      { rules, on: t.posted_at ?? t.occurred_at }
+      { rules, on: t.posted_at ?? t.occurred_at, authorised_on: t.occurred_at }
     );
 
     // Apply the candidate's own caps against the simulated spend so far.
@@ -189,7 +189,7 @@ export async function simulateProduct(
       if (headroom < t.amount_cents) {
         const bonusPart = headroom;
         const basePart = t.amount_cents - headroom;
-        const bonus = await evaluate(env, card, { amount_cents: bonusPart, mcc: t.mcc, category: t.category, channel: t.channel as any }, { rules, on: t.posted_at ?? t.occurred_at });
+        const bonus = await evaluate(env, card, { amount_cents: bonusPart, mcc: t.mcc, category: t.category, channel: t.channel as any }, { rules, on: t.posted_at ?? t.occurred_at, authorised_on: t.occurred_at });
         const base = (basePart / 100) * (product.base_mpd ?? 0) * mileValue;
         value = bonusPart > 0 ? bonus.value_cents + base : base;
         miles = bonusPart > 0 ? bonus.miles + Math.round((basePart / 100) * (product.base_mpd ?? 0)) : Math.round((basePart / 100) * (product.base_mpd ?? 0));

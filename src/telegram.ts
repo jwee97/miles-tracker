@@ -23,7 +23,7 @@ import {
   lookupMerchantOnline,
   unknownMerchants,
 } from './mccscan';
-import { evaluate, lookupMerchant } from './rules';
+import { evaluate, isCodeEntry, lookupMerchant } from './rules';
 import { acceptCredits, guessProgram, pendingCredits, programForCard, undoCredit, wallet } from './wallet';
 import type { Card, Env, Offer } from './types';
 
@@ -339,15 +339,18 @@ async function runCommand(
               '`/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback`\n' +
               '`/req alt|signup_min|1000|fixed_window|2026-11-14|||30k miles`\n\n' +
               '`statement_quarter` is three statement months counted from the month the card was issued — ' +
-              'the amount must be hit in every one of them. Add its tiers with /tiers.'
+              'the amount must be hit in every one of them. Add its tiers with /tiers.\n' +
+              '`membership_quarter` is the same in calendar months, which is how Trust counts.'
           );
-        const [nick, kind, amount, window, deadline, cap, txns, note] = p;
+        const [nick, kind, amount, window, deadline, cap, txns, note, reqMode] = p;
         const card = await cardByNick(env, nick);
         if (!card) return reply(`No card with nickname \`${nick}\`.`);
 
         // A rolling quarter is counted from a date. Without one every month
         // would look like quarter one, so refuse rather than guess.
-        const quarterly = window === 'statement_quarter';
+        // Both kinds of rolling quarter are counted from a date — statement
+        // cycles for UOB One, calendar months for Trust — and both need it.
+        const quarterly = window === 'statement_quarter' || window === 'membership_quarter';
         if (quarterly && !card.opened_at)
           return reply(`A statement quarter is counted from the month *${card.product}* was issued, and that card has no opening date.\n` +
               'Set one in the Cards tab first.'
@@ -355,8 +358,8 @@ async function runCommand(
 
         await env.DB.prepare(
           `INSERT INTO requirements (card_id, kind, amount_cents, window, deadline, starts_at, bonus_cap_cents,
-             min_txns, reward_note, anchor_at, per_month, prorate_first)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             min_txns, reward_note, anchor_at, per_month, prorate_first, mode_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             card.id,
@@ -370,10 +373,12 @@ async function runCommand(
             note || null,
             quarterly ? card.opened_at : null,
             quarterly ? 1 : 0,
-            quarterly ? 1 : 0
+            quarterly ? 1 : 0,
+            reqMode ? reqMode.trim().toLowerCase() : null
           )
           .run();
         return reply(`Requirement added to ${card.product}.` +
+            (reqMode ? ` It applies only while the card is set to \`${reqMode.trim().toLowerCase()}\`.` : '') +
             (quarterly
               ? ` Its quarters run from ${card.opened_at}, three statement months at a time. Add tiers with \`/tiers ${card.nickname} 600=50 1000=110\`.`
               : '') +
@@ -395,7 +400,7 @@ async function runCommand(
           );
 
         const req = await env.DB.prepare(
-          `SELECT * FROM requirements WHERE card_id = ? AND active = 1 AND window = 'statement_quarter'
+          `SELECT * FROM requirements WHERE card_id = ? AND active = 1 AND window IN ('statement_quarter', 'membership_quarter')
            ORDER BY id DESC LIMIT 1`
         )
           .bind(card.id)
@@ -731,7 +736,7 @@ async function runCommand(
             );
           const lines = await Promise.all(
             (cards ?? []).map(async (c: any) => {
-              const now = await modeOn(env, c.id, today(env));
+              const now = await modeOn(env, c.id, today(env), c.product_id);
               return `*${c.nickname}* — ${now ? `${now.mode_key}${now.category ? ` (${now.category})` : ''} since ${now.effective_from}` : 'nothing chosen, so it earns only its unconditional rates'}`;
             })
           );
@@ -745,13 +750,15 @@ async function runCommand(
         // /mode <card> add key|label|payout|categories
         if (tok[1]?.toLowerCase() === 'add') {
           if (!productId) return reply(`*${card.product}* is not linked to a product yet — run /migrate first.`);
-          const [key, label, payout, cats] = args.slice(args.indexOf('add') + 3).split('|').map((x) => x.trim());
+          const [key, label, payout, cats, flag] = args.slice(args.indexOf('add') + 3).split('|').map((x) => x.trim());
           if (!key || !label)
             return reply(
-              'Format: `/mode <card> add <key>|<label>|<payout>|<categories>`\n' +
+              'Format: `/mode <card> add <key>|<label>|<payout>|<categories>|default`\n' +
                 '`payout` is what it actually pays: `miles`, `cash`, `stock` or `points`.\n' +
                 'Add categories only when the mode also makes you pick one:\n' +
-                '`/mode freedom add bonus_cashback|Bonus Cashback|cash|dining,shopping,travel`'
+                '`/mode freedom add bonus_cashback|Bonus Cashback|cash|dining,shopping,travel`\n' +
+                'End with `default` for the mode the bank applies until you choose one:\n' +
+                '`/mode freedom add unlimited_cashback|Unlimited Cashback|cash||default`'
             );
           const m = await defineMode(env, productId, {
             mode_key: key.toLowerCase(),
@@ -759,10 +766,12 @@ async function runCommand(
             payout: (payout || 'cash').toLowerCase(),
             picks_category: !!cats,
             category_choices: cats || null,
+            is_default: (flag ?? '').toLowerCase() === 'default',
           });
           return reply(
             `*${card.product}* can now be set to *${m.label}* (\`${m.mode_key}\`), paid as ${m.payout}` +
               (m.picks_category ? `, picking one of ${m.category_choices}` : '') +
+              (m.is_default ? ' — and it is what applies until you choose' : '') +
               `.\n\nRules for it carry \`mode ${m.mode_key}\`: \`/addearn ${card.nickname} * 1.3 mode ${m.mode_key}\``
           );
         }
@@ -795,7 +804,7 @@ async function runCommand(
                 `Add one with \`/mode ${card.nickname} add <key>|<label>|<payout>\`.`
             );
           const history = await choicesOf(env, card.id);
-          const now = await modeOn(env, card.id, today(env));
+          const now = await modeOn(env, card.id, today(env), productId);
           return reply(
             `*${card.product}*\n\n` +
               offered
@@ -1508,6 +1517,8 @@ async function runCommand(
         let mccList: string | undefined;
         let minTier: string | undefined;
         let modeKey: string | undefined;
+        let region: string | undefined;
+        let minTxn: string | undefined;
         let earnStep: string | undefined;
         let note: string | undefined;
 
@@ -1525,7 +1536,7 @@ async function runCommand(
                 '`/addearn citirw online 4 cap 1000 group tenx` — shares that cap with other `tenx` rules\n' +
                 '`/addearn citirw * 0.4` — the fallback rate for everything else\n' +
                 '`/addearn citirw online 4 mcc 5262,5964,5969` — only those merchant codes\n\n' +
-                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter>`, `group <name>`, `mcc <codes>`, `tier <amount>`, `mode <key>`, `step <amount>`, `note <text>`\n\n' +
+                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter|membership_quarter>`, `group <name>`, `mcc <codes>`, `tier <amount>`, `mode <key>`, `region <local|foreign>`, `step <amount>`, `min <amount>`, `note <text>`\n\n' +
                 '`tier` is for cards whose rate moves with the spend rung: `/addearn uobone groceries 6% tier 1000` earns 6% only while the card holds the $1,000 tier.\n' +
                 '`mode` is for cards you choose the reward of: the rule applies only while that mode is selected — /mode.\n' +
                 '`step` is for cards that round a transaction down before paying on it: `step 5` is Trust\'s nearest S$5.'
@@ -1540,6 +1551,8 @@ async function runCommand(
             else if (k === 'mcc') mccList = v;
             else if (k === 'tier') minTier = v;
             else if (k === 'mode') modeKey = v;
+            else if (k === 'region') region = v?.toLowerCase();
+            else if (k === 'min') minTxn = v;
             else if (k === 'step') earnStep = v;
             else if (k === 'note') {
               note = tok.slice(i + 1).join(' ');
@@ -1562,28 +1575,47 @@ async function runCommand(
           .split(/[,\s]+/)
           .map((x) => x.trim())
           .filter(Boolean);
-        if (include.some((x) => !/^\d{4}$/.test(x)))
-          return reply(`\`mcc\` takes four-digit codes, comma separated — got "${mccList}".`);
+        if (include.some((x) => !isCodeEntry(x)))
+          return reply(
+            `\`mcc\` takes four-digit codes, comma separated, and ranges like \`3000-3308\` — got "${mccList}".`
+          );
 
         // Same as the app: a rule added now belongs to the card's current
         // version, not loose beside it.
         const botRuleSet = await currentRuleSetFor(env, card.id, today(env));
+        if (region && region !== 'local' && region !== 'foreign')
+          return reply('`region` is `local` or `foreign` — leave it out for a rate that applies everywhere.');
+
         // A mode has to be one the card actually offers, or the rule would sit
         // in the table applying to nothing and looking like it applied.
         if (modeKey) {
           const offered = await modesOf(env, (card as any).product_id ?? null);
-          if (!offered.some((m) => m.mode_key === modeKey))
+          // `bonus_cashback:dining` is a mode and one of the categories it lets
+          // you pick; both halves have to be real, or the rule would apply to
+          // nothing while looking as if it applied.
+          const [modePart, pick] = modeKey.split(':');
+          const mode = offered.find((m) => m.mode_key === modePart);
+          if (!mode)
             return reply(
               offered.length
-                ? `*${card.product}* has no mode called \`${modeKey}\` — it offers ${offered.map((m) => `\`${m.mode_key}\``).join(', ')}.`
+                ? `*${card.product}* has no mode called \`${modePart}\` — it offers ${offered.map((m) => `\`${m.mode_key}\``).join(', ')}.`
                 : `*${card.product}* has no selectable modes yet. Add them with \`/mode ${card.nickname} add <key>|<label>|<payout>\`.`
             );
+          if (pick) {
+            const allowed = (mode.category_choices ?? '').split(',').map((c) => c.trim().toLowerCase());
+            if (!mode.picks_category || !allowed.includes(pick.toLowerCase()))
+              return reply(
+                mode.picks_category
+                  ? `${mode.label} does not offer \`${pick}\` — it offers ${allowed.join(', ')}.`
+                  : `${mode.label} does not make you pick a category, so \`:${pick}\` means nothing on it.`
+              );
+          }
         }
 
         await env.DB.prepare(
           `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, min_tier_cents,
-             cap_cents, cap_window, cap_group, mode_key, earn_step_cents, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             cap_cents, cap_window, cap_group, mode_key, earn_step_cents, region, min_txn_cents, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             card.id,
@@ -1598,6 +1630,8 @@ async function runCommand(
             capGroup || null,
             modeKey || null,
             earnStep ? parseMoney(earnStep) : null,
+            region || null,
+            minTxn ? parseMoney(minTxn) : null,
             note || null
           )
           .run();
@@ -1606,6 +1640,8 @@ async function runCommand(
             (include.length ? `, but only on MCC ${include.join(', ')}` : '') +
             (minTier ? `, and only while the card holds the $${money(parseMoney(minTier) ?? 0)} tier` : '') +
             (modeKey ? `, while the card is set to \`${modeKey}\`` : '') +
+            (region ? `, on ${region} spend only` : '') +
+            (minTxn ? `, on purchases of $${money(parseMoney(minTxn) ?? 0)} or more` : '') +
             (earnStep ? `, rounding each purchase down to $${money(parseMoney(earnStep) ?? 0)}` : '') +
             (cap ? `, up to $${money(parseMoney(cap) ?? 0)} per ${capWindow || 'statement_cycle'}` : '') +
             (capGroup ? `\n_Shares that cap with other \`${capGroup}\` rules._` : '') +
@@ -1706,9 +1742,17 @@ async function logSpend(env: Env, chatId: string, input: string, reply: Reply) {
   let amount: number | null = null;
   let occurred: string | null = null;
   let category: string | null = null;
+  let foreign: boolean | null = null;
   const rest: string[] = [];
 
   for (const tok of tokens) {
+    // `#fx` marks foreign spend — overseas, or charged in another currency —
+    // which some cards pay less on. Checked before the category tag, because
+    // it is not one: `25 freedom #fx #dining` is a foreign dinner.
+    if (/^#(fx|foreign|overseas)$/i.test(tok)) {
+      foreign = true;
+      continue;
+    }
     if (tok.startsWith('#') && tok.length > 1) {
       category = tok.slice(1).toLowerCase();
       continue;
@@ -1769,6 +1813,7 @@ async function logSpend(env: Env, chatId: string, input: string, reply: Reply) {
     occurred_at: date,
     merchant: note || null,
     category: resolved,
+    foreign,
   });
   if (result.status === 'rejected') return reply(result.warnings[0]?.detail ?? 'Could not log that.');
 

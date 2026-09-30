@@ -7,6 +7,7 @@ import {
   calendarQuarterOf,
   currentTierCents,
   cycleContaining,
+  membershipQuarter,
   money,
   requirementProgress,
   requirementsFor,
@@ -51,6 +52,8 @@ export interface EarnRule {
    * S$5. Null on cards that pay on the exact amount.
    */
   earn_step_cents?: number | null;
+  /** Local or foreign spend only; null applies wherever the purchase was made. */
+  region?: 'local' | 'foreign' | null;
   /** Higher wins among rules that are otherwise equal. */
   priority: number;
   note: string | null;
@@ -78,6 +81,50 @@ export interface MerchantGuess {
 }
 
 const csv = (s: string | null) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : []);
+
+/**
+ * Whether a merchant code is in a list that may hold ranges.
+ *
+ * Banks define categories by code, and by range where the codes are
+ * contiguous: Trust's Travel is "3000 – 3308 Various Airlines, 3501 – 3839
+ * Various Hotels". Spelled out that is 648 codes, which no one should have to
+ * type and no Telegram message would hold. `3000-3308` is one entry.
+ */
+export function codeIn(list: string[], mcc: string | null | undefined): boolean {
+  if (!mcc) return false;
+  const n = Number(mcc);
+  for (const entry of list) {
+    const m = entry.match(/^(\d{4})\s*[-–]\s*(\d{4})$/);
+    if (m) {
+      if (n >= Number(m[1]) && n <= Number(m[2])) return true;
+    } else if (entry === mcc) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** A list entry the engine can read: a four-digit code, or a range of them. */
+export const isCodeEntry = (entry: string) => /^\d{4}(\s*[-–]\s*\d{4})?$/.test(entry.trim());
+
+/**
+ * Whether a rule is in the running for a purchase at all — before its MCC
+ * list, channel and tier are checked.
+ *
+ * A rule restricted to a list of codes is decided by the code whenever the
+ * purchase's code is known, whatever word the app filed the purchase under.
+ * The bank pays on the code: Trust counts a 5499 convenience store as Dining
+ * and a 5541 petrol station as Transport, and a rule that also demanded the
+ * app's own category word would miss exactly those — quietly, because the
+ * purchase would simply earn the base rate. The word stays in the running
+ * too, for purchases whose code is not known yet.
+ */
+export function ruleInRunning(rule: EarnRule, p: Purchase): boolean {
+  if (rule.category === '*') return false;
+  if (rule.category === (p.category ?? null)) return true;
+  const inc = csv(rule.mcc_include);
+  return inc.length > 0 && codeIn(inc, p.mcc);
+}
 
 /**
  * What code a merchant is likely to present. Likely is the operative word: the
@@ -266,7 +313,16 @@ export interface Purchase {
   mcc?: string | null;
   category?: string | null;
   channel?: Channel | null;
+  /** Spent abroad or in a foreign currency. Null or absent: not known, read as local. */
+  foreign?: boolean | null;
 }
+
+/** Which region a purchase counts as. Unknown is local: the honest base case for a Singapore card. */
+export const regionOf = (p: { foreign?: boolean | number | null }) => (p.foreign ? 'foreign' : 'local');
+
+/** Whether a rule applies in the purchase's region. */
+export const inRegion = (r: EarnRule, p: { foreign?: boolean | number | null }) =>
+  !r.region || r.region === regionOf(p);
 
 export interface Evaluation {
   card: Card;
@@ -307,6 +363,15 @@ export interface Evaluation {
 function windowFor(w: string | null, card: Card, env: Env, on?: string) {
   if (w === 'calendar_month') return on ? calendarMonthOf(on) : calendarMonth(env);
   if (w === 'calendar_quarter') return on ? calendarQuarterOf(on) : calendarQuarter(env);
+  // Three calendar months from the month the card was approved. Without an
+  // opening date there is nothing to anchor it to, and the calendar quarter is
+  // the nearest honest stand-in rather than a quarter invented from nothing.
+  if (w === 'membership_quarter') {
+    const at = on ?? today(env);
+    if (!card.opened_at) return calendarQuarterOf(at);
+    const q = membershipQuarter(card.opened_at, at);
+    return { start: q.start, end: q.end };
+  }
   return on ? cycleContaining(on, card.statement_day) : statementCycle(card.statement_day, env);
 }
 
@@ -346,9 +411,6 @@ async function capSpendUncached(
   win: { start: string; end: string },
   opts: { on?: string; before?: { id: number; date: string } } = {}
 ): Promise<number> {
-  const cats = group.map((r) => r.category);
-  const ph = cats.map(() => '?').join(',');
-
   // Ties on the effective date are broken by id, so the ledger has one order
   // and two purchases on the same day cannot each claim the other's headroom.
   const cutoff = opts.before
@@ -356,14 +418,33 @@ async function capSpendUncached(
     : '';
   const args = opts.before ? [opts.before.date, opts.before.date, opts.before.id] : [];
 
-  const row = await env.DB.prepare(
-    `SELECT COALESCE(SUM(amount_cents), 0) AS total FROM transactions
+  // The rows rather than a SUM, so what counts toward a cap is decided by the
+  // same test that decides what a rule pays on. The SUM matched on the category
+  // word alone, and two things fell through it:
+  //
+  //  - a cap on the rate for EVERYTHING counted only uncategorised spend, since
+  //    "*" was compared against the category column — so "3% on all spend, up
+  //    to S$500 a quarter" was a cap that never filled;
+  //  - a bonus defined by merchant codes missed purchases the app files under
+  //    another word, so the cap filled slower than the bank's does.
+  //
+  // One card's spend in one window is tens of rows, and the read is cached.
+  const { results } = await env.DB.prepare(
+    `SELECT amount_cents, category, mcc, is_foreign FROM transactions
      WHERE card_id = ? AND ${EFFECTIVE_DATE} >= ? AND ${EFFECTIVE_DATE} <= ?
-       AND amount_cents > 0 AND COALESCE(category, '*') IN (${ph})${cutoff}`
+       AND amount_cents > 0${cutoff}`
   )
-    .bind(card.id, win.start, win.end, ...cats, ...args)
-    .first<{ total: number }>();
-  return row?.total ?? 0;
+    .bind(card.id, win.start, win.end, ...args)
+    .all<{ amount_cents: number; category: string | null; mcc: string | null; is_foreign: number | null }>();
+
+  const counts = (t: { category: string | null; mcc: string | null; is_foreign: number | null }) =>
+    group.some((r) => {
+      if (!inRegion(r, { foreign: t.is_foreign })) return false;
+      if (r.category === '*') return true;
+      return ruleInRunning(r, { amount_cents: null, category: t.category, mcc: t.mcc });
+    });
+
+  return (results ?? []).reduce((total, t) => (counts(t) ? total + t.amount_cents : total), 0);
 }
 
 /** Does this rule apply to this purchase, and why or why not. */
@@ -405,7 +486,7 @@ export function ruleMatches(
   const inc = csv(rule.mcc_include);
   const exc = csv(rule.mcc_exclude);
 
-  if (exc.length && p.mcc && exc.includes(p.mcc)) {
+  if (exc.length && p.mcc && codeIn(exc, p.mcc)) {
     trace.push({ check: 'Rule MCC exclusion', pass: false, detail: `MCC ${p.mcc} is excluded from this rule` });
     return false;
   }
@@ -414,7 +495,7 @@ export function ruleMatches(
       trace.push({ check: 'Rule MCC list', pass: null, detail: `Rule covers ${inc.join(', ')} — the merchant's code is unknown` });
       return false;
     }
-    if (!inc.includes(p.mcc)) {
+    if (!codeIn(inc, p.mcc)) {
       trace.push({ check: 'Rule MCC list', pass: false, detail: `MCC ${p.mcc} is not in ${inc.join(', ')}` });
       return false;
     }
@@ -460,6 +541,34 @@ export async function evaluate(
      * counts what came earlier in the ledger and nothing at or after it.
      */
     before?: { id: number; date: string };
+    /**
+     * The day the purchase was authorised, where it differs from `on`. Decides
+     * which reward mode applied on cards that make you choose; rule versions
+     * still follow `on`.
+     */
+    authorised_on?: string;
+    /**
+     * Price as if the card were set to this mode, whatever it was really on.
+     * For "what would Stockback have paid", which is a question about a world
+     * that did not happen.
+     */
+    mode?: { mode_key: string; category: string | null };
+    /**
+     * A private record of how full each cap is, instead of the ledger's.
+     *
+     * Only right when every purchase being replayed is on THIS card under ONE
+     * hypothetical — the mode comparison. The ledger's caps were filled by what
+     * really happened, which is the wrong world for a hypothetical; but a
+     * report comparing several cards must not use this, because it would
+     * charge every card's cap for every purchase.
+     */
+    capUsed?: Map<string, number>;
+    /**
+     * Skip the minimum-spend nudge. It moves the ranking score and never the
+     * value, and it costs a query per requirement per call — which a replay of
+     * a quarter, priced once per mode, cannot afford.
+     */
+    value_only?: boolean;
   } = {}
 ): Promise<Evaluation> {
   const trace: RuleStep[] = [];
@@ -493,8 +602,38 @@ export async function evaluate(
   // filter is the identity function and the lookup is a database call spent to
   // learn nothing — which, on a statement import that prices a row at a time,
   // is a subrequest per row out of the fifty an invocation gets.
-  const choice = ofThisCard.some((r) => r.mode_key) ? await modeOn(env, card.id, on) : null;
-  const mine = rulesUnder(ofThisCard, choice);
+  //
+  // The mode is asked about the day the purchase was AUTHORISED, which is not
+  // always the day that prices it. Trust says so in terms: a purchase on 30
+  // September under Unlimited cashback, posted on 2 October after a switch to
+  // Stockback, "still earns Unlimited cashback". Rule versions here follow the
+  // posting date; the mode follows the authorisation, so the two are asked
+  // separately rather than pretending one date answers both.
+  const authorised = opts.authorised_on ?? on;
+  const productId = (card as unknown as { product_id?: number | null }).product_id ?? null;
+  const choice = opts.mode
+    ? ({ id: 0, card_id: card.id, effective_from: '(hypothetical)', effective_until: null, note: null, ...opts.mode } as const)
+    : ofThisCard.some((r) => r.mode_key)
+      ? await modeOn(env, card.id, authorised, productId)
+      : null;
+  const underMode = rulesUnder(ofThisCard, choice);
+
+  // Cards that pay differently abroad carry a rule per region. Filtered here,
+  // before anything is matched, so the base-rate fallback respects it too —
+  // otherwise the first "everything" rule in the table would win, local or not.
+  const mine = underMode.filter((r) => inRegion(r, p));
+  if (underMode.some((r) => r.region)) {
+    trace.push({
+      check: 'Local or foreign',
+      pass: true,
+      detail:
+        p.foreign === true
+          ? 'Foreign spend — the foreign rates apply'
+          : p.foreign === false
+            ? 'Local spend — the local rates apply'
+            : 'Not recorded as foreign, so priced as local spend. Tag it #fx if it was not.',
+    });
+  }
   if (choice) {
     trace.push({
       check: 'Reward mode',
@@ -569,7 +708,7 @@ export async function evaluate(
         : null;
 
   for (const r of mine
-    .filter((r) => r.category === category && r.category !== '*')
+    .filter((r) => ruleInRunning(r, p))
     .sort((a, b) => worth(b) - worth(a))) {
     if (ruleMatches(r, p, trace, tierCents)) {
       matched = r;
@@ -601,8 +740,15 @@ export async function evaluate(
   // 3. Cap: how much of this purchase actually gets the bonus rate.
   let headroom: number | null = null;
   let used = 0;
+  let capKey: string | null = null;
   if (rule.cap_cents) {
-    used = await capSpend(env, card, rule, mine, { on: opts.on, before: opts.before });
+    if (opts.capUsed) {
+      const win = windowFor(rule.cap_window, card, env, opts.on);
+      capKey = `${rule.cap_group ?? rule.id}|${win.start}`;
+      used = opts.capUsed.get(capKey) ?? 0;
+    } else {
+      used = await capSpend(env, card, rule, mine, { on: opts.on, before: opts.before });
+    }
     headroom = Math.max(0, rule.cap_cents - used);
     trace.push({
       check: 'Bonus cap',
@@ -622,7 +768,19 @@ export async function evaluate(
   // would quote a rate this card does not pay on small purchases — which is
   // most of them.
   const step = rule.earn_step_cents ?? 0;
-  const earnable = step > 1 ? Math.floor(amount / step) * step : amount;
+  // A minimum transaction applies to whichever rule is paying. A bonus rule is
+  // already refused by `ruleMatches` below its minimum; the base-rate fallback
+  // never goes through that test, so without this a card that "pays nothing
+  // under S$1" paid its base rate on 50 cents.
+  const belowMin = !!rule.min_txn_cents && amount < rule.min_txn_cents;
+  if (belowMin) {
+    trace.push({
+      check: 'Minimum transaction',
+      pass: false,
+      detail: `Under $${money(rule.min_txn_cents!)}, which this card needs before it pays anything`,
+    });
+  }
+  const earnable = belowMin ? 0 : step > 1 ? Math.floor(amount / step) * step : amount;
   if (earnable !== amount) {
     trace.push({
       check: 'Rounding',
@@ -636,6 +794,7 @@ export async function evaluate(
 
   const bonusPortion = headroom === null ? earnable : Math.min(earnable, headroom);
   const basePortion = earnable - bonusPortion;
+  if (opts.capUsed && capKey) opts.capUsed.set(capKey, used + bonusPortion);
   // Whatever the paying rule pays — matched or fallback alike. Reading this as
   // "the base rate unless a category matched" was the same thing while the
   // fallback rule WAS the base rate; now that a capped fallback no longer
@@ -669,7 +828,7 @@ export async function evaluate(
   // knew only about calendar months, quarters and statement cycles — so a
   // sign-up bonus with a fixed deadline four days away was measured against a
   // statement cycle ending in four weeks, and never counted as urgent.
-  for (const req of await requirementsFor(env, card.id)) {
+  for (const req of opts.value_only ? [] : await requirementsFor(env, card.id)) {
     const progress = await requirementProgress(env, card, req);
     if (progress.remaining_cents > shortBy) {
       shortBy = progress.remaining_cents;

@@ -156,7 +156,14 @@ function reasonsFrom(e: Evaluation): RecommendationReason[] {
 export async function recommendV2(
   env: Env,
   p: Purchase,
-  opts: { merchantQuery?: string; objective?: Objective; on?: string; split_min_gain_cents?: number } = {}
+  opts: {
+    merchantQuery?: string;
+    objective?: Objective;
+    on?: string;
+    split_min_gain_cents?: number;
+    /** The day the purchase was authorised, for cards whose reward mode follows it. */
+    authorised_on?: string;
+  } = {}
 ): Promise<RecommendationV2> {
   const objective: Objective = opts.objective ?? ((env.OBJECTIVE as Objective) || 'balanced');
   const on = opts.on ?? today(env);
@@ -208,7 +215,7 @@ export async function recommendV2(
     const { rules } = await rulesForCard(env, card, on);
     if (rules.some((r) => r.mcc_include || r.mcc_exclude)) sensitivity.mcc = true;
     if (rules.some((r) => r.channel)) sensitivity.channel = true;
-    evaluations.push(await evaluate(env, card, purchase, { exclusions: exclusions ?? [], on }));
+    evaluations.push(await evaluate(env, card, purchase, { exclusions: exclusions ?? [], on, authorised_on: opts.authorised_on }));
   }
 
   // Products whose numbers have not been confirmed against a bank document.
@@ -262,7 +269,7 @@ export async function recommendV2(
     const rest: Purchase = { ...purchase, amount_cents: topEval.base_portion_cents };
     const others: Evaluation[] = [];
     for (const card of (cards ?? []).filter((c) => c.id !== topEval.card.id)) {
-      others.push(await evaluate(env, card, rest, { exclusions: exclusions ?? [], on }));
+      others.push(await evaluate(env, card, rest, { exclusions: exclusions ?? [], on, authorised_on: opts.authorised_on }));
     }
     others.sort((a, b) => b.value_cents - a.value_cents);
     const alt = others.find((o) => !o.excluded) ?? null;

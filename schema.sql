@@ -189,7 +189,10 @@ CREATE TABLE IF NOT EXISTS transactions (
   -- it; the default is 'posted' so every row that predates this column keeps
   -- the meaning it was written with.
   status       TEXT    NOT NULL DEFAULT 'posted',
-  created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+  created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+  -- Spent abroad or in a foreign currency, for cards that pay less on it. NULL
+  -- until something says; the engine reads unknown as local, and says so.
+  is_foreign   INTEGER
 );
 -- Every window query filters on the effective date, so index that expression.
 CREATE INDEX IF NOT EXISTS tx_card_date ON transactions(card_id, COALESCE(posted_at, occurred_at));
@@ -218,7 +221,12 @@ CREATE TABLE IF NOT EXISTS requirements (
   anchor_at       TEXT,
   per_month       INTEGER NOT NULL DEFAULT 0,
   prorate_first   INTEGER NOT NULL DEFAULT 0,
-  active          INTEGER NOT NULL DEFAULT 1
+  active          INTEGER NOT NULL DEFAULT 1,
+  -- On cards you choose the reward of, a minimum can belong to one mode. Trust's
+  -- S$500 / S$2,000 a month exists only under Bonus Cashback; a Stockback holder
+  -- has no minimum at all, and being warned about one would be a false alarm
+  -- with a deadline on it. NULL: applies whatever the card is set to.
+  mode_key        TEXT
 );
 CREATE INDEX IF NOT EXISTS req_card ON requirements(card_id, active);
 
@@ -481,6 +489,10 @@ CREATE TABLE IF NOT EXISTS earn_rules (
   -- what S$5 does. It is not a cap and not a minimum: it changes what a rate is
   -- actually worth on small purchases, and nowhere else would say so.
   earn_step_cents INTEGER,
+  -- Local or foreign spend only, for cards that pay differently abroad: Trust
+  -- pays 1.5% on local spend and 0.5% on foreign in Unlimited Cashback. NULL:
+  -- applies wherever the purchase was made.
+  region      TEXT,                             -- local | foreign | null
   active      INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS earn_card ON earn_rules(card_id, active);
@@ -507,6 +519,9 @@ CREATE TABLE IF NOT EXISTS card_modes (
   -- Some modes make you pick a category as well as the mode.
   picks_category    INTEGER NOT NULL DEFAULT 0,
   category_choices  TEXT,                  -- CSV of the categories that may be picked
+  -- The mode the bank applies until the holder picks one. Trust: Unlimited
+  -- cashback, from the first purchase.
+  is_default    INTEGER NOT NULL DEFAULT 0,
   note          TEXT,
   UNIQUE(product_id, mode_key)
 );

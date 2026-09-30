@@ -115,6 +115,8 @@ export async function expectFromTransaction(
     category: string | null;
     channel: string | null;
     expected_program: string | null;
+    /** Spent abroad or in a foreign currency; absent or null reads as local. */
+    is_foreign?: number | null;
   },
   card: any
 ): Promise<{ components: { component: Component; amount: number }[]; unit: string }> {
@@ -130,8 +132,14 @@ export async function expectFromTransaction(
   const e = await evaluate(
     env,
     card,
-    { amount_cents: tx.amount_cents, mcc: tx.mcc, category: tx.category, channel: tx.channel as any },
-    { on, before: { id: tx.id, date: on } }
+    {
+      amount_cents: tx.amount_cents,
+      mcc: tx.mcc,
+      category: tx.category,
+      channel: tx.channel as any,
+      foreign: tx.is_foreign == null ? null : !!tx.is_foreign,
+    },
+    { on, before: { id: tx.id, date: on }, authorised_on: tx.occurred_at }
   );
 
   const rounding = await roundingFor(env, e.rule_set_id);

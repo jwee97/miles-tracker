@@ -82,7 +82,13 @@ export interface Requirement {
   card_id: number;
   kind: 'monthly_min' | 'signup_min';
   amount_cents: number;
-  window: 'calendar_month' | 'calendar_quarter' | 'statement_cycle' | 'statement_quarter' | 'fixed_window';
+  window:
+    | 'calendar_month'
+    | 'calendar_quarter'
+    | 'statement_cycle'
+    | 'statement_quarter'
+    | 'membership_quarter'
+    | 'fixed_window';
   deadline: string | null;
   starts_at: string | null;
   min_txns: number | null;

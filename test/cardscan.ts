@@ -128,6 +128,17 @@ check(
   !/window is[^.]*year/i.test(prompt) && prompt.includes('There is no yearly window'),
   ''
 );
+// Each of these was a way the prompt's output mis-set a real card. The Trust
+// Freedom extraction wrote a S$500 REWARD cap as a S$500 spend cap — capping
+// Stockback at S$15 a quarter instead of S$500 — used calendar quarters for a
+// quarter counted from the approval month, and had no way to say local and
+// foreign pay differently.
+check('it says a reward cap has to be divided by the rate', prompt.includes('divide by the rate'), '');
+check('and offers the quarter counted from approval', prompt.includes('membership_quarter'), '');
+check('and asks for local and foreign on separate lines', prompt.includes('region local'), '');
+check('and gives picked categories their own lines', prompt.includes('mode <key>:<category>'), '');
+check('and allows code ranges', prompt.includes('3000-3308'), '');
+
 const bare = cardRulesPrompt('crw', 'Rewards');
 check(`the bare prompt fits one Telegram message (${bare.length})`, bare.length <= 4096, String(bare.length));
 

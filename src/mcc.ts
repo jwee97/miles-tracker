@@ -1,4 +1,4 @@
-import { ruleMatches, type EarnRule } from './rules';
+import { ruleInRunning, ruleMatches, type EarnRule } from './rules';
 import { currentTierCents } from './spend';
 import type { Card, Env } from './types';
 
@@ -141,8 +141,10 @@ export async function mccMatrix(env: Env, opts: MatrixOptions = {}): Promise<Mcc
       // Tier-gated rates are judged against the tier the card is actually
       // holding, the same as the engine does — a 6% grocery rate that needs the
       // $1,000 rung should not be shown on a card sitting at $600.
+      // Asked the same way the engine asks it, so a code the bank files under a
+      // different category than the app does shows the rate it actually earns.
       const matching = mine.filter(
-        (r) => (r.category === '*' || r.category === c.category) && ruleMatches(r, purchase, [], tierFor.get(card.id) ?? null)
+        (r) => (r.category === '*' || ruleInRunning(r, purchase)) && ruleMatches(r, purchase, [], tierFor.get(card.id) ?? null)
       );
 
       const worth = (r: EarnRule) => (r.reward_type === 'cashback' ? r.mpd * 100 : r.mpd * mileValue);

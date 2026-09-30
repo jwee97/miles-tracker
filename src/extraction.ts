@@ -83,55 +83,43 @@ export function cardRulesPrompt(
 
 Return ONLY commands, one per line, and # comment lines. No other prose:
 
-/addearn ${nickname} <category> <rate> cap <amount> window <window> mcc <codes> group <name> tier <amount>
+/addearn ${nickname} <category> <rate> cap <amount> window <window> mcc <codes> group <name> tier <amount> mode <key> region <local|foreign> min <amount>
 /exclude <mcc> ${nickname} <reason>
 /req ${nickname}|monthly_min|<amount>|<window>|||<txns>|<note>
 
 Rules:
-1. <rate> is miles per dollar as a plain number (4), OR a percentage with a
-   % sign for cashback cards (5%). Never mix the two on one line.
-2. <category> is one lowercase word. Use the closest of: dining, groceries,
-   online, shopping, transport, travel, fuel, utilities, entertainment,
-   contactless, foreign, health. Use * for the fallback rate on everything else.
-3. ALWAYS include a /addearn ${nickname} * <rate> line for the base rate.
-4. cap is the spend at which the bonus rate stops, in dollars. Omit if none.
-5. window is statement_cycle, calendar_month or calendar_quarter — whichever
-   the cap resets on. Omit if there is no cap. There is no yearly window: if a
-   cap is annual, leave window out and say so in a # comment. Calling it monthly
-   would claim twelve times the bonus headroom that exists.
-6. mcc is a comma-separated list of four-digit codes the rate is restricted to,
-   when the terms name them. This matters more than the category word: a rate
-   restricted to 5262,5964,5969 is not the same thing as "online".
-7. If ONE cap is shared across several categories, give those lines the SAME
-   group name. If each category has its own cap, omit group. This matters:
-   getting it wrong makes the app think you have more bonus headroom than you do.
-8. A minimum spend is NOT a cap. If the bonus needs one, write a /req line for
-   it — window is calendar_month, statement_cycle, calendar_quarter or
-   statement_quarter — and add \`tier <amount>\` to any rate that applies only
-   above a spend rung. A rate recorded without its minimum is a rate the app
-   will promise and the bank will not pay.
-9. Add a /exclude line for every merchant code or category the terms say earns
-   nothing, with the reason in a few words.
-10. If the card makes you CHOOSE what it pays — miles or cashback or stock, one
-   at a time — encode every mode, not just the one in use. Give each mode a key
-   and put \`mode <key>\` on its rules, and list the modes as # comments in the
-   form \`# mode <key>|<label>|<payout>|<categories it lets you pick>\`. The app
-   records which one is selected and from when, and prices each purchase under
-   the mode that was on that day; dropping the others loses the only thing that
-   can tell you the choice was worth changing. If a mode also picks a category
-   each quarter, use the category \`@selected\` for that rule rather than naming
-   one, and list the choices in the mode's comment line.
-11. Do not invent rates or codes. If the terms do not state one, leave that line
-   out and add a # comment naming what is missing.
-12. If the page says these rates start on a FUTURE date — "with effect from
-   1 Nov 2026" — output no /addearn lines at all. Write
-   \`# effective from YYYY-MM-DD\`, list the rates as # comments, and stop. Dated
-   rates go in as a new version under Catalogue → Edit its rules; /addearn
-   would write them into the version that also covers earlier months, restating
-   what those months earned at rates that did not apply to them.
-13. End with \`# source <url>\` for the page you read. Recording that URL against
-   the card is what lets the app re-read the page later and tell you when the
-   bank has changed it.
+1. <rate> is miles per dollar (4), OR a percentage with a % sign for cashback
+   (5%). Never mix the two on one line.
+2. <category> is one lowercase word: dining, groceries, online, shopping,
+   transport, travel, fuel, utilities, entertainment, contactless, health.
+   Use * for the rate on everything else, and ALWAYS include a
+   /addearn ${nickname} * <rate> line.
+3. cap is the SPEND at which the rate stops, in dollars. If the terms cap the
+   REWARD ("S$500 of cashback a quarter"), divide by the rate: S$500 at 3% is
+   \`cap 16666.67\`. Writing the reward as the spend caps it at 3% of itself.
+4. window is calendar_month, calendar_quarter, statement_cycle, or
+   membership_quarter (three months from the month the card was approved).
+   There is no yearly window: say so in a # comment instead.
+5. mcc lists the codes a rate is restricted to, comma separated, ranges allowed
+   (3000-3308). The bank pays on the code, not the word, so give the list
+   whenever the terms do.
+6. If ONE cap is shared across several lines, give them the SAME group name.
+7. If local and foreign spend earn differently, one line each with
+   \`region local\` / \`region foreign\`. \`min <amount>\` if nothing is paid
+   below a transaction size; \`step <amount>\` if spend is rounded down first.
+8. A minimum spend is NOT a cap: write a /req line for it, and put
+   \`tier <amount>\` on rates that need a spend rung.
+9. /exclude every code the terms exclude; lists are fine.
+10. If the card makes you CHOOSE what it pays, encode EVERY mode, not the one in
+   use. Start with \`/mode ${nickname} add <key>|<label>|<payout>|<categories>\`
+   (add \`|default\` to the mode that applies until one is chosen), and put
+   \`mode <key>\` on each rule. If a mode lets you pick a category, give each
+   category its own lines with \`mode <key>:<category>\` and that category's mcc.
+11. Never invent a rate or code; say what is missing in a # comment.
+12. If the rates start on a FUTURE date, write \`# effective from YYYY-MM-DD\`,
+   list the rates as # comments and output no /addearn lines: dated rates go in
+   as a new version under Catalogue → Edit its rules.
+13. End with \`# source <url>\`.
 
 Card: ${product} (nickname: ${nickname})
 ${source ? `Source: ${source}\n` : ''}
@@ -245,6 +233,7 @@ Add a date anywhere to backdate:
 /review — spend with no category yet
 /cat <id> <category> — set one
 Tag \`#?\` when you don't know the category yet — better than guessing
+Tag \`#fx\` for foreign spend, on cards that pay less on it
 /posted <id> <date> — set when the bank actually posted it
 /del <id> — remove one · /undo — remove the last
 

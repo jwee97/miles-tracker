@@ -98,8 +98,8 @@ export async function recalculateTransaction(env: Env, id: number): Promise<Reca
   const e = await evaluate(
     env,
     card,
-    { amount_cents: t.amount_cents, mcc, category: t.category, channel: t.channel },
-    { on, before: { id: t.id, date: on } }
+    { amount_cents: t.amount_cents, mcc, category: t.category, channel: t.channel, foreign: t.is_foreign == null ? null : !!t.is_foreign },
+    { on, before: { id: t.id, date: on }, authorised_on: t.occurred_at }
   );
 
   const program = e.miles > 0 ? await programForCard(env, card.id, e.rule?.id) : null;

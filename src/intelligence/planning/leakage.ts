@@ -101,7 +101,7 @@ export async function rewardLeakage(
   }
 
   const { results } = await env.DB.prepare(
-    `SELECT t.id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant, t.mcc, t.category, t.channel,
+    `SELECT t.id, t.amount_cents, t.occurred_at, t.posted_at, t.merchant, t.mcc, t.category, t.channel, t.is_foreign,
             c.nickname, c.product
        FROM transactions t JOIN cards c ON c.id = t.card_id
       WHERE ${wheres.join(' AND ')}
@@ -125,8 +125,8 @@ export async function rewardLeakage(
     try {
       rec = await recommendV2(
         env,
-        { amount_cents: t.amount_cents, mcc: t.mcc, category: t.category, channel: t.channel },
-        { on }
+        { amount_cents: t.amount_cents, mcc: t.mcc, category: t.category, channel: t.channel, foreign: t.is_foreign == null ? null : !!t.is_foreign },
+        { on, authorised_on: t.occurred_at }
       );
     } catch (e) {
       // The reason, not just the fact. A count of unexplained failures is a

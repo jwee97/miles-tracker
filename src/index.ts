@@ -880,7 +880,7 @@ export default {
               product: c.product,
               modes: await modesOf(env, c.product_id),
               history: await choicesOf(env, c.id),
-              current: await modeOn(env, c.id, today(env)),
+              current: await modeOn(env, c.id, today(env), c.product_id),
             });
           }
           return json({ cards, as_of: today(env) });

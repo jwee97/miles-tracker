@@ -1,6 +1,7 @@
-import { modesOf, rulesUnder, chosenOn, choicesOf, SELECTED, type CardMode } from '../../cards/modes';
-import { ruleMatches, rulesForCard, type EarnRule, type Purchase } from '../../rules';
-import { EFFECTIVE_DATE, money, resolveRange, today } from '../../spend';
+import { withReadCache } from '../../cache';
+import { modeOn, modesOf, rulesUnder } from '../../cards/modes';
+import { evaluate, rulesForCard } from '../../rules';
+import { EFFECTIVE_DATE, membershipQuarter, money, resolveRange, today } from '../../spend';
 import type { Card, Env } from '../../types';
 
 /**
@@ -63,40 +64,17 @@ export interface ModeComparison {
 
 export class NoModesError extends Error {}
 
-const windowKey = (window: string | null, date: string) => {
-  if (window === 'calendar_quarter') {
-    const m = Number(date.slice(5, 7));
-    return `${date.slice(0, 4)}Q${Math.floor((m - 1) / 3) + 1}`;
-  }
-  if (window === 'calendar_month' || !window) return date.slice(0, 7);
-  // A statement cycle needs a statement day to be exact. Approximated by the
-  // month here, and the caveats say so rather than the number implying more
-  // precision than it has.
-  return date.slice(0, 7);
-};
 
-/** The best rule for one purchase, by what it pays rather than by order. */
-function pick(rules: EarnRule[], p: Purchase, mileValue: number): { matched: EarnRule | null; fallback: EarnRule | null } {
-  const worth = (r: EarnRule) => (r.reward_type === 'cashback' ? r.mpd * 100 : r.mpd * mileValue);
-  let matched: EarnRule | null = null;
-  let fallback: EarnRule | null = null;
-  for (const r of rules) {
-    if (r.category === '*') {
-      if (!fallback || worth(r) > worth(fallback)) fallback = r;
-      continue;
-    }
-    if (r.category !== (p.category ?? '')) continue;
-    if (!ruleMatches(r, p, [], null)) continue;
-    if (!matched || worth(r) > worth(matched)) matched = r;
-  }
-  return { matched, fallback };
-}
 
 export async function modeComparison(
   env: Env,
   nickname: string,
   opts: { range?: string | null; from?: string | null; to?: string | null; limit?: number } = {}
 ): Promise<ModeComparison> {
+  // Nothing here writes, and each purchase is priced once per mode and per
+  // pickable category — so the reference data it reads (rules, exclusions,
+  // the card's modes) is read once for the run rather than once per pricing.
+  env = withReadCache(env);
   const card = await env.DB.prepare(`SELECT * FROM cards WHERE nickname = ? COLLATE NOCASE`)
     .bind(nickname.trim())
     .first<Card>();
@@ -122,10 +100,10 @@ export async function modeComparison(
   }
 
   const { results: txns } = await env.DB.prepare(
-    `SELECT t.id, t.amount_cents, t.occurred_at, t.posted_at, t.mcc, t.category, t.channel
+    `SELECT t.id, t.amount_cents, t.occurred_at, t.posted_at, t.mcc, t.category, t.channel, t.is_foreign
        FROM transactions t
       WHERE ${wheres.join(' AND ')}
-      ORDER BY ${EFFECTIVE_DATE}
+      ORDER BY ${EFFECTIVE_DATE}, t.id
       LIMIT ?`
   )
     .bind(...args, limit)
@@ -138,78 +116,98 @@ export async function modeComparison(
     .all<{ mcc: string }>();
   const excluded = new Set((excl ?? []).map((e) => e.mcc));
 
-  // One read of the rules, on the last day of the window, so a versioned set
-  // resolves the way it would for a purchase at the end of the period.
   const { rules: all } = await rulesForCard(env, card, to ?? today(env));
-  const mileValue = parseFloat(env.MILE_VALUE_CENTS || '1.5');
-  const history = await choicesOf(env, card.id);
-  const actualMid = chosenOn(history, to ?? today(env));
+  const actualMid = await modeOn(env, card.id, to ?? today(env), productId);
+
+  // For a mode whose bonus depends on the quarter's lowest month — Trust's
+  // S$500 or S$2,000 in EVERY month of the quarter — the rung each purchase's
+  // quarter held, worked out from the same spending. The rungs are read off
+  // the rules themselves, so nothing has to be configured twice.
+  const tierFor = quarterTiers(card, txns ?? [], excluded);
 
   const spend = (txns ?? []).reduce((t: number, x: any) => t + x.amount_cents, 0);
   const outcomes: ModeOutcome[] = [];
 
   for (const mode of modes) {
-    // A mode that also picks a category is priced with the category it is
-    // actually set to when that is this mode, and otherwise with the one the
-    // period's spending would have made best — anything else would compare a
-    // mode against a category nobody would have chosen.
-    const category = mode.picks_category ? bestCategoryFor(mode, txns ?? [], excluded) : null;
-    const rules = rulesUnder(all, { mode_key: mode.mode_key, category } as any);
+    // A mode that also picks a category is priced once per category it offers,
+    // and the best is kept: comparing "5% on a category" against a category
+    // nobody would have picked answers a question nobody asked. Priced rather
+    // than guessed from spend-by-category, because Trust defines its categories
+    // by merchant code and the app's own category word is not the same thing.
+    const picks = mode.picks_category
+      ? (mode.category_choices ?? '').split(',').map((c) => c.trim().toLowerCase()).filter(Boolean)
+      : [null];
+    const rungs = [
+      ...new Set(
+        rulesUnder(all, { mode_key: mode.mode_key, category: picks[0] } as any)
+          .map((r) => r.min_tier_cents)
+          .filter((n): n is number => !!n)
+      ),
+    ].sort((a, b) => a - b);
 
-    const capUsed = new Map<string, number>();
-    let miles = 0;
-    let cashback = 0;
-    let bonusSpend = 0;
-    let uncovered = 0;
-    let roundedAway = 0;
+    let best: Omit<ModeOutcome, 'mode_key' | 'label' | 'payout' | 'selected' | 'summary'> | null = null;
+    for (const pick of picks) {
+      // Priced through the engine itself, so a comparison can never disagree
+      // with what the engine would say about the same purchase — the earlier
+      // version copied the matching and had already drifted from it twice.
+      const capUsed = new Map<string, number>();
+      let miles = 0;
+      let cashback = 0;
+      let bonusSpend = 0;
+      let uncovered = 0;
+      let roundedAway = 0;
 
-    for (const t of txns ?? []) {
-      if (t.mcc && excluded.has(t.mcc)) {
-        uncovered += t.amount_cents;
-        continue;
+      for (const t of txns ?? []) {
+        if (t.mcc && excluded.has(t.mcc)) {
+          uncovered += t.amount_cents;
+          continue;
+        }
+        const on = t.posted_at ?? t.occurred_at;
+        const held = tierFor(t.occurred_at);
+        const tier = rungs.filter((r) => held >= r).pop() ?? 0;
+        const e = await evaluate(
+          env,
+          card,
+          {
+            amount_cents: t.amount_cents,
+            mcc: t.mcc,
+            category: t.category,
+            channel: t.channel,
+            foreign: t.is_foreign == null ? null : !!t.is_foreign,
+          },
+          {
+            on,
+            authorised_on: t.occurred_at,
+            mode: { mode_key: mode.mode_key, category: pick },
+            capUsed,
+            tier_cents: rungs.length ? tier : undefined,
+            exclusions: [],
+            value_only: true,
+          }
+        );
+        if (!e.rule) {
+          uncovered += t.amount_cents;
+          continue;
+        }
+        miles += e.miles;
+        cashback += e.cashback_cents;
+        bonusSpend += e.bonus_portion_cents && e.rule?.category !== '*' ? e.bonus_portion_cents : 0;
+        roundedAway += t.amount_cents - (e.bonus_portion_cents + e.base_portion_cents);
       }
-      const on = t.posted_at ?? t.occurred_at;
-      const p: Purchase = { amount_cents: t.amount_cents, mcc: t.mcc, category: t.category, channel: t.channel };
-      const { matched, fallback } = pick(rules, p, mileValue);
-      const rule = matched ?? fallback;
-      if (!rule) {
-        uncovered += t.amount_cents;
-        continue;
-      }
 
-      const step = rule.earn_step_cents ?? 0;
-      const earnable = step > 1 ? Math.floor(t.amount_cents / step) * step : t.amount_cents;
-      roundedAway += t.amount_cents - earnable;
-
-      // The cap belongs to whichever rule is paying, base rate included: a
-      // card that pays 3% on everything up to $500 a quarter is capped, and
-      // treating the cap as something only a category rule can have priced it
-      // as though it were not.
-      let bonusPortion = earnable;
-      let basePortion = 0;
-      if (rule.cap_cents) {
-        const key = `${rule.cap_group ?? rule.id}|${windowKey(rule.cap_window, on)}`;
-        const used = capUsed.get(key) ?? 0;
-        const headroom = Math.max(0, rule.cap_cents - used);
-        bonusPortion = Math.min(earnable, headroom);
-        basePortion = earnable - bonusPortion;
-        capUsed.set(key, used + bonusPortion);
-      }
-      if (matched) bonusSpend += bonusPortion;
-
-      // And what applies past the cap is never the capped rule again.
-      const uncapped = rules.find((r) => r.category === '*' && !r.cap_cents) ?? null;
-      const baseRate = uncapped?.mpd ?? 0;
-      const baseType = uncapped?.reward_type ?? rule.reward_type;
-      if (rule.reward_type === 'cashback') cashback += Math.round(bonusPortion * (rule.mpd / 100));
-      else miles += Math.round((bonusPortion / 100) * rule.mpd);
-      if (basePortion > 0 && baseRate > 0) {
-        if (baseType === 'cashback') cashback += Math.round(basePortion * (baseRate / 100));
-        else miles += Math.round((basePortion / 100) * baseRate);
-      }
+      const candidate = {
+        category: pick,
+        value_cents: Math.round(cashback + miles * parseFloat(env.MILE_VALUE_CENTS || '1.5')),
+        miles,
+        cashback_cents: cashback,
+        bonus_spend_cents: bonusSpend,
+        uncovered_cents: uncovered,
+        rounded_away_cents: roundedAway,
+      };
+      if (!best || candidate.value_cents > best.value_cents) best = candidate;
     }
 
-    const value = Math.round(cashback + miles * mileValue);
+    const { category, value_cents: value, miles, cashback_cents: cashback, bonus_spend_cents: bonusSpend, uncovered_cents: uncovered, rounded_away_cents: roundedAway } = best!;
     outcomes.push({
       mode_key: mode.mode_key,
       label: mode.label,
@@ -269,28 +267,33 @@ export async function modeComparison(
   };
 }
 
-/**
- * For a mode that makes you pick a category, the one this period's spending
- * would have made best. Comparing "5% on a category" against a category picked
- * at random would answer a question nobody asked.
- */
-function bestCategoryFor(mode: CardMode, txns: any[], excluded: Set<string>): string | null {
-  const allowed = (mode.category_choices ?? '')
-    .split(',')
-    .map((c) => c.trim().toLowerCase())
-    .filter(Boolean);
-  if (!allowed.length) return null;
 
-  const spendBy = new Map<string, number>();
+
+/**
+ * The spend rung each quarter held: the LOWEST calendar month's eligible spend
+ * in that quarter, which is what "hit the minimum in all three months" means.
+ *
+ * Quarters are the card's own — three calendar months from the month it was
+ * approved — and fall back to calendar quarters only when no opening date is
+ * known. A month with no purchases in the data counts as nothing spent, which
+ * understates a quarter still in progress; the caveats say so.
+ */
+function quarterTiers(
+  card: Card,
+  txns: { amount_cents: number; occurred_at: string; mcc: string | null }[],
+  excluded: Set<string>
+): (date: string) => number {
+  const byMonth = new Map<string, number>();
   for (const t of txns) {
     if (t.mcc && excluded.has(t.mcc)) continue;
-    const c = (t.category ?? '').toLowerCase();
-    if (!allowed.includes(c)) continue;
-    spendBy.set(c, (spendBy.get(c) ?? 0) + t.amount_cents);
+    const m = t.occurred_at.slice(0, 7);
+    byMonth.set(m, (byMonth.get(m) ?? 0) + t.amount_cents);
   }
-  let best: string | null = null;
-  for (const [c, amount] of spendBy) if (!best || amount > (spendBy.get(best) ?? 0)) best = c;
-  return best ?? allowed[0];
+  const anchor = card.opened_at ?? null;
+  return (date: string) => {
+    const q = anchor
+      ? membershipQuarter(anchor, date)
+      : membershipQuarter(`${date.slice(0, 4)}-01-01`, date);
+    return Math.min(...q.months.map((m) => byMonth.get(m.start.slice(0, 7)) ?? 0));
+  };
 }
-
-void SELECTED;

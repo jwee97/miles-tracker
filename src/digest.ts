@@ -32,9 +32,17 @@ function quarterLine(p: Progress): string[] {
     out.push(`  🛑 ${p.months_missed} month(s) short — this quarter pays nothing`);
     return out;
   }
+  // A rung with no fixed payout gates a RATE rather than paying an amount —
+  // Trust's S$500 and S$2,000 unlock 5% and 15% on the category you picked.
+  // Projecting "$0 a quarter" for those would be precise and wrong.
+  const pays = (t: { reward_cents: number }) => t.reward_cents > 0;
   if (p.quarter_tier && p.thirds) {
     const share = p.thirds === 3 ? '' : ` (${p.thirds}/3 pro-rated)`;
-    out.push(`  💰 on course for $${money(p.projected_reward_cents)}${share} at the $${money(p.quarter_tier.min_spend_cents)} tier`);
+    out.push(
+      pays(p.quarter_tier)
+        ? `  💰 on course for $${money(p.projected_reward_cents)}${share} at the $${money(p.quarter_tier.min_spend_cents)} tier`
+        : `  💰 holding the $${money(p.quarter_tier.min_spend_cents)} tier, and its rate`
+    );
   }
 
   // A quarter pays at its weakest month, so once one has closed a rung down,
@@ -42,7 +50,8 @@ function quarterLine(p: Progress): string[] {
   // "spend more" then would be advice that costs money and returns none.
   if (p.ceiling_tier) {
     out.push(
-      `  🎯 aim for $${money(p.ceiling_tier.min_spend_cents)} this month — ${p.ceiling_reason}, so anything above it still pays $${money(p.ceiling_tier.reward_cents)}` +
+      `  🎯 aim for $${money(p.ceiling_tier.min_spend_cents)} this month — ${p.ceiling_reason}` +
+        (pays(p.ceiling_tier) ? `, so anything above it still pays $${money(p.ceiling_tier.reward_cents)}` : '') +
         (p.to_target_cents > 0
           ? `\n  ↗ $${money(p.to_target_cents)} to go`
           : p.beyond_target_cents > 0
@@ -55,7 +64,10 @@ function quarterLine(p: Progress): string[] {
   // Nothing capped yet, so the next rung up is genuinely worth naming.
   const next = p.tiers.find((t) => t.min_spend_cents > p.spent_cents);
   if (next) {
-    out.push(`  ↗ $${money(next.min_spend_cents - p.spent_cents)} more this month reaches the $${money(next.min_spend_cents)} tier ($${money(next.reward_cents)}/quarter)`);
+    out.push(
+      `  ↗ $${money(next.min_spend_cents - p.spent_cents)} more this month reaches the $${money(next.min_spend_cents)} tier` +
+        (pays(next) ? ` ($${money(next.reward_cents)}/quarter)` : '')
+    );
   }
   return out;
 }

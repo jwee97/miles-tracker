@@ -238,6 +238,13 @@ totals what each would have been worth, caps and all. 1.3 mpd against 3% in stoc
 against 5% on one category depends entirely on what you buy and how much of it
 fits under a S$500 quarterly cap.
 
+The first card set up this way, the [Trust Freedom Card](docs/cards/trust-freedom.md), needed more than
+modes: a mode that applies until you choose one; a bonus on a category you pick, defined by merchant code
+rather than by the app's own category word, with code ranges; rates that differ between local and foreign
+spend (tag a foreign purchase `#fx`); a quarter counted from the month the card was approved; a minimum
+that exists in only one mode; and the mode decided by the day a purchase was authorised rather than
+posted. Its setup is checked against Trust's own worked examples, to the cent.
+
 Two smaller things this needed. A card that rounds each purchase **down** before
 paying on it — Trust's nearest S$5 — earns nothing at all on S$4.99, so `step` is
 recorded on the rule and the app stops quoting a rate the card does not pay on

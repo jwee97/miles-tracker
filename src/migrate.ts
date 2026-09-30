@@ -20,6 +20,13 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   // --- cards you choose the reward of ---
   { table: 'earn_rules', column: 'mode_key', ddl: 'ALTER TABLE earn_rules ADD COLUMN mode_key TEXT' },
   { table: 'earn_rules', column: 'earn_step_cents', ddl: 'ALTER TABLE earn_rules ADD COLUMN earn_step_cents INTEGER' },
+  { table: 'card_modes', column: 'is_default', ddl: 'ALTER TABLE card_modes ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0' },
+  { table: 'requirements', column: 'mode_key', ddl: 'ALTER TABLE requirements ADD COLUMN mode_key TEXT' },
+  // --- local or foreign spend ---
+  { table: 'earn_rules', column: 'region', ddl: 'ALTER TABLE earn_rules ADD COLUMN region TEXT' },
+  // NULL until something says: most spend on a Singapore card is local, and the
+  // engine treats unknown as local out loud rather than silently.
+  { table: 'transactions', column: 'is_foreign', ddl: 'ALTER TABLE transactions ADD COLUMN is_foreign INTEGER' },
   // --- what an inference cost, and whether it turned out to be right ---
   { table: 'merchant_predictions', column: 'inference_ngrams', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN inference_ngrams INTEGER' },
   { table: 'merchant_predictions', column: 'inference_rows', ddl: 'ALTER TABLE merchant_predictions ADD COLUMN inference_rows INTEGER' },
