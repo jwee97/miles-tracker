@@ -31,6 +31,10 @@ import {
   fetchPoints,
   fetchWhich,
   bootstrapToken,
+  tokenFromPaste,
+  AUTH_EVENT,
+  AUTH_MESSAGES,
+  type AuthProblem,
   deleteTransaction,
   decideRule,
   deleteFeed,
@@ -1874,6 +1878,71 @@ function PointsTab() {
  * against this list is what stops a renamed tab — or anything else that ends up
  * in that key — from restoring to a screen that renders nothing at all.
  */
+/**
+ * The way in when the token is missing, damaged or out of date.
+ *
+ * Mostly this says "send /app". The paste box is for the home-screen app: it
+ * keeps storage of its own, apart from the browser a Telegram link opens in, so
+ * tapping a fresh link signs in the browser and leaves the app still expired.
+ */
+function SignIn({ problem }: { problem: AuthProblem }) {
+  const [text, setText] = useState('');
+  const [bad, setBad] = useState(false);
+
+  function use() {
+    const token = tokenFromPaste(text);
+    if (!token) {
+      setBad(true);
+      return;
+    }
+    // Through the address, which is read before anything renders and does not
+    // depend on storage working — then a reload, so every screen asks again.
+    history.replaceState(null, '', `${location.pathname}${location.search}#t=${token}`);
+    location.reload();
+  }
+
+  return (
+    <main className="pad">
+      <section className="card signin">
+        <h2>Sign in</h2>
+        <p className="error">{AUTH_MESSAGES[problem]}</p>
+        <p className="sub">
+          Send /app to the bot and open the link it replies with. Using this from your home screen? Copy the link
+          instead and paste it here — a home-screen app cannot be reached by tapping a link.
+        </p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            use();
+          }}
+        >
+          <label className="f">
+            <span>Link from /app</span>
+            <input
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                setBad(false);
+              }}
+              placeholder="https://…/#t=…"
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </label>
+          {bad && <p className="err-text">That is not the link from /app — copy the whole link and try again.</p>}
+          <div className="entry-foot">
+            <button type="submit" disabled={!text.trim()}>
+              Sign in
+            </button>
+          </div>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 export const TAB_KEYS = [
   'home',
   'use',
@@ -1982,6 +2051,15 @@ export default function App() {
   const [txns, setTxns] = useState<Txn[]>([]);
   const [recentCount, setRecentCount] = useState(10);
   const [error, setError] = useState<string | null>(null);
+  // A token the Worker turned down, or none at all, is answered with one sign-in
+  // screen rather than an error per section: every request fails the same way,
+  // and each tab saying so in its own words hid the one thing to do about it.
+  const [auth, setAuth] = useState<AuthProblem | null>(() => (bootstrapToken() ? null : 'missing'));
+  useEffect(() => {
+    const on = (e: Event) => setAuth((e as CustomEvent<AuthProblem>).detail ?? 'expired');
+    window.addEventListener(AUTH_EVENT, on);
+    return () => window.removeEventListener(AUTH_EVENT, on);
+  }, []);
 
   function refresh() {
     fetchSummary().then(setSummary).catch((e) => setError(e.message));
@@ -2056,6 +2134,7 @@ export default function App() {
     refresh();
   }
 
+  if (auth) return <SignIn problem={auth} />;
   if (error && tab !== 'use' && tab !== 'home') return <main className="pad"><p className="error">{error}</p></main>;
 
   return (

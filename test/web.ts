@@ -342,6 +342,10 @@ let lastTxQuery: Record<string, string> = {};
 let resolved: { id: number; body: any } | null = null;
 let published = 0;
 let slowActions = false;
+/** When set, the stub accepts only this token and answers 401 for any other, as the Worker does. */
+let validToken: string | null = null;
+/** Every token the stub was asked with while `validToken` was set. */
+const tokensSeen: string[] = [];
 let breakTransactions = false;
 let repriced: any = null;
 let onboardingStatus = 'completed';
@@ -670,6 +674,12 @@ async function stub(page: Page) {
         headers: { 'cache-control': 'no-store' },
         body: JSON.stringify(body),
       });
+
+    if (validToken !== null) {
+      const sent = (route.request().headers()['authorization'] ?? '').replace(/^Bearer\s+/i, '');
+      tokensSeen.push(sent);
+      if (sent !== validToken) return send({ error: 'unauthorized', reason: sent.includes('.') ? 'expired' : 'invalid' }, 401);
+    }
 
     if (u.pathname === '/api/recommend') return send(RECOMMENDATION);
     if (u.pathname === '/api/actions') {
@@ -2341,6 +2351,55 @@ async function main() {
     await page.locator('.card', { hasText: 'Nothing changed' }).waitFor();
     check('applying sends the rules the reviewer saw', appliedChange?.rules?.[0]?.mpd === 3, JSON.stringify(appliedChange));
     check('with the date the new rates start from', appliedChange?.effective_from === '2026-10-01', JSON.stringify(appliedChange));
+
+    // --- a fresh link with an old one still stored -----------------------
+    // The bug as reported: open a new /app link and still be told it expired.
+    // The screens asked for their data with the stored token before App had
+    // read the link, and the 401 that came back wiped the new token.
+    validToken = 'fresh.token';
+    tokensSeen.length = 0;
+    await page.evaluate(() => {
+      localStorage.removeItem('tab');
+      localStorage.setItem('miles_token', 'old.token');
+    });
+    await page.goto(`${server.url}/?v=${++visit}#t=fresh.token`);
+    await page.locator('.activity-list li').first().waitFor();
+    check('a fresh link works with an expired one still stored', true);
+    check(
+      'no request went out with the old token',
+      !tokensSeen.includes('old.token'),
+      JSON.stringify([...new Set(tokensSeen)])
+    );
+    check(
+      'and the new one is the one kept',
+      (await page.evaluate(() => localStorage.getItem('miles_token'))) === 'fresh.token'
+    );
+    check('nothing says the link expired', !(await page.locator('text=Link expired').count()));
+
+    // An expired token on its own: one sign-in screen, not an error per tab.
+    validToken = 'pasted.token';
+    await page.goto(`${server.url}/?v=${++visit}`);
+    await page.getByRole('heading', { name: 'Sign in' }).waitFor();
+    check('an expired token shows the sign-in screen', (await page.locator('text=Link expired').count()) === 1);
+
+    // The home-screen app cannot be reached by a tapped link, so a pasted one
+    // has to be enough — and something that is not a link is refused.
+    const box = page.getByLabel('Link from /app');
+    await box.fill('hello');
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    check(
+      'pasting something that is not the link is refused',
+      (await page.locator('text=That is not the link from /app').count()) === 1
+    );
+    await box.fill(`${server.url}/#t=pasted.token`);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.locator('.activity-list li').first().waitFor();
+    check('pasting the link from /app signs in', true);
+    check(
+      'and keeps the pasted token',
+      (await page.evaluate(() => localStorage.getItem('miles_token'))) === 'pasted.token'
+    );
+    validToken = null;
 
     // --- the app comes back where you left it ----------------------------
     // A refresh on a phone is how the dashboard recovers from being

@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import worker from '../src/index';
 import { runMigrations } from '../src/migrate';
-import { mintToken } from '../src/auth';
+import { mintToken, tokenProblem } from '../src/auth';
 import type { Env } from '../src/types';
 
 // Telegram is the only outbound call the handler makes; swallow it so the
@@ -9,10 +9,13 @@ import type { Env } from '../src/types';
 const sent: string[] = [];
 /** What the bot actually said, so a reply can be read and not just counted. */
 const said: string[] = [];
+/** The whole message, for what the text alone does not show — how it is formatted. */
+const saidWith: any[] = [];
 globalThis.fetch = (async (input: any, init?: any) => {
   sent.push(String(input));
   if (String(input).includes('sendMessage')) {
     try {
+      saidWith.push(JSON.parse(String(init?.body ?? '{}')));
       said.push(String(JSON.parse(String(init?.body ?? '{}')).text ?? ''));
     } catch {
       said.push('');
@@ -2065,6 +2068,43 @@ db.prepare(`INSERT OR IGNORE INTO programs (key,name,kind,unit,expiry_months) VA
   const again = (await (await authed('/api/migrate', {})).json()) as any;
   check('running it again changes nothing', again.alreadyCurrent === true, JSON.stringify(again).slice(0, 200));
   check('and creates no second product', again.products.products_created === 0, JSON.stringify(again.products));
+}
+
+// --- the dashboard link ---------------------------------------------------------
+// Reported: a fresh /app link said "expired" every time. Part of it was the
+// message: sent as Markdown, two underscores in the token read as italics and
+// Telegram dropped them, so the link arrived damaged.
+{
+  const tg = (text: string) =>
+    worker.fetch(
+      new Request('https://x.test/tg', {
+        method: 'POST',
+        headers: { 'X-Telegram-Bot-Api-Secret-Token': 'y', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: { chat: { id: 1 }, from: { id: 1 }, text } }),
+      }),
+      env
+    );
+  const before = saidWith.length;
+  await tg('/app');
+  const msg = saidWith.slice(before).find((m) => String(m.text).includes('#t='));
+  check('/app replies with a link', !!msg, JSON.stringify(saidWith.slice(before)).slice(0, 200));
+  check('and sends it as plain text, so nothing in the token is read as formatting', msg && msg.parse_mode === undefined, JSON.stringify(msg?.parse_mode));
+  const linked = String(msg?.text ?? '').match(/#t=(\S+)/)?.[1] ?? null;
+  check('the token in the message works as sent', (await tokenProblem('test-secret', linked)) === null, String(linked));
+
+  // Expired and damaged are told apart, because the fixes differ.
+  const fresh = await mintToken('test-secret');
+  const old = await mintToken('test-secret', -1);
+  const ask = (t: string | null) =>
+    worker.fetch(new Request('https://x.test/api/summary', { headers: t ? { Authorization: `Bearer ${t}` } : {} }), env);
+  const expired = await ask(old);
+  check('an expired token is refused', expired.status === 401, String(expired.status));
+  check('and the refusal says it expired', ((await expired.json()) as any).reason === 'expired', '');
+  const damaged = await ask(fresh.slice(0, -1));
+  check('a token cut short says it is not valid, not that it expired', ((await damaged.json()) as any).reason === 'invalid', '');
+  const none = await ask(null);
+  check('no token at all says so', ((await none.json()) as any).reason === 'missing', '');
+  check('a good token still works', (await ask(fresh)).status === 200, '');
 }
 
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');

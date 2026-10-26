@@ -266,9 +266,15 @@ async function runCommand(
 
       case '/app': {
         const token = await mintToken(env.APP_SECRET);
-        await reply(`Dashboard link (valid 30 days):\n${origin}/#t=${token}`, {
-          disable_web_page_preview: true,
-        });
+        // Plain text, not Markdown: the token is base64url, and two underscores
+        // in it read as italics — Telegram dropped them and the link arrived
+        // one character short of working, every time it happened to have two.
+        await reply(
+          `Dashboard link (valid 30 days):\n${origin}/#t=${token}\n\n` +
+            `Using the app from your home screen? Copy this link and paste it into the app's sign-in box — ` +
+            `a home-screen app keeps its own storage, so opening the link in the browser doesn't sign it in.`,
+          { disable_web_page_preview: true, parse_mode: undefined }
+        );
         return;
       }
 

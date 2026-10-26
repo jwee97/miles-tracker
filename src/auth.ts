@@ -32,22 +32,38 @@ export async function mintToken(secret: string, ttlDays = 30): Promise<string> {
   return `${payload}.${b64url(new Uint8Array(sig))}`;
 }
 
-export async function verifyToken(secret: string, token: string | null): Promise<boolean> {
-  if (!token || !token.includes('.')) return false;
+export type TokenProblem = 'missing' | 'invalid' | 'expired';
+
+/**
+ * Why a token does not work, or null when it does.
+ *
+ * "Expired" and "damaged" need different fixes, and answering both with one
+ * 401 sent people back to the bot for a new link that failed the same way —
+ * a link cut short or reformatted on its way to the browser is not cured by
+ * minting another one.
+ */
+export async function tokenProblem(secret: string, token: string | null): Promise<TokenProblem | null> {
+  if (!token) return 'missing';
+  if (!token.includes('.')) return 'invalid';
   const [payload, sig] = token.split('.');
   let ok = false;
   try {
     ok = await crypto.subtle.verify('HMAC', await key(secret), unb64url(sig), enc.encode(payload));
   } catch {
-    return false;
+    return 'invalid';
   }
-  if (!ok) return false;
+  if (!ok) return 'invalid';
   try {
     const { exp } = JSON.parse(new TextDecoder().decode(unb64url(payload)));
-    return typeof exp === 'number' && exp > Date.now();
+    if (typeof exp !== 'number') return 'invalid';
+    return exp > Date.now() ? null : 'expired';
   } catch {
-    return false;
+    return 'invalid';
   }
+}
+
+export async function verifyToken(secret: string, token: string | null): Promise<boolean> {
+  return (await tokenProblem(secret, token)) === null;
 }
 
 /** Constant-time-ish compare for the Telegram webhook secret header. */

@@ -6,28 +6,117 @@ export const API_BASE = '';
 
 const KEY = 'miles_token';
 
-/** The bot delivers the token in the link fragment; keep it and clean the URL. */
+/**
+ * The token, held in memory as well as in storage.
+ *
+ * Memory is the copy every request reads. Storage is only how it survives a
+ * reload — and some in-app browsers refuse it or drop it between openings, so
+ * a token kept only there could be accepted from the link and then be gone by
+ * the first request.
+ */
+let current: string | null = null;
+
+function stored(): string | null {
+  try {
+    return localStorage.getItem(KEY);
+  } catch {
+    return null;
+  }
+}
+
+function store(token: string | null) {
+  try {
+    if (token) localStorage.setItem(KEY, token);
+    else localStorage.removeItem(KEY);
+  } catch {
+    /* memory still has it for this visit */
+  }
+}
+
+/**
+ * The bot delivers the token in the link fragment; keep it and clean the URL.
+ *
+ * Called once in main.tsx BEFORE anything renders. It used to run in App's own
+ * effect, which React runs after its children's — so the home screen had
+ * already asked for its data with the OLD token from storage, got a 401 for it,
+ * and that 401 wiped the new token the effect had just saved. A fresh link
+ * then said "expired" every time, for as long as an old one was stored.
+ */
 export function bootstrapToken(): string | null {
   const m = location.hash.match(/[#&]t=([^&]+)/);
   if (m) {
-    localStorage.setItem(KEY, m[1]);
-    history.replaceState(null, '', location.pathname);
-    return m[1];
+    let token = m[1];
+    try {
+      token = decodeURIComponent(token);
+    } catch {
+      /* not encoded */
+    }
+    current = token.trim();
+    store(current);
+    history.replaceState(null, '', `${location.pathname}${location.search}`);
+    return current;
   }
-  return localStorage.getItem(KEY);
+  if (current === null) current = stored();
+  return current;
 }
 
 export function clearToken() {
-  localStorage.removeItem(KEY);
+  current = null;
+  store(null);
+}
+
+/** Fired when the Worker turns the token down, so the app can ask for a new one. */
+export const AUTH_EVENT = 'miles:auth';
+
+export type AuthProblem = 'missing' | 'invalid' | 'expired';
+
+export const AUTH_MESSAGES: Record<AuthProblem, string> = {
+  missing: 'Not signed in. Send /app to your Telegram bot and open the link it replies with.',
+  expired: 'Link expired — send /app to the bot for a new one.',
+  invalid:
+    'That link is not valid — it was probably cut short or changed when it was copied. Send /app to the bot and copy the whole link.',
+};
+
+/**
+ * Sign in with a pasted link or token.
+ *
+ * A home-screen app keeps its own storage, apart from the browser a Telegram
+ * link opens in, so the link can never reach it by being tapped. Pasting it is
+ * the one way in. Returns the token, or null when what was pasted is not one.
+ */
+export function tokenFromPaste(input: string): string | null {
+  const s = input.trim();
+  const m = s.match(/[#&]t=([^&\s]+)/);
+  let token = m ? m[1] : s;
+  try {
+    token = decodeURIComponent(token);
+  } catch {
+    /* not encoded */
+  }
+  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token) ? token : null;
+}
+
+async function authed(path: string, init: RequestInit = {}): Promise<Response> {
+  const token = bootstrapToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) {
+    const data = (await res.json().catch(() => ({}))) as { reason?: AuthProblem };
+    const reason: AuthProblem = data.reason && data.reason in AUTH_MESSAGES ? data.reason : 'expired';
+    // Only forget the token this request carried. One still in flight from
+    // before a new link was opened answers for the OLD token, and clearing
+    // regardless threw the new one away with it.
+    if (current === token) clearToken();
+    window.dispatchEvent(new CustomEvent(AUTH_EVENT, { detail: reason }));
+    throw new Error(AUTH_MESSAGES[reason]);
+  }
+  return res;
 }
 
 async function get<T>(path: string): Promise<T> {
-  const token = localStorage.getItem(KEY);
-  const res = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('Link expired — send /app to the bot for a new one.');
-  }
+  const res = await authed(path);
   if (!res.ok) {
     // The Worker explains itself on failure — "the database is behind the
     // deployed code, send /migrate" — and throwing the status alone threw that
@@ -220,10 +309,9 @@ export interface Txn {
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const token = localStorage.getItem(KEY);
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await authed(path, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   const data = (await res.json().catch(() => ({}))) as { error?: string };
@@ -232,11 +320,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function del<T>(path: string): Promise<T> {
-  const token = localStorage.getItem(KEY);
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await authed(path, { method: 'DELETE' });
   const data = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
   return data as T;

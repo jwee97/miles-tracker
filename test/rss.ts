@@ -34,7 +34,13 @@ const wrap = (sql: string, args: unknown[] = []): any => ({
     return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
   },
 });
-const env = { DB: { prepare: (s: string) => wrap(s), batch: async (ss: any[]) => Promise.all(ss.map((x) => x.all())) } } as unknown as Env;
+// SCAN_WINDOW 'all': the fixtures are dated September 2026, and the default
+// window is the current month — so the scans found them in September and
+// nothing from October on. The windowed scans below pass their own `since`.
+const env = {
+  DB: { prepare: (s: string) => wrap(s), batch: async (ss: any[]) => Promise.all(ss.map((x) => x.all())) },
+  SCAN_WINDOW: 'all',
+} as unknown as Env;
 
 let fails = 0;
 const check = (l: string, c: boolean, d = '') => {

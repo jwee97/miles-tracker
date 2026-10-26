@@ -15,7 +15,7 @@
 const IMPORT_SLICE = 1;
 
 import { withReadCache } from './cache';
-import { safeEqual, verifyToken } from './auth';
+import { safeEqual, tokenProblem } from './auth';
 import { resolveMerchantIntelligence } from './intelligence/merchants/resolve';
 import { exportTrainingData, harvestDiagnostics, harvestLabels, trainingReadiness } from './intelligence/merchants/labels';
 import { classify, featureCount, storeFeatures } from './intelligence/models/classifier';
@@ -178,7 +178,8 @@ export default {
     // --- JSON API for the PWA and the iOS Shortcut -------------------------
     if (url.pathname.startsWith('/api/')) {
       const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '') || url.searchParams.get('t');
-      if (!(await verifyToken(env.APP_SECRET, token))) return json({ error: 'unauthorized' }, 401);
+      const problem = await tokenProblem(env.APP_SECRET, token);
+      if (problem) return json({ error: 'unauthorized', reason: problem }, 401);
 
       // Every handler below touches the database, and an unhandled throw here
       // surfaced as a bare 500 with no message — which made a schema that had
