@@ -25,6 +25,8 @@ export interface ProfileRule {
   reward_type: 'miles' | 'cashback';
   mode_key?: string;
   region?: 'local' | 'foreign';
+  /** Paid only when you pay this way; a purchase made another way falls to the base rate. */
+  channel?: 'online' | 'contactless' | 'offline';
   cap_cents?: number;
   cap_window?: string;
   cap_group?: string;
@@ -52,6 +54,13 @@ export interface CardProfile {
   exclusions: { codes: string; reason: string }[];
   /** A minimum that decides a tier, and the rungs it has. */
   requirement?: { amount_cents: number; window: string; mode_key: string; note: string; rungs_cents: number[] };
+  /**
+   * The card's own base rate, for a card whose rates do not all live in modes.
+   * Left out, the profile zeroes the card's base rate and programme because
+   * every rate belongs to a mode (the Trust Freedom); given, the base rate is
+   * set to it and the programme is left alone.
+   */
+  card_base_mpd?: number;
   /** What is known and deliberately not modelled, said out loud. */
   not_modelled: string[];
 }
@@ -156,10 +165,97 @@ export const TRUST_FREEDOM: CardProfile = {
   ],
 };
 
-export const PROFILES: CardProfile[] = [TRUST_FREEDOM];
+const HSBC_GROUPS: Record<string, string> = {
+  travel: '3000-3999,4411,4511',
+  shopping:
+    '4816,5045,5262,5309,5310,5311,5331,5399,5611,5621,5631,5641,5651,5655,5661,5691,5699,5732-5735,5912,5942,5944-5949,5964-5970,5992,5999',
+  dining: '5441,5462,5811,5812,5813',
+  transport: '4121,7997',
+};
+
+/**
+ * The HSBC Revolution Card, from HSBC's 10X Reward Points Terms and Conditions.
+ *
+ * Priced in miles, which is what the rest of the app compares in: 10X is
+ * 10 HSBC points per S$1, and 25,000 points become 10,000 miles, so 4 mpd; the
+ * 1 point per S$1 everything else earns is 0.4 mpd.
+ *
+ * The bonus is paid on eligible spend — an eligible merchant code AND paid
+ * online or by tapping — up to 9,000 bonus points a month. 9 bonus points per
+ * S$1 makes that S$1,000 of spend, which is what the engine caps. One cap is
+ * shared by every category and both ways of paying, so they are one group.
+ *
+ * Eligible spend past the cap, and everything else that is not excluded, earns
+ * the base 0.4. Excluded codes earn nothing at all.
+ */
+export const HSBC_REVOLUTION: CardProfile = {
+  key: 'hsbc_revolution',
+  product_key: 'hsbc_revolution',
+  issuer: 'HSBC',
+  product_name: 'Revolution Card',
+  sources: [
+    'https://www.hsbc.com.sg/content/dam/hsbc/sg/documents/credit-cards/revolution/offers/10x-reward-points-terms-and-conditions.pdf',
+    'https://www.hsbc.com.sg/credit-cards/products/revolution/',
+  ],
+  verified_on: '2026-10-27',
+  modes: [],
+  card_base_mpd: 0.4,
+  rules: [
+    { category: '*', rate: 0.4, reward_type: 'miles' },
+    ...Object.entries(HSBC_GROUPS).flatMap(([category, codes]): ProfileRule[] =>
+      (['online', 'contactless'] as const).map((channel) => ({
+        category,
+        rate: 4,
+        reward_type: 'miles' as const,
+        channel,
+        cap_cents: 100000,
+        cap_window: 'calendar_month',
+        cap_group: 'tenx',
+        mcc_include: codes,
+      }))
+    ),
+  ],
+  // The 48 codes in the terms' excluded list. These earn no points at all, not
+  // even the base ones.
+  exclusions: [
+    { codes: '4829,6050,6051,6529,6530,6532,6533,6534,6536,6537,6538,6540,6555', reason: 'money transfer, quasi cash, stored value' },
+    { codes: '6010,6011,6012,6211', reason: 'financial institutions, cash disbursements, securities' },
+    { codes: '5960,6300', reason: 'insurance' },
+    { codes: '4900', reason: 'utilities' },
+    { codes: '6513,7349', reason: 'rentals and cleaning services' },
+    { codes: '5199,7299,7399,8999', reason: 'nondurable goods, other and professional services' },
+    { codes: '7511,7523', reason: 'truck stop quasi cash, parking' },
+    { codes: '7801,7995,9754', reason: 'gambling' },
+    { codes: '8062', reason: 'hospitals' },
+    { codes: '8211,8220,8241,8244,8249,8299', reason: 'educational institutions' },
+    { codes: '8398,8651,8661', reason: 'charitable, political, religious organisations' },
+    { codes: '9211,9222,9223,9311,9399,9402,9405', reason: 'government payments, fines, tax' },
+  ],
+  not_modelled: [
+    'No minimum spend, so there is nothing for /req.',
+    'Points are worked out on the month\'s eligible total rounded down to S$1, not purchase by purchase, so a month can differ by a few points.',
+    'Priced at 0.4 miles a point (25,000 points = 10,000 Asia Miles). Other partners pay less per point — KrisFlyer is 30,000 = 10,000 miles, 3.33 mpd.',
+    'The 20X tier (8 mpd, cap S$1,200 of spend a month) needs S$50,000 average daily balance in a sole HSBC Everyday Global Account. Not modelled.',
+    'A purchase with no payment method recorded is priced as if it qualified. Log online or contactless where you know it.',
+    'HSBC\'s terms still carry a line that contactless earns 1 point from 15 July 2024; its product page and the April 2026 announcements say tapping is back at 10X. Check the first tap on a statement.',
+    'MCC 7011 (hotels) is not in HSBC\'s list, though two blogs include it; 4722 (travel agencies) is not eligible. Both follow the terms.',
+    'Exclusions without a merchant code: instalment plans, AXS, ATM, fees, top-ups.',
+    'Bonus points credit after the month ends, and a reversed purchase takes its points back.',
+  ],
+};
+
+export const PROFILES: CardProfile[] = [TRUST_FREEDOM, HSBC_REVOLUTION];
+
+/**
+ * A product key without the words banks and users add or drop: the catalogue
+ * calls the card `hsbc_revolution`, adding it by hand makes `hsbc_revolution_card`,
+ * and the form can produce `hsbc_revolution_credit_card`. All one product.
+ */
+const canon = (key: string | null | undefined) =>
+  (key ?? '').toLowerCase().replace(/_(credit_)?card$/, '');
 
 export const profileFor = (productKey: string | null | undefined) =>
-  PROFILES.find((p) => p.product_key === productKey) ?? null;
+  productKey ? (PROFILES.find((p) => canon(p.product_key) === canon(productKey)) ?? null) : null;
 
 const dollars = (cents: number) => (cents % 100 ? (cents / 100).toFixed(2) : String(cents / 100));
 
@@ -182,6 +278,7 @@ export function profileCommands(p: CardProfile, nickname: string): string {
     if (r.mode_key) parts.push(`mode ${r.mode_key}`);
     if (r.min_tier_cents) parts.push(`tier ${dollars(r.min_tier_cents)}`);
     if (r.region) parts.push(`region ${r.region}`);
+    if (r.channel) parts.push(`channel ${r.channel}`);
     if (r.cap_cents) parts.push(`cap ${dollars(r.cap_cents)}`);
     if (r.cap_window) parts.push(`window ${r.cap_window}`);
     if (r.cap_group) parts.push(`group ${r.cap_group}`);
@@ -221,6 +318,7 @@ interface CardRow {
 const describeRule = (r: any) =>
   `#${r.id} ${r.category} ${r.mpd}${r.reward_type === 'cashback' ? '%' : ' mpd'}` +
   (r.mode_key ? ` [${r.mode_key}]` : '') +
+  (r.channel ? ` (${r.channel} only)` : '') +
   (r.cap_cents ? ` cap $${money(r.cap_cents)}${r.cap_window ? `/${r.cap_window}` : ''}` : '');
 
 /**
@@ -249,10 +347,14 @@ export async function planProfile(env: Env, card: CardRow, p: CardProfile, mode?
   const dropChoices = choices.filter((c) => (mode ? true : !keep.has(c.mode_key)));
 
   const fields: string[] = [];
-  if ((card.base_mpd ?? 0) !== 0) {
-    fields.push(`base rate ${card.base_mpd} → 0 (every rate on this card belongs to a mode)`);
+  if (p.card_base_mpd !== undefined) {
+    if ((card.base_mpd ?? 0) !== p.card_base_mpd) fields.push(`base rate ${card.base_mpd ?? 0} → ${p.card_base_mpd}`);
+  } else {
+    if ((card.base_mpd ?? 0) !== 0) {
+      fields.push(`base rate ${card.base_mpd} → 0 (every rate on this card belongs to a mode)`);
+    }
+    if (card.program_key) fields.push(`programme ${card.program_key} → none (what it pays depends on the mode)`);
   }
-  if (card.program_key) fields.push(`programme ${card.program_key} → none (what it pays depends on the mode)`);
 
   const anchor = card.opened_at ?? today(env);
   const modeAfter = mode
@@ -321,8 +423,14 @@ export async function applyProfile(
   const q = (sql: string, ...args: unknown[]) => s.push(env.DB.prepare(sql).bind(...args));
 
   // The card itself: its rates live in the modes, and so does what it pays in.
-  q(`UPDATE cards SET base_mpd = 0, program_key = NULL WHERE id = ?`, card.id);
-  q(`UPDATE card_products SET base_mpd = NULL, program_key = NULL WHERE id = ?`, product);
+  if (p.card_base_mpd !== undefined) {
+    // Its rates are not all in modes, so the programme it pays into stays.
+    q(`UPDATE cards SET base_mpd = ? WHERE id = ?`, p.card_base_mpd, card.id);
+    q(`UPDATE card_products SET base_mpd = ? WHERE id = ?`, p.card_base_mpd, product);
+  } else {
+    q(`UPDATE cards SET base_mpd = 0, program_key = NULL WHERE id = ?`, card.id);
+    q(`UPDATE card_products SET base_mpd = NULL, program_key = NULL WHERE id = ?`, product);
+  }
 
   // Every rule the card has collected, off; then the profile's.
   q(
@@ -334,8 +442,8 @@ export async function applyProfile(
   for (const r of p.rules) {
     q(
       `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, min_tier_cents,
-         cap_cents, cap_window, cap_group, mode_key, earn_step_cents, region, min_txn_cents, note, active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+         cap_cents, cap_window, cap_group, mode_key, earn_step_cents, region, min_txn_cents, note, channel, active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       card.id,
       ruleSet,
       r.category,
@@ -350,7 +458,8 @@ export async function applyProfile(
       r.earn_step_cents ?? null,
       r.region ?? null,
       r.min_txn_cents ?? null,
-      `${p.key}, verified ${p.verified_on}`
+      `${p.key}, verified ${p.verified_on}`,
+      r.channel ?? null
     );
   }
 
@@ -371,11 +480,15 @@ export async function applyProfile(
       m.is_default ? 1 : 0
     );
   }
-  q(
-    `DELETE FROM card_modes WHERE product_id = ? AND mode_key NOT IN (${keep.map(() => '?').join(',')})`,
-    product,
-    ...keep
-  );
+  if (keep.length) {
+    q(
+      `DELETE FROM card_modes WHERE product_id = ? AND mode_key NOT IN (${keep.map(() => '?').join(',')})`,
+      product,
+      ...keep
+    );
+  } else {
+    q(`DELETE FROM card_modes WHERE product_id = ?`, product);
+  }
 
   // Choices: replaced by the named mode, or pruned of modes that no longer exist.
   if (opts.mode) {
@@ -389,11 +502,15 @@ export async function applyProfile(
       `set by /cardfix`
     );
   } else {
-    q(
-      `DELETE FROM card_mode_choices WHERE card_id = ? AND mode_key NOT IN (${keep.map(() => '?').join(',')})`,
-      card.id,
-      ...keep
-    );
+    if (keep.length) {
+      q(
+        `DELETE FROM card_mode_choices WHERE card_id = ? AND mode_key NOT IN (${keep.map(() => '?').join(',')})`,
+        card.id,
+        ...keep
+      );
+    } else {
+      q(`DELETE FROM card_mode_choices WHERE card_id = ?`, card.id);
+    }
   }
 
   // Exclusions: this card's, replaced — which is also what removes duplicates

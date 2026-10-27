@@ -245,6 +245,10 @@ spend (tag a foreign purchase `#fx`); a quarter counted from the month the card 
 that exists in only one mode; and the mode decided by the day a purchase was authorised rather than
 posted. Its setup is checked against Trust's own worked examples, to the cent.
 
+A card that pays its bonus only **online or by tapping** needs a rule restricted to a payment method:
+`/addearn hsbcrev dining 4 channel contactless mcc 5812`. The [HSBC Revolution Card](docs/cards/hsbc-revolution.md)
+is set up that way (`/cardfix hsbcrev confirm`) and checked against HSBC's own worked example.
+
 Two smaller things this needed. A card that rounds each purchase **down** before
 paying on it — Trust's nearest S$5 — earns nothing at all on S$4.99, so `step` is
 recorded on the rule and the app stops quoting a rate the card does not pay on

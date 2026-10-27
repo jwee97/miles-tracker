@@ -83,7 +83,7 @@ export function cardRulesPrompt(
 
 Return ONLY commands, one per line, and # comment lines. No other prose:
 
-/addearn ${nickname} <category> <rate> cap <amount> window <window> mcc <codes> group <name> tier <amount> mode <key> region <local|foreign> min <amount>
+/addearn ${nickname} <category> <rate> cap <amount> window <window> mcc <codes> group <name> tier <amount> mode <key> region <local|foreign> channel <online|contactless|offline> min <amount>
 /exclude <mcc> ${nickname} <reason>
 /req ${nickname}|monthly_min|<amount>|<window>|||<txns>|<note>
 
@@ -107,6 +107,10 @@ Rules:
 7. If local and foreign spend earn differently, one line each with
    \`region local\` / \`region foreign\`. \`min <amount>\` if nothing is paid
    below a transaction size; \`step <amount>\` if spend is rounded down first.
+   \`channel <online|contactless|offline>\` if the rate is only paid when you
+   pay that way ("online and contactless spend only"). One line per way that
+   qualifies, with the SAME group name when they share a cap; a purchase made
+   another way falls to the \`*\` rate.
 8. A minimum spend is NOT a cap: write a /req line for it, and put
    \`tier <amount>\` on rates that need a spend rung.
 9. /exclude every code the terms exclude; lists are fine.
@@ -256,7 +260,8 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /earn — list earn rules
 /addearn <card> <category> <rate> — e.g. \`/addearn citirw shopping 4\`
    add \`cap 1000\`, \`window calendar_month\`, \`group tenx\`, \`mcc 5262,5964\`,
-   \`tier 1000\` (rate only while the card holds that spend rung) as needed
+   \`tier 1000\` (rate only while the card holds that spend rung),
+   \`channel online|contactless\` (rate only when you pay that way) as needed
    a rate ending in % means cashback: \`/addearn uobone groceries 5%\`
 /mode — cards you choose the reward of (Trust Freedom: miles, cashback, stock)
 /mode <card> — its options, what it is set to, and every switch so far

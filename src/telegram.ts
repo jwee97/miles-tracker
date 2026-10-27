@@ -902,9 +902,11 @@ async function runCommand(
             apply ? '*Done:*' : '*Would change:*',
             `• ${off.length} rule${off.length === 1 ? '' : 's'} switched off` +
               (off.length ? `:\n  ${off.slice(0, 12).join('\n  ')}${off.length > 12 ? `\n  …and ${off.length - 12} more` : ''}` : ''),
-            `• ${plan.add.rules} rules added across ${plan.add.modes} modes`,
-            `• exclusions: ${plan.remove.exclusions} replaced by ${plan.add.exclusions} codes from the Product Terms`,
-            `• minimums: ${plan.remove.requirements} replaced by the Bonus Cashback minimum, which applies only in that mode`,
+            `• ${plan.add.rules} rules added` + (plan.add.modes ? ` across ${plan.add.modes} modes` : ''),
+            `• exclusions: ${plan.remove.exclusions} replaced by ${plan.add.exclusions} codes from the card's terms`,
+            plan.add.requirement
+              ? `• minimums: ${plan.remove.requirements} replaced by the card's own minimum, which applies only in its mode`
+              : `• minimums: ${plan.remove.requirements} removed — this card has no minimum spend`,
             ...(plan.remove.modes.length ? [`• modes removed: ${plan.remove.modes.join(', ')}`] : []),
             ...(plan.remove.choices.length ? [`• mode history cleared: ${plan.remove.choices.join('; ')}`] : []),
             ...plan.card_fields.map((f) => `• ${f}`),
@@ -920,7 +922,12 @@ async function runCommand(
             lines.push(
               '',
               `Send \`/cardfix ${card.nickname} confirm\` to apply` +
-                (profile.modes.length ? `, or \`/cardfix ${card.nickname} confirm stockback\` to also record the mode you are on.` : '.')
+                (profile.modes.length
+                  ? `, or \`/cardfix ${card.nickname} confirm ${(profile.modes.find((m) => !m.is_default) ?? profile.modes[0]).mode_key}\` to also record the mode you are on.`
+                  : '.'),
+              ...(profile.not_modelled.length
+                ? ['', '*Not modelled:*', ...profile.not_modelled.slice(0, 6).map((n) => `• ${n}`)]
+                : [])
             );
           }
           return reply(lines.join('\n'));
@@ -1599,6 +1606,7 @@ async function runCommand(
         let minTier: string | undefined;
         let modeKey: string | undefined;
         let region: string | undefined;
+        let channel: string | undefined;
         let minTxn: string | undefined;
         let earnStep: string | undefined;
         let note: string | undefined;
@@ -1617,9 +1625,10 @@ async function runCommand(
                 '`/addearn citirw online 4 cap 1000 group tenx` — shares that cap with other `tenx` rules\n' +
                 '`/addearn citirw * 0.4` — the fallback rate for everything else\n' +
                 '`/addearn citirw online 4 mcc 5262,5964,5969` — only those merchant codes\n\n' +
-                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter|membership_quarter>`, `group <name>`, `mcc <codes>`, `tier <amount>`, `mode <key>`, `region <local|foreign>`, `step <amount>`, `min <amount>`, `note <text>`\n\n' +
+                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter|membership_quarter>`, `group <name>`, `mcc <codes>`, `tier <amount>`, `mode <key>`, `region <local|foreign>`, `channel <online|contactless|offline>`, `step <amount>`, `min <amount>`, `note <text>`\n\n' +
                 '`tier` is for cards whose rate moves with the spend rung: `/addearn uobone groceries 6% tier 1000` earns 6% only while the card holds the $1,000 tier.\n' +
                 '`mode` is for cards you choose the reward of: the rule applies only while that mode is selected — /mode.\n' +
+                '`channel` is for a rate that is only paid online or by tapping: `/addearn hsbcrev dining 4 channel contactless mcc 5812` — an in-store dip earns the base rate.\n' +
                 '`step` is for cards that round a transaction down before paying on it: `step 5` is Trust\'s nearest S$5.'
             );
           [nick, cat, rateRaw] = tok;
@@ -1633,6 +1642,7 @@ async function runCommand(
             else if (k === 'tier') minTier = v;
             else if (k === 'mode') modeKey = v;
             else if (k === 'region') region = v?.toLowerCase();
+            else if (k === 'channel') channel = v?.toLowerCase();
             else if (k === 'min') minTxn = v;
             else if (k === 'step') earnStep = v;
             else if (k === 'note') {
@@ -1666,6 +1676,8 @@ async function runCommand(
         const botRuleSet = await currentRuleSetFor(env, card.id, today(env));
         if (region && region !== 'local' && region !== 'foreign')
           return reply('`region` is `local` or `foreign` — leave it out for a rate that applies everywhere.');
+        if (channel && channel !== 'online' && channel !== 'contactless' && channel !== 'offline')
+          return reply('`channel` is `online`, `contactless` or `offline` — leave it out for a rate paid however you pay.');
 
         // A mode has to be one the card actually offers, or the rule would sit
         // in the table applying to nothing and looking like it applied.
@@ -1695,8 +1707,8 @@ async function runCommand(
 
         await env.DB.prepare(
           `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, min_tier_cents,
-             cap_cents, cap_window, cap_group, mode_key, earn_step_cents, region, min_txn_cents, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             cap_cents, cap_window, cap_group, mode_key, earn_step_cents, region, min_txn_cents, note, channel)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             card.id,
@@ -1713,7 +1725,8 @@ async function runCommand(
             earnStep ? parseMoney(earnStep) : null,
             region || null,
             minTxn ? parseMoney(minTxn) : null,
-            note || null
+            note || null,
+            channel || null
           )
           .run();
 
@@ -1722,6 +1735,7 @@ async function runCommand(
             (minTier ? `, and only while the card holds the $${money(parseMoney(minTier) ?? 0)} tier` : '') +
             (modeKey ? `, while the card is set to \`${modeKey}\`` : '') +
             (region ? `, on ${region} spend only` : '') +
+            (channel ? `, when ${channel === 'online' ? 'paid online' : channel === 'contactless' ? 'paid by tapping' : 'paid in store without tapping'}` : '') +
             (minTxn ? `, on purchases of $${money(parseMoney(minTxn) ?? 0)} or more` : '') +
             (earnStep ? `, rounding each purchase down to $${money(parseMoney(earnStep) ?? 0)}` : '') +
             (cap ? `, up to $${money(parseMoney(cap) ?? 0)} per ${capWindow || 'statement_cycle'}` : '') +
