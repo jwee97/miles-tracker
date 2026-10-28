@@ -343,7 +343,7 @@ async function runCommand(
         if (p.length < 4)
           return reply('Format: `nickname|kind|amount|window|deadline|cap|txns|note`\n\n' +
               '`/req citirw|monthly_min|0|statement_cycle||1000||4 mpd, capped`\n' +
-              '`/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback`\n' +
+              '`/req uobone|monthly_min|600|statement_quarter|||10|quarterly cashback`\n' +
               '`/req alt|signup_min|1000|fixed_window|2026-11-14|||30k miles`\n\n' +
               '`statement_quarter` is three statement months counted from the month the card was issued — ' +
               'the amount must be hit in every one of them. Add its tiers with /tiers.\n' +
@@ -414,7 +414,7 @@ async function runCommand(
           .first<{ id: number; amount_cents: number }>();
         if (!req)
           return reply(`*${card.product}* has no rolling-quarter minimum to attach tiers to.\n` +
-              `Add one first: \`/req ${card.nickname}|monthly_min|600|statement_quarter||||10|quarterly cashback\``
+              `Add one first: \`/req ${card.nickname}|monthly_min|600|statement_quarter|||10|quarterly cashback\``
           );
 
         const rungs = tok.slice(1);
@@ -905,7 +905,7 @@ async function runCommand(
             `• ${plan.add.rules} rules added` + (plan.add.modes ? ` across ${plan.add.modes} modes` : ''),
             `• exclusions: ${plan.remove.exclusions} replaced by ${plan.add.exclusions} codes from the card's terms`,
             plan.add.requirement
-              ? `• minimums: ${plan.remove.requirements} replaced by the card's own minimum, which applies only in its mode`
+              ? `• minimums: ${plan.remove.requirements} replaced by the card's own${profile.requirement?.mode_key ? ', which applies only in its mode' : ''}`
               : `• minimums: ${plan.remove.requirements} removed — this card has no minimum spend`,
             ...(plan.remove.modes.length ? [`• modes removed: ${plan.remove.modes.join(', ')}`] : []),
             ...(plan.remove.choices.length ? [`• mode history cleared: ${plan.remove.choices.join('; ')}`] : []),
@@ -1603,6 +1603,7 @@ async function runCommand(
         let capWindow: string | undefined;
         let capGroup: string | undefined;
         let mccList: string | undefined;
+        let exceptList: string | undefined;
         let minTier: string | undefined;
         let modeKey: string | undefined;
         let region: string | undefined;
@@ -1625,7 +1626,7 @@ async function runCommand(
                 '`/addearn citirw online 4 cap 1000 group tenx` — shares that cap with other `tenx` rules\n' +
                 '`/addearn citirw * 0.4` — the fallback rate for everything else\n' +
                 '`/addearn citirw online 4 mcc 5262,5964,5969` — only those merchant codes\n\n' +
-                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter|membership_quarter>`, `group <name>`, `mcc <codes>`, `tier <amount>`, `mode <key>`, `region <local|foreign>`, `channel <online|contactless|offline>`, `step <amount>`, `min <amount>`, `note <text>`\n\n' +
+                'Extras, in any order: `cap <amount>`, `window <statement_cycle|calendar_month|calendar_quarter|membership_quarter>`, `group <name>`, `mcc <codes>`, `except <codes>`, `tier <amount>`, `mode <key>`, `region <local|foreign>`, `channel <online|contactless|offline>`, `step <amount>`, `min <amount>`, `note <text>`\n\n' +
                 '`tier` is for cards whose rate moves with the spend rung: `/addearn uobone groceries 6% tier 1000` earns 6% only while the card holds the $1,000 tier.\n' +
                 '`mode` is for cards you choose the reward of: the rule applies only while that mode is selected — /mode.\n' +
                 '`channel` is for a rate that is only paid online or by tapping: `/addearn hsbcrev dining 4 channel contactless mcc 5812` — an in-store dip earns the base rate.\n' +
@@ -1639,6 +1640,7 @@ async function runCommand(
             else if (k === 'window') capWindow = v;
             else if (k === 'group') capGroup = v;
             else if (k === 'mcc') mccList = v;
+            else if (k === 'except') exceptList = v;
             else if (k === 'tier') minTier = v;
             else if (k === 'mode') modeKey = v;
             else if (k === 'region') region = v?.toLowerCase();
@@ -1669,6 +1671,16 @@ async function runCommand(
         if (include.some((x) => !isCodeEntry(x)))
           return reply(
             `\`mcc\` takes four-digit codes, comma separated, and ranges like \`3000-3308\` — got "${mccList}".`
+          );
+        // The other way round: codes the rate never pays on, whatever else matches
+        // it — Citi's online 10X is "online spend, excluding travel".
+        const exclude = (exceptList ?? '')
+          .split(/[,\s]+/)
+          .map((x) => x.trim())
+          .filter(Boolean);
+        if (exclude.some((x) => !isCodeEntry(x)))
+          return reply(
+            `\`except\` takes four-digit codes, comma separated, and ranges like \`3000-3999\` — got "${exceptList}".`
           );
 
         // Same as the app: a rule added now belongs to the card's current
@@ -1705,10 +1717,14 @@ async function runCommand(
           }
         }
 
+        // `active` is named rather than left to its default: a table that lost the
+        // default would store NULL, and a rule read as off looks exactly like a
+        // rule that was never added.
         await env.DB.prepare(
           `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, min_tier_cents,
-             cap_cents, cap_window, cap_group, mode_key, earn_step_cents, region, min_txn_cents, note, channel)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             cap_cents, cap_window, cap_group, mode_key, earn_step_cents, region, min_txn_cents, note, channel,
+             mcc_exclude, active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
         )
           .bind(
             card.id,
@@ -1726,12 +1742,14 @@ async function runCommand(
             region || null,
             minTxn ? parseMoney(minTxn) : null,
             note || null,
-            channel || null
+            channel || null,
+            exclude.length ? exclude.join(',') : null
           )
           .run();
 
         return reply(`*${card.product}* earns ${formatRate(rate, isCashback ? 'cashback' : 'miles')} on *${cat}*` +
             (include.length ? `, but only on MCC ${include.join(', ')}` : '') +
+            (exclude.length ? `, never on MCC ${exclude.join(', ')}` : '') +
             (minTier ? `, and only while the card holds the $${money(parseMoney(minTier) ?? 0)} tier` : '') +
             (modeKey ? `, while the card is set to \`${modeKey}\`` : '') +
             (region ? `, on ${region} spend only` : '') +

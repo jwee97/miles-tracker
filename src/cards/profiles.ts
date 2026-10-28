@@ -34,6 +34,8 @@ export interface ProfileRule {
   min_txn_cents?: number;
   earn_step_cents?: number;
   mcc_include?: string;
+  /** Codes the rate never pays on, whatever else matches. */
+  mcc_exclude?: string;
 }
 
 export interface CardProfile {
@@ -52,8 +54,21 @@ export interface CardProfile {
   }[];
   rules: ProfileRule[];
   exclusions: { codes: string; reason: string }[];
-  /** A minimum that decides a tier, and the rungs it has. */
-  requirement?: { amount_cents: number; window: string; mode_key: string; note: string; rungs_cents: number[] };
+  /**
+   * A minimum that decides a tier, and the rungs it has: what a month must
+   * spend to hold each, and what the quarter pays at it (0 where the rung only
+   * gates a better rate, as Trust's do).
+   */
+  requirement?: {
+    amount_cents: number;
+    window: string;
+    /** Only while the card is set to this mode; left out for a card with no modes. */
+    mode_key?: string;
+    note: string;
+    rungs: { spend_cents: number; pays_cents: number }[];
+    /** Transactions a month must also reach, as UOB One counts. */
+    min_txns?: number;
+  };
   /**
    * The card's own base rate, for a card whose rates do not all live in modes.
    * Left out, the profile zeroes the card's base rate and programme because
@@ -155,7 +170,10 @@ export const TRUST_FREEDOM: CardProfile = {
     window: 'membership_quarter',
     mode_key: 'bonus_cashback',
     note: 'Bonus Cashback minimum',
-    rungs_cents: [50000, 200000],
+    rungs: [
+      { spend_cents: 50000, pays_cents: 0 },
+      { spend_cents: 200000, pays_cents: 0 },
+    ],
   },
   not_modelled: [
     'From 1 Jan 2027 Stockback pays 2% local and 0.5% foreign — a new dated version under Catalogue → Edit its rules.',
@@ -244,7 +262,154 @@ export const HSBC_REVOLUTION: CardProfile = {
   ],
 };
 
-export const PROFILES: CardProfile[] = [TRUST_FREEDOM, HSBC_REVOLUTION];
+const CITI_SHOPPING = '5311,5611,5621,5631,5641,5651,5655,5661,5691,5699,5948';
+/** What Citi calls travel-related, which is never 10X even when bought online. */
+const CITI_TRAVEL = '3000-3999,4111,4112,4411,4511,4722,4723,4789,5962,7011,7012,7512';
+
+/**
+ * The Citi Rewards Card, from Citi's 10X Rewards Promotion Terms and Conditions
+ * (effective 1 April 2024).
+ *
+ * Priced in miles, like every card here: 10X is 10 ThankYou Points per S$1 and
+ * 1X is 1 point, and a point is 0.4 miles, so 4 mpd and 0.4 mpd. It was entered
+ * as 10 and 1 — points — and a rate of 10 is valued as ten miles a dollar,
+ * which made this card look two and a half times better than the same 4 mpd
+ * anywhere else.
+ *
+ * 10X is paid on in-store clothing, shoe, luggage and department-store codes, and
+ * on online retail that is not travel, up to 9,000 bonus points a statement
+ * month — 9 bonus points per S$1, so S$1,000 of spend, shared by both. Points
+ * are worked out on each purchase rounded down to S$1.
+ */
+export const CITI_REWARDS: CardProfile = {
+  key: 'citi_rewards',
+  product_key: 'citi_rewards',
+  issuer: 'Citi',
+  product_name: 'Rewards Card',
+  sources: [
+    'https://www.citibank.com.sg/global_docs/pdf/Citi_Rewards_Card_10X_Rewards_Promotion_Terms_and_Conditions.pdf',
+    'https://www.citibank.com.sg/credit-cards/rewards/welcome-offers/',
+  ],
+  verified_on: '2026-10-28',
+  modes: [],
+  card_base_mpd: 0.4,
+  rules: [
+    { category: '*', rate: 0.4, reward_type: 'miles', earn_step_cents: 100 },
+    {
+      category: 'shopping',
+      rate: 4,
+      reward_type: 'miles',
+      cap_cents: 100000,
+      cap_window: 'statement_cycle',
+      cap_group: '10x',
+      earn_step_cents: 100,
+      mcc_include: CITI_SHOPPING,
+    },
+    {
+      category: 'online',
+      rate: 4,
+      reward_type: 'miles',
+      channel: 'online',
+      cap_cents: 100000,
+      cap_window: 'statement_cycle',
+      cap_group: '10x',
+      earn_step_cents: 100,
+      mcc_exclude: CITI_TRAVEL,
+    },
+  ],
+  exclusions: [],
+  not_modelled: [
+    'No minimum spend, so nothing for /req.',
+    'Priced at 0.4 miles a point (the 25,000 : 10,000 ThankYou route). A different partner pays a different rate.',
+    'Online spend paid with a mobile wallet is not 10X; the app cannot tell how an online purchase was paid.',
+    'Only a purchase logged as `online` gets the online rate. Online groceries or dining logged under their own category are priced by that category.',
+    'Citi\'s list of excluded merchants (citibank.com.sg/rwdexcl) is not published as codes the app can read, so only the exclusions that apply to every card are used.',
+    'Citi counts the cap in bonus points; the app counts S$1,000 of spend, which differs by cents when purchases are not whole dollars.',
+  ],
+};
+
+const UOB_EXCLUDED: { codes: string; reason: string }[] = [
+  { codes: '4829,6012,6050,6051,6529,6530,6534,6540', reason: 'money transfer, financial institutions, quasi cash, stored value' },
+  { codes: '6211', reason: 'securities brokers and dealers' },
+  { codes: '5960,6300', reason: 'insurance' },
+  { codes: '5199,5965,5993', reason: 'nondurable goods, catalog merchants, cigar stores' },
+  { codes: '6513,7349', reason: 'rentals and property management' },
+  { codes: '7511,7523', reason: 'truck stop quasi cash, parking' },
+  { codes: '7995', reason: 'gambling' },
+  { codes: '8062', reason: 'hospitals' },
+  { codes: '8211,8220,8241,8244,8249,8299', reason: 'educational institutions' },
+  { codes: '8398,8651,8661,8699', reason: 'charitable, political, religious, membership organisations' },
+  { codes: '8999', reason: 'professional services' },
+  { codes: '9211,9222,9223,9311,9399,9402,9405', reason: 'government payments, fines, tax' },
+];
+
+/**
+ * The UOB One Card, from UOB's terms and conditions (revised 1 July 2025; for a
+ * card issued before then, from the quarter starting 1 September 2025).
+ *
+ * The card pays in two layers, and they are separate here for the same reason
+ * they are separate at UOB. The QUARTERLY cashback is S$60, S$100 or S$200 for
+ * a quarter whose every statement month spent S$600, S$1,000 or S$2,000 in at
+ * least 10 transactions — that is the requirement and its tiers. The
+ * ADDITIONAL cashback is a rate on named merchants, paid only if the quarterly
+ * cashback was, at a rate that depends on which tier it was — those are the
+ * rules, each carrying the tier it needs. A card holding no tier earns the
+ * 0.03% base and nothing else.
+ *
+ * Additional cashback is capped at S$120 a statement month. The cap is on the
+ * cashback, so each rule's spend cap is S$120 divided by its rate.
+ */
+export const UOB_ONE: CardProfile = {
+  key: 'uob_one',
+  product_key: 'uob_one',
+  issuer: 'UOB',
+  product_name: 'One Card',
+  sources: ['https://www.uob.com.sg/assets/pdfs/one_card_full_tnc.pdf', 'https://www.uob.com.sg/onetncs'],
+  verified_on: '2026-10-28',
+  modes: [],
+  card_base_mpd: 0,
+  rules: [
+    // Base Cashback: 0.03% of the year's spend, paid in February.
+    { category: '*', rate: 0.03, reward_type: 'cashback' },
+    // Grab, McDonald's, Shopee and SimplyGo: 5% at Tier 1 and 2, 6.67% at Tier 3.
+    ...['transport', 'dining', 'online'].flatMap((category): ProfileRule[] => {
+      const base = { category, reward_type: 'cashback' as const, cap_window: 'statement_cycle', cap_group: 'selected' };
+      return [
+        { ...base, rate: 6.67, min_tier_cents: 200000, cap_cents: 180000 },
+        { ...base, rate: 5, min_tier_cents: 60000, cap_cents: 240000 },
+      ];
+    }),
+    // Groceries coded 5411: nothing at Tier 1, 2.67% at Tier 2, 4.67% at Tier 3.
+    { category: 'groceries', rate: 4.67, reward_type: 'cashback', min_tier_cents: 200000, cap_cents: 257143, cap_window: 'statement_cycle', cap_group: 'selected', mcc_include: '5411' },
+    { category: 'groceries', rate: 2.67, reward_type: 'cashback', min_tier_cents: 100000, cap_cents: 450000, cap_window: 'statement_cycle', cap_group: 'selected', mcc_include: '5411' },
+    // Shell: Tier 3 only.
+    { category: 'fuel', rate: 1.67, reward_type: 'cashback', min_tier_cents: 200000, cap_cents: 720000, cap_window: 'statement_cycle', cap_group: 'selected' },
+    // Singapore Power: 1% from Tier 1.
+    { category: 'utilities', rate: 1, reward_type: 'cashback', min_tier_cents: 60000, cap_cents: 1200000, cap_window: 'statement_cycle', cap_group: 'selected', mcc_include: '4900' },
+  ],
+  exclusions: UOB_EXCLUDED,
+  requirement: {
+    amount_cents: 60000,
+    window: 'statement_quarter',
+    note: 'quarterly cashback',
+    min_txns: 10,
+    rungs: [
+      { spend_cents: 60000, pays_cents: 6000 },
+      { spend_cents: 100000, pays_cents: 10000 },
+      { spend_cents: 200000, pays_cents: 20000 },
+    ],
+  },
+  not_modelled: [
+    'The additional cashback is for named merchants — Grab, McDonald\'s, Shopee, SimplyGo, Shell, Singapore Power, and groceries coded 5411. The app prices by category, so other dining, transport and online spend is priced as if it earned it too.',
+    'The S$120 monthly cap is on cashback. Each rate\'s spend cap is S$120 divided by its rate, so a month that mixes rates is only approximately right.',
+    'The tier is the leanest statement month of the quarter, with at least 10 transactions in each; the app reads it from the minimum recorded here.',
+    'The 0.03% base cashback is paid once a year, in February, and only if no quarterly cashback was paid in the year.',
+    'Excluded by name rather than code, so not seen here: Grab and ShopeePay top-ups, AXS, EZ-Link, PayPal and similar descriptions.',
+    'The sign-up and 20% promotions are time-limited and not included.',
+  ],
+};
+
+export const PROFILES: CardProfile[] = [TRUST_FREEDOM, HSBC_REVOLUTION, CITI_REWARDS, UOB_ONE];
 
 /**
  * A product key without the words banks and users add or drop: the catalogue
@@ -285,12 +450,16 @@ export function profileCommands(p: CardProfile, nickname: string): string {
     if (r.min_txn_cents) parts.push(`min ${dollars(r.min_txn_cents)}`);
     if (r.earn_step_cents) parts.push(`step ${dollars(r.earn_step_cents)}`);
     if (r.mcc_include) parts.push(`mcc ${r.mcc_include}`);
+    if (r.mcc_exclude) parts.push(`except ${r.mcc_exclude}`);
     L.push(parts.join(' '));
   }
   if (p.requirement) {
     const q = p.requirement;
-    L.push(`/req ${nickname}|monthly_min|${dollars(q.amount_cents)}|${q.window}||||${q.note}|${q.mode_key}`);
-    L.push(`/tiers ${nickname} ${q.rungs_cents.map((c) => `${dollars(c)}=0`).join(' ')}`);
+    L.push(
+      `/req ${nickname}|monthly_min|${dollars(q.amount_cents)}|${q.window}|||${q.min_txns ?? ''}|${q.note}` +
+        (q.mode_key ? `|${q.mode_key}` : '')
+    );
+    L.push(`/tiers ${nickname} ${q.rungs.map((r) => `${dollars(r.spend_cents)}=${dollars(r.pays_cents)}`).join(' ')}`);
   }
   for (const x of p.exclusions) L.push(`/exclude ${x.codes} ${nickname} ${x.reason}`);
   return L.join('\n');
@@ -386,48 +555,45 @@ export async function planProfile(env: Env, card: CardRow, p: CardProfile, mode?
 
 export class ProfileError extends Error {}
 
+export interface ProfileStatement {
+  sql: string;
+  args: unknown[];
+}
+
 /**
- * Put a card's records back to the profile.
+ * Every write that puts a card back to a profile, as data.
  *
- * One batch, so it is one subrequest however many rows it writes — 42 commands
- * sent separately would cost several hundred of the fifty a Worker invocation
- * gets — and D1 runs a batch as a transaction, so a failure part way leaves the
- * card as it was rather than half repaired.
- *
- * Old rules are switched off, not deleted: what they priced stays explainable.
- * Mode choices are kept unless a mode is named, in which case the history is
- * replaced by that mode from the day the card was opened — for a card fixed in
- * its first quarter, which is the case this exists for, that is the history.
+ * Separate from running them so the same statements can be applied by
+ * /cardfix, shown, and checked in a test, and so what is written by hand into a
+ * database is exactly what /cardfix would have written rather than a copy of it.
+ * Nothing here reads anything: the card, its product, the rule set the rules
+ * belong to and the date they start from are all passed in.
  */
-export async function applyProfile(
-  env: Env,
-  card: CardRow,
+export function profileStatements(
+  card: { id: number },
   p: CardProfile,
-  opts: { mode?: string | null; category?: string | null } = {}
-): Promise<ProfilePlan> {
-  if (!card.product_id) throw new ProfileError(`${card.nickname} is not linked to a product yet — run /migrate first`);
-  if (opts.mode && !p.modes.some((m) => m.mode_key === opts.mode)) {
-    throw new ProfileError(`${p.product_name} has no mode called ${opts.mode} — it offers ${p.modes.map((m) => m.mode_key).join(', ')}`);
+  ctx: {
+    product_id: number;
+    rule_set_id: number | null;
+    /** The card's opening date, which dated choices and quarters count from. */
+    anchor: string;
+    mode?: string | null;
+    category?: string | null;
   }
-  const pick = p.modes.find((m) => m.mode_key === opts.mode);
-  if (pick?.category_choices && !opts.category) {
-    throw new ProfileError(`${pick.label} also needs a category — one of ${pick.category_choices}`);
-  }
-
-  const plan = await planProfile(env, card, p, opts.mode);
-  const ruleSet = await currentRuleSetFor(env, card.id, today(env));
-  const product = card.product_id;
+): ProfileStatement[] {
+  const s: ProfileStatement[] = [];
+  const q = (sql: string, ...args: unknown[]) => s.push({ sql, args });
+  const product = ctx.product_id;
   const keep = p.modes.map((m) => m.mode_key);
-  const anchor = card.opened_at ?? today(env);
-  const s: D1PreparedStatement[] = [];
-  const q = (sql: string, ...args: unknown[]) => s.push(env.DB.prepare(sql).bind(...args));
+  const pick = p.modes.find((m) => m.mode_key === ctx.mode);
 
-  // The card itself: its rates live in the modes, and so does what it pays in.
+  // The card itself.
   if (p.card_base_mpd !== undefined) {
     // Its rates are not all in modes, so the programme it pays into stays.
     q(`UPDATE cards SET base_mpd = ? WHERE id = ?`, p.card_base_mpd, card.id);
     q(`UPDATE card_products SET base_mpd = ? WHERE id = ?`, p.card_base_mpd, product);
   } else {
+    // Its rates live in the modes, and so does what it pays in.
     q(`UPDATE cards SET base_mpd = 0, program_key = NULL WHERE id = ?`, card.id);
     q(`UPDATE card_products SET base_mpd = NULL, program_key = NULL WHERE id = ?`, product);
   }
@@ -441,15 +607,16 @@ export async function applyProfile(
   );
   for (const r of p.rules) {
     q(
-      `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, min_tier_cents,
+      `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, mcc_exclude, min_tier_cents,
          cap_cents, cap_window, cap_group, mode_key, earn_step_cents, region, min_txn_cents, note, channel, active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       card.id,
-      ruleSet,
+      ctx.rule_set_id,
       r.category,
       r.rate,
       r.reward_type,
       r.mcc_include ?? null,
+      r.mcc_exclude ?? null,
       r.min_tier_cents ?? null,
       r.cap_cents ?? null,
       r.cap_window ?? null,
@@ -481,36 +648,26 @@ export async function applyProfile(
     );
   }
   if (keep.length) {
-    q(
-      `DELETE FROM card_modes WHERE product_id = ? AND mode_key NOT IN (${keep.map(() => '?').join(',')})`,
-      product,
-      ...keep
-    );
+    q(`DELETE FROM card_modes WHERE product_id = ? AND mode_key NOT IN (${keep.map(() => '?').join(',')})`, product, ...keep);
   } else {
     q(`DELETE FROM card_modes WHERE product_id = ?`, product);
   }
 
   // Choices: replaced by the named mode, or pruned of modes that no longer exist.
-  if (opts.mode) {
+  if (ctx.mode) {
     q(`DELETE FROM card_mode_choices WHERE card_id = ?`, card.id);
     q(
       `INSERT INTO card_mode_choices (card_id, mode_key, category, effective_from, note) VALUES (?, ?, ?, ?, ?)`,
       card.id,
-      opts.mode,
-      pick?.category_choices ? (opts.category ?? '').toLowerCase() : null,
-      anchor,
+      ctx.mode,
+      pick?.category_choices ? (ctx.category ?? '').toLowerCase() : null,
+      ctx.anchor,
       `set by /cardfix`
     );
+  } else if (keep.length) {
+    q(`DELETE FROM card_mode_choices WHERE card_id = ? AND mode_key NOT IN (${keep.map(() => '?').join(',')})`, card.id, ...keep);
   } else {
-    if (keep.length) {
-      q(
-        `DELETE FROM card_mode_choices WHERE card_id = ? AND mode_key NOT IN (${keep.map(() => '?').join(',')})`,
-        card.id,
-        ...keep
-      );
-    } else {
-      q(`DELETE FROM card_mode_choices WHERE card_id = ?`, card.id);
-    }
+    q(`DELETE FROM card_mode_choices WHERE card_id = ?`, card.id);
   }
 
   // Exclusions: this card's, replaced — which is also what removes duplicates
@@ -518,12 +675,7 @@ export async function applyProfile(
   q(`UPDATE exclusions SET active = 0 WHERE card_id = ? AND active = 1`, card.id);
   for (const x of p.exclusions) {
     for (const code of x.codes.split(',')) {
-      q(
-        `INSERT INTO exclusions (card_id, mcc, reason, source, active) VALUES (?, ?, ?, 'user', 1)`,
-        card.id,
-        code.trim(),
-        x.reason
-      );
+      q(`INSERT INTO exclusions (card_id, mcc, reason, source, active) VALUES (?, ?, ?, 'user', 1)`, card.id, code.trim(), x.reason);
     }
   }
 
@@ -531,27 +683,70 @@ export async function applyProfile(
   q(`UPDATE requirements SET active = 0 WHERE card_id = ? AND active = 1`, card.id);
   if (p.requirement) {
     const r = p.requirement;
+    const mode = r.mode_key ?? null;
     q(
-      `INSERT INTO requirements (card_id, kind, amount_cents, window, anchor_at, per_month, prorate_first, reward_note, mode_key)
-       VALUES (?, 'monthly_min', ?, ?, ?, 1, 1, ?, ?)`,
+      `INSERT INTO requirements (card_id, kind, amount_cents, window, anchor_at, per_month, prorate_first, min_txns, reward_note, mode_key, active)
+       VALUES (?, 'monthly_min', ?, ?, ?, 1, 1, ?, ?, ?, 1)`,
       card.id,
       r.amount_cents,
       r.window,
-      anchor,
+      ctx.anchor,
+      r.min_txns ?? null,
       r.note,
-      r.mode_key
+      mode
     );
-    for (const rung of r.rungs_cents) {
+    for (const rung of r.rungs) {
+      // `IS` rather than `=`: a card with no modes has a NULL here.
       q(
         `INSERT INTO requirement_tiers (requirement_id, min_spend_cents, reward_cents)
-         SELECT MAX(id), ?, 0 FROM requirements WHERE card_id = ? AND active = 1 AND mode_key = ?`,
-        rung,
+         SELECT MAX(id), ?, ? FROM requirements WHERE card_id = ? AND active = 1 AND mode_key IS ?`,
+        rung.spend_cents,
+        rung.pays_cents,
         card.id,
-        r.mode_key
+        mode
       );
     }
   }
+  return s;
+}
 
-  await env.DB.batch(s);
+/**
+ * Put a card's records back to the profile.
+ *
+ * One batch, so it is one subrequest however many rows it writes — 42 commands
+ * sent separately would cost several hundred of the fifty a Worker invocation
+ * gets — and D1 runs a batch as a transaction, so a failure part way leaves the
+ * card as it was rather than half repaired.
+ *
+ * Old rules are switched off, not deleted: what they priced stays explainable.
+ * Mode choices are kept unless a mode is named, in which case the history is
+ * replaced by that mode from the day the card was opened — for a card fixed in
+ * its first quarter, which is the case this exists for, that is the history.
+ */
+export async function applyProfile(
+  env: Env,
+  card: CardRow,
+  p: CardProfile,
+  opts: { mode?: string | null; category?: string | null } = {}
+): Promise<ProfilePlan> {
+  if (!card.product_id) throw new ProfileError(`${card.nickname} is not linked to a product yet — run /migrate first`);
+  if (opts.mode && !p.modes.some((m) => m.mode_key === opts.mode)) {
+    throw new ProfileError(`${p.product_name} has no mode called ${opts.mode} — it offers ${p.modes.map((m) => m.mode_key).join(', ')}`);
+  }
+  const pick = p.modes.find((m) => m.mode_key === opts.mode);
+  if (pick?.category_choices && !opts.category) {
+    throw new ProfileError(`${pick.label} also needs a category — one of ${pick.category_choices}`);
+  }
+
+  const plan = await planProfile(env, card, p, opts.mode);
+  const ruleSet = await currentRuleSetFor(env, card.id, today(env));
+  const statements = profileStatements(card, p, {
+    product_id: card.product_id,
+    rule_set_id: ruleSet,
+    anchor: card.opened_at ?? today(env),
+    mode: opts.mode,
+    category: opts.category,
+  });
+  await env.DB.batch(statements.map((x) => env.DB.prepare(x.sql).bind(...x.args)));
   return plan;
 }

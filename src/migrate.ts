@@ -329,34 +329,99 @@ async function foldDuplicateDiscoveryItems(env: Env, errors: string[]): Promise<
   }
 }
 
-async function relaxEarnRuleCardId(env: Env, created: string[], errors: string[]): Promise<void> {
-  const { results } = await env.DB.prepare(`PRAGMA table_info(earn_rules)`).all<{ name: string; notnull: number }>();
-  const cols = results ?? [];
-  const cardId = cols.find((c) => c.name === 'card_id');
-  if (!cardId || cardId.notnull !== 1) return;
+/**
+ * The columns `earn_rules` is meant to have, with their real types.
+ *
+ * `fill` is what a NULL becomes when rows are copied across, for the columns
+ * that are NOT NULL with a default. Kept next to the types so the table can be
+ * rebuilt from one list rather than from whatever the old table happened to say.
+ */
+const EARN_RULES_COLUMNS: { name: string; ddl: string; copy: string; fill?: string }[] = [
+  { name: 'card_id', ddl: 'INTEGER REFERENCES cards(id) ON DELETE CASCADE', copy: 'CAST(card_id AS INTEGER)' },
+  { name: 'category', ddl: 'TEXT NOT NULL', copy: 'category' },
+  { name: 'mpd', ddl: 'REAL NOT NULL', copy: 'CAST(mpd AS REAL)' },
+  { name: 'reward_type', ddl: "TEXT NOT NULL DEFAULT 'miles'", copy: 'reward_type', fill: "'miles'" },
+  { name: 'mcc_include', ddl: 'TEXT', copy: 'mcc_include' },
+  { name: 'mcc_exclude', ddl: 'TEXT', copy: 'mcc_exclude' },
+  { name: 'channel', ddl: 'TEXT', copy: 'channel' },
+  { name: 'rule_set_id', ddl: 'INTEGER REFERENCES rule_sets(id) ON DELETE CASCADE', copy: 'CAST(rule_set_id AS INTEGER)' },
+  { name: 'priority', ddl: 'INTEGER NOT NULL DEFAULT 0', copy: 'CAST(priority AS INTEGER)', fill: '0' },
+  { name: 'min_txn_cents', ddl: 'INTEGER', copy: 'CAST(min_txn_cents AS INTEGER)' },
+  { name: 'min_tier_cents', ddl: 'INTEGER', copy: 'CAST(min_tier_cents AS INTEGER)' },
+  { name: 'program_key', ddl: 'TEXT REFERENCES programs(key)', copy: 'program_key' },
+  { name: 'cap_cents', ddl: 'INTEGER', copy: 'CAST(cap_cents AS INTEGER)' },
+  { name: 'cap_group', ddl: 'TEXT', copy: 'cap_group' },
+  { name: 'cap_window', ddl: 'TEXT', copy: 'cap_window' },
+  { name: 'note', ddl: 'TEXT', copy: 'note' },
+  { name: 'mode_key', ddl: 'TEXT', copy: 'mode_key' },
+  { name: 'earn_step_cents', ddl: 'INTEGER', copy: 'CAST(earn_step_cents AS INTEGER)' },
+  { name: 'region', ddl: 'TEXT', copy: 'region' },
+  { name: 'active', ddl: 'INTEGER NOT NULL DEFAULT 1', copy: 'CAST(active AS INTEGER)', fill: '1' },
+];
 
-  const names = cols.map((c) => c.name).filter((n) => n !== 'id');
+/**
+ * Whether `earn_rules` needs rebuilding, and why.
+ *
+ * Two different reasons end in the same rebuild. `card_id` was NOT NULL because
+ * a rule always belonged to one card; a rule now belongs to a product's rule
+ * set, so the constraint has to go, and SQLite cannot relax NOT NULL in place.
+ *
+ * And a table that an earlier version of this rebuild already touched. That
+ * version declared every column TEXT with no default, which looks harmless and
+ * is not: `active` became NULL on every rule added without naming it, so a rule
+ * that was added looked inactive; numbers came back as strings; and `ORDER BY
+ * mpd` sorted "10" before "4". Such a table is rebuilt again, correctly.
+ */
+function earnRulesProblem(cols: { name: string; type: string; notnull: number; dflt_value: unknown }[]): string | null {
+  const col = (n: string) => cols.find((c) => c.name === n);
+  const cardId = col('card_id');
+  if (cardId && cardId.notnull === 1) return 'a rule can belong to a product, not a card';
+  const mpd = col('mpd');
+  if (mpd && mpd.type.toUpperCase() !== 'REAL') return 'numbers are numbers again';
+  const active = col('active');
+  if (active && (active.dflt_value === null || active.dflt_value === undefined)) return 'active defaults to on again';
+  return null;
+}
+
+async function repairEarnRules(env: Env, created: string[], errors: string[]): Promise<void> {
+  const { results } = await env.DB.prepare(`PRAGMA table_info(earn_rules)`).all<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: unknown;
+  }>();
+  const cols = results ?? [];
+  if (!cols.length) return;
+  const why = earnRulesProblem(cols);
+  if (!why) return;
+
+  // Only the columns the old table actually has are copied; the rest take
+  // their defaults. A column the list does not know is not carried across, so
+  // anything added to the table later has to be added here too — which the
+  // migration test checks against schema.sql.
+  const have = new Set(cols.map((c) => c.name));
+  const keep = EARN_RULES_COLUMNS.filter((c) => have.has(c.name));
+  const pick = (c: (typeof EARN_RULES_COLUMNS)[number]) => (c.fill ? `COALESCE(${c.copy}, ${c.fill})` : c.copy);
   try {
-    // A rebuild, not a migration of data: same rows, same ids, one constraint
-    // fewer. Ordered so a failure part-way leaves the original table intact.
+    // A rebuild, not a migration of data: same rows, same ids. Ordered so a
+    // failure part-way leaves the original table intact — the new one is built
+    // and filled first, and only then swapped in.
     await env.DB.prepare(`DROP TABLE IF EXISTS earn_rules_rebuild`).run();
     await env.DB.prepare(
       `CREATE TABLE earn_rules_rebuild (
          id INTEGER PRIMARY KEY AUTOINCREMENT,
-         ${cols
-           .filter((c) => c.name !== 'id')
-           .map((c) => `${c.name} ${c.name === 'card_id' ? 'INTEGER' : 'TEXT'}`)
-           .join(', ')}
+         ${EARN_RULES_COLUMNS.map((c) => `${c.name} ${c.ddl}`).join(',\n         ')}
        )`
     ).run();
     await env.DB.prepare(
-      `INSERT INTO earn_rules_rebuild (id, ${names.join(', ')}) SELECT id, ${names.join(', ')} FROM earn_rules`
+      `INSERT INTO earn_rules_rebuild (id, ${keep.map((c) => c.name).join(', ')})
+       SELECT id, ${keep.map(pick).join(', ')} FROM earn_rules`
     ).run();
     await env.DB.prepare(`DROP TABLE earn_rules`).run();
     await env.DB.prepare(`ALTER TABLE earn_rules_rebuild RENAME TO earn_rules`).run();
-    created.push('earn_rules (rebuilt so a rule can belong to a product, not a card)');
+    created.push(`earn_rules (rebuilt: ${why})`);
   } catch (e) {
-    errors.push(`relaxing earn_rules.card_id — ${(e as Error).message}`);
+    errors.push(`rebuilding earn_rules — ${(e as Error).message}`);
   }
 }
 
@@ -426,7 +491,7 @@ export async function runMigrations(env: Env): Promise<MigrationReport> {
 
   // After the columns, before the indexes: the rebuild recreates the table, so
   // its indexes have to be laid down again afterwards.
-  await relaxEarnRuleCardId(env, created, errors);
+  await repairEarnRules(env, created, errors);
 
   // The canonical-URL index is unique across every source, and a database that
   // predates it may already hold the same article found twice. Fold those

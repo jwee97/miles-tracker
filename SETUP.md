@@ -428,7 +428,7 @@ quarter is all three or nothing.
 Set one up in the bot:
 
 ```
-/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback
+/req uobone|monthly_min|600|statement_quarter|||10|quarterly cashback
 /tiers uobone 600=50 1000=110 2000=300
 ```
 

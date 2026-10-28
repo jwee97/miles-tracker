@@ -313,5 +313,22 @@ const buy = (
   check('but the same dinner paid in store without tapping goes on the plain card', dip.recommendation?.card.nickname === 'plain', dip.recommendation?.card.nickname ?? 'none');
 }
 
+// --- a rule added on the damaged table is still on -----------------------------
+// Production's earn_rules once lost the default on `active`. A rule added with
+// /addearn then had NULL there, which the engine reads as off — so the HSBC
+// rates that were typed in went in and never applied.
+{
+  sql(`ALTER TABLE earn_rules RENAME TO earn_rules_ok`);
+  sql(`CREATE TABLE earn_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, card_id INTEGER, category TEXT, mpd TEXT,
+        program_key TEXT, cap_cents TEXT, cap_group TEXT, cap_window TEXT, note TEXT, active TEXT, reward_type TEXT,
+        mcc_include TEXT, mcc_exclude TEXT, channel TEXT, min_txn_cents TEXT, min_tier_cents TEXT, rule_set_id TEXT,
+        priority TEXT, mode_key TEXT, earn_step_cents INTEGER, region TEXT)`);
+  await tg('/addearn plain online 3 channel online');
+  const added = db.prepare(`SELECT active, channel FROM earn_rules WHERE category = 'online'`).get() as any;
+  check('/addearn names `active`, so the rule is on even without a default', String(added?.active) === '1' && added?.channel === 'online', JSON.stringify(added));
+  sql(`DROP TABLE earn_rules`);
+  sql(`ALTER TABLE earn_rules_ok RENAME TO earn_rules`);
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

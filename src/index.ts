@@ -2440,8 +2440,8 @@ export default {
 
           const ins = await env.DB.prepare(
             `INSERT INTO earn_rules (card_id, rule_set_id, category, mpd, reward_type, mcc_include, mcc_exclude, channel,
-               min_txn_cents, min_tier_cents, program_key, cap_cents, cap_group, cap_window, note)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+               min_txn_cents, min_tier_cents, program_key, cap_cents, cap_group, cap_window, note, active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
           )
             .bind(
               card.id,

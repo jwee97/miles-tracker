@@ -388,7 +388,7 @@ after one statement closes to the day the next one does, not the 1st to the
 quarter pays depends on which spend tier you held.
 
 ```
-/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback
+/req uobone|monthly_min|600|statement_quarter|||10|quarterly cashback
 /tiers uobone 600=50 1000=110 2000=300
 ```
 

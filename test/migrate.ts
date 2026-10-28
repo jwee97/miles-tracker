@@ -183,5 +183,87 @@ const indexes = (db: DatabaseSync) =>
   check('and a second run has nothing left to repair', (twice.products?.repaired ?? []).length === 0, JSON.stringify(twice.products));
 }
 
+// --- an earn_rules table damaged by an earlier rebuild ------------------------
+// The rebuild that made card_id nullable declared every column TEXT with no
+// default. Rules added afterwards had no `active`, so they were stored as NULL —
+// off — and numbers came back as strings. This is that table, as it was found in
+// production, with the rows it held.
+{
+  const { db, env } = makeEnv();
+  await runMigrations(env);
+  const healthyCols = cols(db, 'earn_rules').filter((c) => c !== 'id').sort().join(',');
+
+  // The rows point at real cards and rule sets, as production's do. Foreign keys
+  // are enforced, so a rebuild that copied a row to nowhere would fail loudly.
+  db.exec(`INSERT INTO cards (id, issuer, product, product_key, nickname, credit_limit_cents, statement_day) VALUES
+           (2, 'Citi', 'Rewards', 'citi_rewards', 'citirw', 100000, 15),
+           (3, 'Trust', 'Freedom Card', 'trust_freedom_card', 'freedom', 100000, 19)`);
+  db.exec(`INSERT INTO card_products (id, product_key, issuer, product_name) VALUES (1, 'p', 'I', 'P')`);
+  db.exec(`INSERT INTO rule_sets (id, product_id, version, status, effective_from) VALUES
+           (2, 1, 1, 'published', '2025-01-01'), (3, 1, 2, 'published', '2025-02-01')`);
+  db.exec(`DROP TABLE earn_rules`);
+  db.exec(`CREATE TABLE "earn_rules" (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id INTEGER, category TEXT, mpd TEXT, program_key TEXT, cap_cents TEXT, cap_group TEXT, cap_window TEXT,
+    note TEXT, active TEXT, reward_type TEXT, mcc_include TEXT, mcc_exclude TEXT, channel TEXT, min_txn_cents TEXT,
+    min_tier_cents TEXT, rule_set_id TEXT, priority TEXT, mode_key TEXT, earn_step_cents INTEGER, region TEXT)`);
+  const ins = db.prepare(
+    `INSERT INTO earn_rules (card_id, category, mpd, cap_cents, cap_group, cap_window, active, reward_type, min_txn_cents, rule_set_id, priority, mcc_include)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  ins.run(2, 'shopping', '10.0', '100000', '10x', 'statement_cycle', '1', 'miles', null, '2.0', null, null);
+  ins.run(2, '*', '4.0', null, null, null, '1', 'miles', null, '2.0', null, null);
+  // Added through /addearn after the damage: no `active` at all.
+  ins.run(3, 'dining', '6.0', '166667.0', 'bonus15', 'membership_quarter', null, 'cashback', '100.0', '3.0', null, '5812');
+  check('the damaged table is what production has', (db.prepare(`SELECT typeof(mpd) AS t FROM earn_rules WHERE id = 1`).get() as any).t === 'text', '');
+
+  const r = await runMigrations(env);
+  check('the migration repairs it without error', r.errors.length === 0, r.errors.join(' | '));
+  check('and says it rebuilt the table', r.created.some((c) => c.startsWith('earn_rules (rebuilt')), r.created.join(','));
+  check('every row survived, with its id', (db.prepare(`SELECT COUNT(*) AS n FROM earn_rules`).get() as any).n === 3, '');
+  const row = (id: number) => db.prepare(`SELECT *, typeof(mpd) AS t_mpd, typeof(cap_cents) AS t_cap, typeof(active) AS t_active FROM earn_rules WHERE id = ?`).get(id) as any;
+  check('rates are numbers again', row(1).t_mpd === 'real' && row(1).mpd === 10, JSON.stringify(row(1)));
+  check('so are caps, read back as whole cents', row(3).t_cap === 'integer' && row(3).cap_cents === 166667, JSON.stringify(row(3)));
+  check('a rule with no `active` is switched on, as it was meant to be', row(3).active === 1 && row(3).t_active === 'integer', JSON.stringify(row(3)));
+  check('the NOT NULL defaults are filled', row(1).priority === 0 && row(3).reward_type === 'cashback', JSON.stringify(row(1)));
+  check('minimums come back as numbers', row(3).min_txn_cents === 100, JSON.stringify(row(3)));
+  check('and `ORDER BY mpd` is numeric: 10 before 4', (db.prepare(`SELECT id FROM earn_rules WHERE card_id = 2 ORDER BY mpd DESC`).all() as any[])[0].id === 1, '');
+  check('it carries exactly the columns the schema defines', cols(db, 'earn_rules').filter((c) => c !== 'id').sort().join(',') === healthyCols, `${cols(db, 'earn_rules')} vs ${healthyCols}`);
+  check('its index is back', indexes(db).includes('earn_card'), indexes(db).join(','));
+
+  // The reason it mattered: a rule added without naming `active` is on.
+  db.prepare(`INSERT INTO earn_rules (card_id, category, mpd) VALUES (2, 'online', 4)`).run();
+  const added = db.prepare(`SELECT active, reward_type, priority FROM earn_rules WHERE category = 'online'`).get() as any;
+  check('a rule added afterwards defaults to active', added.active === 1 && added.reward_type === 'miles' && added.priority === 0, JSON.stringify(added));
+
+  const again = await runMigrations(env);
+  check('a second run leaves it alone', !again.created.some((c) => c.startsWith('earn_rules')) && again.errors.length === 0, JSON.stringify(again.created));
+}
+
+// --- the older reason for the rebuild still works, and keeps the types ---------
+{
+  const { db, env } = makeEnv();
+  await runMigrations(env);
+  db.exec(`DROP TABLE earn_rules`);
+  db.exec(`CREATE TABLE earn_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, card_id INTEGER NOT NULL, category TEXT NOT NULL, mpd REAL NOT NULL,
+    reward_type TEXT NOT NULL DEFAULT 'miles', active INTEGER NOT NULL DEFAULT 1)`);
+  db.exec(`INSERT INTO cards (id, issuer, product, product_key, nickname, credit_limit_cents, statement_day) VALUES
+           (1, 'DBS', 'Altitude', 'dbs_altitude', 'alt', 100000, 18)`);
+  db.exec(`INSERT INTO earn_rules (card_id, category, mpd) VALUES (1, 'dining', 4)`);
+  const r = await runMigrations(env);
+  check('a card_id that cannot be null is relaxed', r.errors.length === 0 && (db.prepare(`PRAGMA table_info(earn_rules)`).all() as any[]).find((c) => c.name === 'card_id').notnull === 0, r.errors.join(' | '));
+  const kept = db.prepare(`SELECT typeof(mpd) AS t, mpd, active FROM earn_rules`).get() as any;
+  check('without losing the types or the row', kept.t === 'real' && kept.mpd === 4 && kept.active === 1, JSON.stringify(kept));
+}
+
+// --- a healthy table is not touched --------------------------------------------
+{
+  const { env } = makeEnv();
+  await runMigrations(env);
+  const again = await runMigrations(env);
+  check('a healthy earn_rules is never rebuilt', !again.created.some((c) => c.startsWith('earn_rules')), JSON.stringify(again.created));
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nall passed');
 process.exit(fails ? 1 : 0);

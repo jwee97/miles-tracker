@@ -83,7 +83,7 @@ export function cardRulesPrompt(
 
 Return ONLY commands, one per line, and # comment lines. No other prose:
 
-/addearn ${nickname} <category> <rate> cap <amount> window <window> mcc <codes> group <name> tier <amount> mode <key> region <local|foreign> channel <online|contactless|offline> min <amount>
+/addearn ${nickname} <category> <rate> cap <amount> window <window> mcc <codes> except <codes> group <name> tier <amount> mode <key> region <local|foreign> channel <online|contactless|offline> min <amount>
 /exclude <mcc> ${nickname} <reason>
 /req ${nickname}|monthly_min|<amount>|<window>|||<txns>|<note>
 
@@ -102,7 +102,8 @@ Rules:
    There is no yearly window: say so in a # comment instead.
 5. mcc lists the codes a rate is restricted to, comma separated, ranges allowed
    (3000-3308). The bank pays on the code, not the word, so give the list
-   whenever the terms do.
+   whenever the terms do. \`except <codes>\` is the opposite: codes the rate never
+   pays on ("online spend, excluding travel").
 6. If ONE cap is shared across several lines, give them the SAME group name.
 7. If local and foreign spend earn differently, one line each with
    \`region local\` / \`region foreign\`. \`min <amount>\` if nothing is paid
@@ -293,7 +294,7 @@ Cashback and miles cards are compared in dollars, using MILE\_VALUE\_CENTS.
 /req nickname|kind|amount|window|deadline|cap|txns|note
   monthly: \`/req wwmc|monthly_min|800|calendar_month||1000||4 mpd on first $1k\`
   signup:  \`/req alt|signup_min|1000|fixed_window|2026-11-14|||30k miles\`
-  rolling: \`/req uobone|monthly_min|600|statement_quarter||||10|quarterly cashback\`
+  rolling: \`/req uobone|monthly_min|600|statement_quarter|||10|quarterly cashback\`
   window is calendar_month, statement_cycle, calendar_quarter,
   statement_quarter or fixed_window
   statement_quarter = three statement months counted from the month the
